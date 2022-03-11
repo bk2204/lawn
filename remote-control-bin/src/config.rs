@@ -151,6 +151,16 @@ impl Config {
         g.runtime_dir.clone()
     }
 
+    pub fn autoprune_sockets(&self) -> bool {
+        let g = self.data.read().unwrap();
+        g.config_file
+            .v0
+            .socket
+            .as_ref()
+            .and_then(|m| m.autoprune)
+            .unwrap_or(false)
+    }
+
     pub fn is_root(&self) -> Result<bool, Error> {
         let val = {
             let g = self.data.read().unwrap();
@@ -579,6 +589,7 @@ impl ConfigFile {
         ConfigFile {
             v0: ConfigFileV0 {
                 root: None,
+                socket: None,
                 commands: None,
             },
         }
@@ -588,7 +599,13 @@ impl ConfigFile {
 #[derive(Serialize, Deserialize)]
 struct ConfigFileV0 {
     root: Option<String>,
+    socket: Option<ConfigSockets>,
     commands: Option<BTreeMap<String, ConfigCommand>>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ConfigSockets {
+    autoprune: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]

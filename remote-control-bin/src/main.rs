@@ -13,7 +13,7 @@ use remote_control_protocol::config::Logger;
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 mod channel;
@@ -62,6 +62,11 @@ fn runtime() -> tokio::runtime::Runtime {
         .unwrap()
 }
 
+fn prune_socket(p: &Path, logger: Arc<config::Logger>) {
+    trace!(logger, "autopruning socket {}", escape(path(p)));
+    let _ = std::fs::remove_file(p);
+}
+
 fn find_server_socket(socket: Option<&OsStr>, config: Arc<config::Config>) -> Option<UnixStream> {
     let logger = config.logger();
     if let Some(socket) = socket {
@@ -71,6 +76,7 @@ fn find_server_socket(socket: Option<&OsStr>, config: Arc<config::Config>) -> Op
             Err(_) => None,
         };
     }
+    let mut wanted = None;
     for p in config.sockets() {
         trace!(logger, "trying socket {}", escape(path(&*p)));
         match UnixStream::connect(&p) {
@@ -80,19 +86,35 @@ fn find_server_socket(socket: Option<&OsStr>, config: Arc<config::Config>) -> Op
                     "successfully connected to socket {}",
                     escape(path(&*p))
                 );
-                return Some(sock);
+                if wanted.is_none() {
+                    if config.autoprune_sockets() {
+                        wanted = Some(sock);
+                    } else {
+                        return Some(sock);
+                    }
+                }
             }
-            Err(e) => {
-                trace!(
-                    logger,
-                    "failed to connect to socket {}: {}",
-                    escape(path(&*p)),
-                    e
-                );
-            }
+            Err(e) => match wanted {
+                Some(_) => {
+                    if config.autoprune_sockets() {
+                        prune_socket(&p, logger.clone());
+                    }
+                }
+                None => {
+                    trace!(
+                        logger,
+                        "failed to connect to socket {}: {}",
+                        escape(path(&*p)),
+                        e
+                    );
+                    if config.autoprune_sockets() {
+                        prune_socket(&p, logger.clone());
+                    }
+                }
+            },
         }
     }
-    None
+    wanted
 }
 
 fn autospawn_server(config: Arc<config::Config>) -> Result<(), Error> {
