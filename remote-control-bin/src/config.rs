@@ -5,7 +5,7 @@ use bytes::{Bytes, BytesMut};
 use remote_control_protocol::config::Logger as LoggerTrait;
 use remote_control_protocol::config::{LogFormat, LogLevel};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::fs;
@@ -227,7 +227,18 @@ impl Config {
             logger.trace(&format!("runtime_dir: found, using {:?}", buf));
             v.push(buf);
         }
-        v
+        let mut m = HashSet::new();
+        v.iter()
+            .filter(|&x| {
+                if m.contains(x) {
+                    false
+                } else {
+                    m.insert(x.clone());
+                    true
+                }
+            })
+            .cloned()
+            .collect()
     }
 
     fn find_sockets<E: FnMut(&str) -> Option<OsString>>(logger: &Logger, env: E) -> Vec<PathBuf> {
