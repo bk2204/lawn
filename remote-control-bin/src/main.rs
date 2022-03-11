@@ -78,6 +78,14 @@ fn find_server_socket(socket: Option<&OsStr>, config: Arc<config::Config>) -> Op
     }
     let mut wanted = None;
     for p in config.sockets() {
+        match p.file_name() {
+            Some(file) => {
+                if !file.as_bytes().starts_with(b"server") {
+                    continue;
+                }
+            }
+            None => continue,
+        }
         trace!(logger, "trying socket {}", escape(path(&*p)));
         match UnixStream::connect(&p) {
             Ok(sock) => {
