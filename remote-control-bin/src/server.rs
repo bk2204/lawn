@@ -3,6 +3,7 @@ use crate::config;
 use crate::config::{Config, Logger};
 use crate::encoding::{escape, path};
 use crate::error::{Error, ErrorKind};
+use crate::unix;
 use bytes::Bytes;
 use daemonize::Daemonize;
 use num_traits::cast::FromPrimitive;
@@ -14,7 +15,9 @@ use remote_control_protocol::protocol::{Message, MessageKind, ResponseCode};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::convert::TryInto;
 use std::fs::File;
+use std::io::{Read, Write};
 use std::marker::Unpin;
+use std::os::unix::io::FromRawFd;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -59,10 +62,14 @@ impl Server {
     pub fn run(&self) -> Result<(), Error> {
         let logger = self.config.logger();
         logger.trace("server: checking if we are going to detach");
+        let (fdrd, fdwr) = self.pipe()?;
+        let mut fdwr = Some(fdwr);
         if self.config.detach() {
             logger.trace("server: yes, we will detach");
-            self.daemonize()?;
+            self.daemonize(Some(fdrd))?;
         } else {
+            fdwr = None;
+            std::mem::drop(fdrd);
             logger.trace("server: no, we will not detach");
         }
         let mut socket_path: PathBuf = self.config.runtime_dir();
@@ -72,11 +79,56 @@ impl Server {
             escape(path(socket_path.as_ref()))
         ));
         logger.trace("server: starting runtime");
-        self.runtime(&socket_path)
+        self.runtime(&socket_path, fdwr)
+    }
+
+    pub fn run_forked(&self) -> Result<(), Error> {
+        let logger = self.config.logger();
+        logger.trace("server: checking if we are going to detach");
+        let (fdrd, fdwr) = self.pipe()?;
+        match unix::call_with_result(|| unsafe { libc::fork() })
+            .map_err(|e| Error::new_with_cause(ErrorKind::ServerCreationFailure, e))?
+        {
+            // child
+            0 => {
+                std::mem::drop(fdrd);
+                if self.config.detach() {
+                    logger.trace("server: yes, we will detach");
+                    self.daemonize(None)?;
+                } else {
+                    logger.trace("server: no, we will not detach");
+                }
+                let mut socket_path: PathBuf = self.config.runtime_dir();
+                socket_path.push("server-0.sock");
+                logger.trace(&format!(
+                    "server: socket is {}",
+                    escape(path(socket_path.as_ref()))
+                ));
+                logger.trace("server: starting runtime");
+                let _ = self.runtime(&socket_path, Some(fdwr));
+                std::process::exit(0);
+            }
+            _ => {
+                std::mem::drop(fdwr);
+                let mut fdrd = fdrd;
+                let mut buf = [0u8; 1];
+                let _ = fdrd.read(&mut buf);
+                Ok(())
+            }
+        }
+    }
+
+    fn pipe(&self) -> Result<(File, File), Error> {
+        let mut pipefd = [-1i32; 2];
+        unix::call_with_result(|| unsafe { libc::pipe(&mut pipefd as *mut i32) })
+            .map_err(|e| Error::new_with_cause(ErrorKind::ServerCreationFailure, e))?;
+        Ok((unsafe { File::from_raw_fd(pipefd[0]) }, unsafe {
+            File::from_raw_fd(pipefd[1])
+        }))
     }
 
     #[tokio::main]
-    async fn runtime(&self, socket_path: &Path) -> Result<(), Error> {
+    async fn runtime(&self, socket_path: &Path, fdwr: Option<File>) -> Result<(), Error> {
         let logger = self.config.logger();
         logger.trace("server: runtime started, installing SIGTERM handler");
         let mut sig =
@@ -94,6 +146,12 @@ impl Server {
         let mut counter = 0u64;
         let storage: Mutex<HashMap<u64, (sync::mpsc::Sender<()>, task::JoinHandle<u64>)>> =
             Mutex::new(HashMap::new());
+        if let Some(fdwr) = fdwr {
+            logger.trace("server: writing pipe");
+            let mut fdwr = fdwr;
+            let _ = fdwr.write_all(&[0x00]);
+        }
+        logger.trace("server: starting main loop");
         loop {
             select! {
                 _ = sig.recv() => {
@@ -614,14 +672,24 @@ impl Server {
         Ok(cid)
     }
 
-    fn daemonize(&self) -> Result<(), Error> {
+    fn daemonize(&self, fdrd: Option<File>) -> Result<(), Error> {
         let out = File::create("/dev/null").map_err(|_| {
             Error::new_with_message(ErrorKind::ServerCreationFailure, "cannot open /dev/null")
         })?;
         let err = File::create("/dev/null").map_err(|_| {
             Error::new_with_message(ErrorKind::ServerCreationFailure, "cannot open /dev/null")
         })?;
-        let daemonize = Daemonize::new().umask(0o077).stdout(out).stderr(err);
+        let daemonize = Daemonize::new()
+            .umask(0o077)
+            .stdout(out)
+            .stderr(err)
+            .exit_action(move || {
+                if let Some(fdrd) = fdrd {
+                    let mut fdrd = fdrd;
+                    let mut buf = [0u8; 1];
+                    let _ = fdrd.read(&mut buf);
+                }
+            });
         match daemonize.start() {
             Ok(_) => Ok(()),
             Err(_) => Err(Error::new_with_message(

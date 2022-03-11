@@ -6,11 +6,13 @@ extern crate libc;
 extern crate remote_control_protocol;
 extern crate tokio;
 
-use crate::encoding::{escape, osstr};
+use crate::encoding::{escape, osstr, path};
 use bytes::Bytes;
 use clap::{App, Arg, ArgMatches};
 use remote_control_protocol::config::Logger;
+use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -60,14 +62,85 @@ fn runtime() -> tokio::runtime::Runtime {
         .unwrap()
 }
 
+fn find_server_socket(socket: Option<&OsStr>, config: Arc<config::Config>) -> Option<UnixStream> {
+    let logger = config.logger();
+    if let Some(socket) = socket {
+        trace!(logger, "trying specified socket {}", escape(osstr(socket)));
+        return match UnixStream::connect(&socket) {
+            Ok(sock) => Some(sock),
+            Err(_) => None,
+        };
+    }
+    for p in config.sockets() {
+        trace!(logger, "trying socket {}", escape(path(&*p)));
+        match UnixStream::connect(&p) {
+            Ok(sock) => {
+                trace!(
+                    logger,
+                    "successfully connected to socket {}",
+                    escape(path(&*p))
+                );
+                return Some(sock);
+            }
+            Err(e) => {
+                trace!(
+                    logger,
+                    "failed to connect to socket {}: {}",
+                    escape(path(&*p)),
+                    e
+                );
+            }
+        }
+    }
+    None
+}
+
+fn autospawn_server(config: Arc<config::Config>) -> Result<(), Error> {
+    let logger = config.logger();
+    match config.is_root() {
+        Ok(true) => {
+            trace!(logger, "autospawning server");
+            let server = server::Server::new(config);
+            if let Err(e) = server.run_forked() {
+                error!(logger, "failed to autospawn server: {}", e);
+                Err(e)
+            } else {
+                Ok(())
+            }
+        }
+        Ok(false) => {
+            trace!(logger, "not root, not autospawning server");
+            Err(Error::new(ErrorKind::NotRootMachine))
+        }
+        Err(e) => {
+            error!(
+                logger,
+                "unable to determine whether we are the root instance: {}", e
+            );
+            Err(e)
+        }
+    }
+}
+
+fn find_or_autostart_server(
+    socket: Option<&OsStr>,
+    config: Arc<config::Config>,
+) -> Result<UnixStream, Error> {
+    if let Some(socket) = find_server_socket(socket, config.clone()) {
+        return Ok(socket);
+    }
+    autospawn_server(config.clone())?;
+    match find_server_socket(socket, config) {
+        Some(s) => Ok(s),
+        None => Err(Error::new(ErrorKind::SocketConnectionFailure)),
+    }
+}
+
 fn dispatch_server(
     config: Arc<config::Config>,
     _main: &ArgMatches,
-    m: &ArgMatches,
+    _m: &ArgMatches,
 ) -> Result<(), Error> {
-    if m.is_present("no-detach") {
-        config.set_detach(false);
-    }
     let logger = config.logger();
     logger.trace("Starting server");
     let server = server::Server::new(config);
@@ -79,14 +152,17 @@ fn dispatch_query_test_connection(
     main: &ArgMatches,
     _m: &ArgMatches,
 ) -> Result<(), Error> {
-    let socket = main.value_of_os("socket").unwrap();
+    let socket = find_or_autostart_server(main.value_of_os("socket"), config.clone())?;
     let logger = config.logger();
     let client = client::Client::new(config);
     logger.trace("Starting runtime");
     let runtime = runtime();
     runtime.block_on(async {
-        logger.message(&format!("Testing socket {}", escape(osstr(socket))));
-        let conn = match client.connect(socket, true).await {
+        logger.message(&format!(
+            "Testing socket {}",
+            escape(path(socket.peer_addr().unwrap().as_pathname().unwrap()))
+        ));
+        let conn = match client.connect_to_socket(socket, true).await {
             Ok(conn) => {
                 logger.message("Connection: ok");
                 conn
@@ -161,13 +237,16 @@ fn dispatch_run(
         None => return Err(Error::new(ErrorKind::MissingArguments)),
     };
     let logger = config.logger();
+    let socket = find_or_autostart_server(main.value_of_os("socket"), config.clone())?;
     let client = client::Client::new(config);
-    let socket = main.value_of_os("socket").unwrap();
     logger.trace("Starting runtime");
     let runtime = runtime();
     let res = runtime.block_on(async move {
-        logger.debug(&format!("Connecting to socket {}", escape(osstr(socket))));
-        let conn = client.connect(socket, false).await?;
+        logger.debug(&format!(
+            "Connecting to socket {}",
+            escape(path(socket.peer_addr().unwrap().as_pathname().unwrap()))
+        ));
+        let conn = client.connect_to_socket(socket, false).await?;
         let _ = conn.negotiate_default_version().await;
         let _ = conn.auth_external().await;
         conn.run_command(
@@ -195,12 +274,9 @@ fn dispatch() -> Result<(), Error> {
                 .short("q")
                 .multiple(true),
         )
-        .arg(
-            Arg::with_name("socket")
-                .long("socket")
-                .takes_value(true)
-        )
-        .subcommand(App::new("server").arg(Arg::with_name("no-detach").long("no-detach")))
+        .arg(Arg::with_name("socket").long("socket").takes_value(true))
+        .arg(Arg::with_name("no-detach").long("no-detach"))
+        .subcommand(App::new("server"))
         .subcommand(App::new("query").subcommand(App::new("test-connection")))
         .subcommand(App::new("clipboard"))
         .subcommand(App::new("run").arg(Arg::with_name("arg").multiple(true)))
@@ -208,6 +284,9 @@ fn dispatch() -> Result<(), Error> {
     let verbosity =
         matches.occurrences_of("verbose") as i32 - matches.occurrences_of("quiet") as i32;
     let config = config(verbosity)?;
+    if matches.is_present("no-detach") {
+        config.set_detach(false);
+    }
     match matches.subcommand() {
         ("server", Some(m)) => dispatch_server(config, &matches, m),
         ("query", Some(m)) => dispatch_query(config, &matches, m),

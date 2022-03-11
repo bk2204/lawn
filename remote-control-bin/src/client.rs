@@ -59,19 +59,24 @@ impl Default for FDStatus {
 
 pub struct Connection {
     config: Arc<Config>,
-    path: PathBuf,
+    path: Option<PathBuf>,
     handler: Arc<Option<ProtocolHandler<OwnedReadHalf, OwnedWriteHalf>>>,
 }
 
 impl Connection {
-    pub fn new(config: Arc<Config>, path: &Path, socket: UnixStream, synchronous: bool) -> Self {
+    pub fn new(
+        config: Arc<Config>,
+        path: Option<&Path>,
+        socket: UnixStream,
+        synchronous: bool,
+    ) -> Self {
         let logger = config.logger();
         let cfg = Arc::new(remote_control_protocol::config::Config::new(false, logger));
         let (sread, swrite) = socket.into_split();
         let handler = Arc::new(Some(ProtocolHandler::new(cfg, sread, swrite, synchronous)));
         Self {
             config,
-            path: path.into(),
+            path: path.map(|p| p.into()),
             handler,
         }
     }
@@ -656,6 +661,27 @@ impl Client {
         Self { config }
     }
 
+    pub async fn connect_to_socket(
+        &self,
+        stream: std::os::unix::net::UnixStream,
+        synchronous: bool,
+    ) -> Result<Connection, Error> {
+        match UnixStream::from_std(stream) {
+            Ok(stream) => Ok(Connection::new(
+                self.config.clone(),
+                None,
+                stream,
+                synchronous,
+            )),
+            Err(_) => {
+                self.config
+                    .logger()
+                    .error("unable to connect to existing socket");
+                Err(Error::new(ErrorKind::SocketConnectionFailure))
+            }
+        }
+    }
+
     pub async fn connect<I: AsRef<Path>>(
         &self,
         location: I,
@@ -664,7 +690,7 @@ impl Client {
         match UnixStream::connect(location.as_ref()).await {
             Ok(stream) => Ok(Connection::new(
                 self.config.clone(),
-                location.as_ref(),
+                Some(location.as_ref()),
                 stream,
                 synchronous,
             )),

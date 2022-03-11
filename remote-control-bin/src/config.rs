@@ -12,6 +12,7 @@ use std::fs;
 use std::io;
 use std::io::Write;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::fs::FileTypeExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -177,16 +178,26 @@ impl Config {
         Some(commands.get(&name)?.clone())
     }
 
-    fn find_runtime_dir<E: FnMut(&str) -> Option<OsString>>(
+    pub fn sockets(&self) -> Vec<PathBuf> {
+        let logger = self.logger.clone();
+        Self::find_sockets(&logger, |s| {
+            self.env_vars
+                .get(&Bytes::copy_from_slice(s.as_bytes()))
+                .map(|x| OsStr::from_bytes(x).into())
+        })
+    }
+
+    fn find_runtime_dirs<E: FnMut(&str) -> Option<OsString>>(
         logger: &Logger,
         mut env: E,
-    ) -> Option<PathBuf> {
+    ) -> Vec<PathBuf> {
+        let mut v = vec![];
         logger.trace("runtime_dir: looking for XDG_RUNTIME_DIR");
         if let Some(dir) = env("XDG_RUNTIME_DIR") {
             let mut buf: PathBuf = dir.into();
             buf.push("remote-control");
             logger.trace(&format!("runtime_dir: found, using {:?}", buf));
-            return Some(buf);
+            v.push(buf);
         }
         let uid = unsafe { libc::getuid() };
         let path = format!("/run/user/{}", uid);
@@ -195,7 +206,7 @@ impl Config {
             let mut buf: PathBuf = path.into();
             buf.push("remote-control");
             logger.trace(&format!("runtime_dir: found, using {:?}", buf));
-            return Some(buf);
+            v.push(buf);
         }
         logger.trace("runtime_dir: looking for HOME");
         if let Some(dir) = env("HOME") {
@@ -204,10 +215,42 @@ impl Config {
             buf.push("remote-control");
             buf.push("runtime");
             logger.trace(&format!("runtime_dir: found, using {:?}", buf));
-            return Some(buf);
+            v.push(buf);
         }
-        logger.trace("runtime_dir: unable to find runtime directory");
-        None
+        v
+    }
+
+    fn find_sockets<E: FnMut(&str) -> Option<OsString>>(logger: &Logger, env: E) -> Vec<PathBuf> {
+        let dirs = Self::find_runtime_dirs(logger, env);
+        let mut v = vec![];
+        for dir in dirs {
+            if let Ok(iter) = std::fs::read_dir(&dir) {
+                v.extend(iter.filter_map(|f| {
+                    let f = match f {
+                        Ok(f) => f,
+                        Err(_) => return None,
+                    };
+                    match f.file_type() {
+                        Ok(m) if m.is_socket() => Some(f.path()),
+                        _ => None,
+                    }
+                }));
+            }
+        }
+        v
+    }
+
+    fn find_runtime_dir<E: FnMut(&str) -> Option<OsString>>(
+        logger: &Logger,
+        env: E,
+    ) -> Option<PathBuf> {
+        match Self::find_runtime_dirs(logger, env).get(0) {
+            Some(s) => Some(s.clone()),
+            None => {
+                trace!(logger, "runtime_dir: unable to find runtime directory");
+                None
+            }
+        }
     }
 
     fn create_runtime_dir<E: FnMut(&str) -> Option<OsString>>(
