@@ -193,7 +193,13 @@ impl Server {
                         let mut g = storage.lock().unwrap();
                         for (id, (_, handle)) in g.iter_mut() {
                             let mut ready = false;
-                            async { select!{ _ = handle => { ready = true } }}.await;
+                            select!{
+                                val = tokio::time::timeout(Duration::from_millis(5), handle) => {
+                                    if val.is_ok() {
+                                        ready = true;
+                                    }
+                                }
+                            }
                             if ready {
                                 logger.trace(&format!("server: pruning idle handler {}", id));
                                 to_delete.insert(*id);
