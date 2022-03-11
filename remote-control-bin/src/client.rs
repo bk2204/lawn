@@ -31,13 +31,27 @@ use tokio::time;
 #[derive(Clone)]
 pub struct FDStatus {
     open: bool,
+    last: bool,
     data: Option<Vec<u8>>,
+}
+
+impl FDStatus {
+    /// Returns true if read_command_fd should be called again.
+    fn needs_read(&self) -> bool {
+        self.open && self.last
+    }
+
+    /// Returns true if write_command_fd should be called again.
+    fn needs_write(&self) -> bool {
+        self.open && self.last
+    }
 }
 
 impl Default for FDStatus {
     fn default() -> FDStatus {
         FDStatus {
             open: true,
+            last: false,
             data: None,
         }
     }
@@ -190,6 +204,19 @@ impl Connection {
             select! {
                 res = finalrx.recv() => {
                     trace!(logger, "processing final message");
+                    fd_status[0] = self.read_command_fd(id, 0, &fd_status[0], &mut stdin).await;
+                    fd_status[1] = self.write_command_fd(id, 1, &fd_status[1], &mut stdout).await;
+                    fd_status[2] = self.write_command_fd(id, 2, &fd_status[2], &mut stderr).await;
+
+                    while fd_status[0].needs_read() {
+                        fd_status[0] = self.read_command_fd(id, 0, &fd_status[0], &mut stdin).await;
+                    }
+                    while fd_status[1].needs_write() {
+                        fd_status[1] = self.write_command_fd(id, 1, &fd_status[1], &mut stdout).await;
+                    }
+                    while fd_status[2].needs_write() {
+                        fd_status[2] = self.write_command_fd(id, 2, &fd_status[2], &mut stderr).await;
+                    }
                     let _ = self.delete_channel(id).await;
                     trace!(logger, "returning value");
                     return res.unwrap();
@@ -347,12 +374,14 @@ impl Connection {
                                         std::io::ErrorKind::BrokenPipe => {
                                             return FDStatus {
                                                 open: false,
+                                                last: false,
                                                 data: None,
                                             }
                                         }
                                         std::io::ErrorKind::WouldBlock => {
                                             return FDStatus {
                                                 open: true,
+                                                last: false,
                                                 data: None,
                                             }
                                         }
@@ -363,6 +392,7 @@ impl Connection {
                         }
                         return FDStatus {
                             open: true,
+                            last: false,
                             data: None,
                         };
                     }
@@ -379,10 +409,12 @@ impl Connection {
         match io.write(data).await {
             Ok(n) if n == data.len() => FDStatus {
                 open: true,
+                last: true,
                 data: None,
             },
             Ok(n) => FDStatus {
                 open: true,
+                last: true,
                 data: Some(data[n..].into()),
             },
             Err(e) => match e.kind() {
@@ -390,11 +422,13 @@ impl Connection {
                     self.detach_channel_selector(id, selector).await;
                     FDStatus {
                         open: false,
+                        last: false,
                         data: Some(data.into()),
                     }
                 }
                 std::io::ErrorKind::WouldBlock => FDStatus {
                     open: true,
+                    last: false,
                     data: Some(data.into()),
                 },
                 _ => st.clone(),
@@ -432,7 +466,7 @@ impl Connection {
                             Ok(0) => {
                                 trace!(logger, "channel {}: {}: eof on read", id, selector);
                                 self.detach_channel_selector(id, selector).await;
-                                return FDStatus{open: false, data: None};
+                                return FDStatus{open: false, last: false, data: None};
                             },
                             Ok(n) => &buf[0..n],
                             Err(_) => return st.clone(),
@@ -463,6 +497,7 @@ impl Connection {
                 );
                 FDStatus {
                     open: true,
+                    last: true,
                     data: None,
                 }
             }
@@ -476,6 +511,7 @@ impl Connection {
                 );
                 FDStatus {
                     open: true,
+                    last: true,
                     data: Some(data[(x as usize)..].to_vec()),
                 }
             }
@@ -496,12 +532,14 @@ impl Connection {
                                 std::io::ErrorKind::BrokenPipe => {
                                     return FDStatus {
                                         open: false,
+                                        last: false,
                                         data: None,
                                     }
                                 }
                                 std::io::ErrorKind::WouldBlock => {
                                     return FDStatus {
                                         open: true,
+                                        last: false,
                                         data: Some(data.to_vec()),
                                     }
                                 }
@@ -512,6 +550,7 @@ impl Connection {
                 }
                 FDStatus {
                     open: true,
+                    last: false,
                     data: None,
                 }
             }
