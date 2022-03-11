@@ -60,7 +60,11 @@ fn runtime() -> tokio::runtime::Runtime {
         .unwrap()
 }
 
-fn dispatch_server(config: Arc<config::Config>, m: &ArgMatches) -> Result<(), Error> {
+fn dispatch_server(
+    config: Arc<config::Config>,
+    _main: &ArgMatches,
+    m: &ArgMatches,
+) -> Result<(), Error> {
     if m.is_present("no-detach") {
         config.set_detach(false);
     }
@@ -72,9 +76,10 @@ fn dispatch_server(config: Arc<config::Config>, m: &ArgMatches) -> Result<(), Er
 
 fn dispatch_query_test_connection(
     config: Arc<config::Config>,
-    m: &ArgMatches,
+    main: &ArgMatches,
+    _m: &ArgMatches,
 ) -> Result<(), Error> {
-    let socket = m.value_of_os("socket").unwrap();
+    let socket = main.value_of_os("socket").unwrap();
     let logger = config.logger();
     let client = client::Client::new(config);
     logger.trace("Starting runtime");
@@ -127,25 +132,37 @@ fn dispatch_query_test_connection(
     })
 }
 
-fn dispatch_query(config: Arc<config::Config>, m: &ArgMatches) -> Result<(), Error> {
+fn dispatch_query(
+    config: Arc<config::Config>,
+    main: &ArgMatches,
+    m: &ArgMatches,
+) -> Result<(), Error> {
     match m.subcommand() {
-        ("test-connection", Some(m)) => dispatch_query_test_connection(config, m),
+        ("test-connection", Some(m)) => dispatch_query_test_connection(config, main, m),
         _ => Err(Error::new(ErrorKind::Unimplemented)),
     }
 }
 
-fn dispatch_clipboard(_config: Arc<config::Config>, _m: &ArgMatches) -> Result<(), Error> {
+fn dispatch_clipboard(
+    _config: Arc<config::Config>,
+    _main: &ArgMatches,
+    _m: &ArgMatches,
+) -> Result<(), Error> {
     Err(Error::new(ErrorKind::Unimplemented))
 }
 
-fn dispatch_run(config: Arc<config::Config>, m: &ArgMatches) -> Result<(), Error> {
+fn dispatch_run(
+    config: Arc<config::Config>,
+    main: &ArgMatches,
+    m: &ArgMatches,
+) -> Result<(), Error> {
     let args: Vec<Bytes> = match m.values_of_os("arg") {
         Some(args) => args.map(|x| x.as_bytes().to_vec().into()).collect(),
         None => return Err(Error::new(ErrorKind::MissingArguments)),
     };
     let logger = config.logger();
     let client = client::Client::new(config);
-    let socket = m.value_of_os("socket").unwrap();
+    let socket = main.value_of_os("socket").unwrap();
     logger.trace("Starting runtime");
     let runtime = runtime();
     let res = runtime.block_on(async move {
@@ -178,37 +195,24 @@ fn dispatch() -> Result<(), Error> {
                 .short("q")
                 .multiple(true),
         )
+        .arg(
+            Arg::with_name("socket")
+                .long("socket")
+                .takes_value(true)
+        )
         .subcommand(App::new("server").arg(Arg::with_name("no-detach").long("no-detach")))
-        .subcommand(
-            App::new("query").subcommand(
-                App::new("test-connection").arg(
-                    Arg::with_name("socket")
-                        .long("socket")
-                        .takes_value(true)
-                        .required(true),
-                ),
-            ),
-        )
+        .subcommand(App::new("query").subcommand(App::new("test-connection")))
         .subcommand(App::new("clipboard"))
-        .subcommand(
-            App::new("run")
-                .arg(Arg::with_name("arg").multiple(true))
-                .arg(
-                    Arg::with_name("socket")
-                        .long("socket")
-                        .takes_value(true)
-                        .required(true),
-                ),
-        )
+        .subcommand(App::new("run").arg(Arg::with_name("arg").multiple(true)))
         .get_matches();
     let verbosity =
         matches.occurrences_of("verbose") as i32 - matches.occurrences_of("quiet") as i32;
     let config = config(verbosity)?;
     match matches.subcommand() {
-        ("server", Some(m)) => dispatch_server(config, m),
-        ("query", Some(m)) => dispatch_query(config, m),
-        ("clipboard", Some(m)) => dispatch_clipboard(config, m),
-        ("run", Some(m)) => dispatch_run(config, m),
+        ("server", Some(m)) => dispatch_server(config, &matches, m),
+        ("query", Some(m)) => dispatch_query(config, &matches, m),
+        ("clipboard", Some(m)) => dispatch_clipboard(config, &matches, m),
+        ("run", Some(m)) => dispatch_run(config, &matches, m),
         _ => Err(Error::new(ErrorKind::Unimplemented)),
     }
 }
