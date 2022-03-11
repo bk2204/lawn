@@ -222,8 +222,8 @@ impl Config {
         if let Some(dir) = env("HOME") {
             let mut buf: PathBuf = dir.into();
             buf.push(".local");
+            buf.push("run");
             buf.push("remote-control");
-            buf.push("runtime");
             logger.trace(&format!("runtime_dir: found, using {:?}", buf));
             v.push(buf);
         }
