@@ -29,6 +29,18 @@ macro_rules! trace {
     }
 }
 
+#[macro_export]
+macro_rules! error {
+    ($logger:expr, $($args : tt) *) => {
+        {
+            use remote_control_protocol::config::{Logger, LogLevel};
+            if $logger.level() >= LogLevel::Error {
+                $logger.error(&format!($($args)*));
+            }
+        }
+    }
+}
+
 struct ConfigData {
     detach: bool,
     runtime_dir: PathBuf,
