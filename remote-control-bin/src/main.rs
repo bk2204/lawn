@@ -231,10 +231,13 @@ fn dispatch_query_test_connection(
         match conn.auth_external().await {
             Ok(_) => {
                 logger.message("Authenticate EXTERNAL: ok");
+                Ok(())
             }
-            Err(e) => logger.message(&format!("Authenticate EXTERNAL: FAILED: {}", e)),
+            Err(e) => {
+                logger.message(&format!("Authenticate EXTERNAL: FAILED: {}", e));
+                Err(e)
+            }
         }
-        Ok(())
     })
 }
 
