@@ -290,7 +290,7 @@ fn dispatch_run(
     std::process::exit(res);
 }
 
-fn dispatch() -> Result<(), Error> {
+fn dispatch(verbosity: &mut i32) -> Result<(), Error> {
     let matches = App::new("remctrl")
         .arg(
             Arg::with_name("verbose")
@@ -311,9 +311,8 @@ fn dispatch() -> Result<(), Error> {
         .subcommand(App::new("clipboard"))
         .subcommand(App::new("run").arg(Arg::with_name("arg").multiple(true)))
         .get_matches();
-    let verbosity =
-        matches.occurrences_of("verbose") as i32 - matches.occurrences_of("quiet") as i32;
-    let config = config(verbosity)?;
+    *verbosity = matches.occurrences_of("verbose") as i32 - matches.occurrences_of("quiet") as i32;
+    let config = config(*verbosity)?;
     if matches.is_present("no-detach") {
         config.set_detach(false);
     }
@@ -327,10 +326,13 @@ fn dispatch() -> Result<(), Error> {
 }
 
 fn main() {
-    match dispatch() {
+    let mut verbosity = 0;
+    match dispatch(&mut verbosity) {
         Ok(()) => (),
         Err(e) => {
-            eprintln!("error: {}", e);
+            if verbosity > -2 {
+                eprintln!("error: {}", e);
+            }
             std::process::exit(e.into());
         }
     }
