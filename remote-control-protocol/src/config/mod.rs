@@ -54,6 +54,7 @@ impl Config {
 
 #[derive(Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]
 pub enum LogLevel {
+    Dump,
     Trace,
     Debug,
     Info,

@@ -1,4 +1,5 @@
 extern crate bytes;
+extern crate hex;
 #[macro_use]
 extern crate num_derive;
 extern crate num_traits;

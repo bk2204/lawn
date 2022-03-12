@@ -17,6 +17,15 @@ use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::Mutex;
 use tokio::time;
 
+macro_rules! dump_packet {
+    ($logger:expr, $arg:expr) => {{
+        use crate::config::LogLevel;
+        if $logger.level() >= LogLevel::Dump {
+            $logger.trace(&format!("packet: {}", hex::encode($arg)));
+        }
+    }};
+}
+
 #[derive(Debug)]
 pub enum Error {
     IOError(io::Error),
@@ -196,6 +205,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
             u32::from_le_bytes(v[4..8].try_into().unwrap()),
             u32::from_le_bytes(v[8..12].try_into().unwrap())
         ));
+        dump_packet!(logger, &v);
         match self.serializer.deserialize_data(&self.config, &v)? {
             protocol::Data::Message(m) => {
                 logger.trace(&format!(
@@ -412,6 +422,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
             u32::from_le_bytes(data[4..8].try_into().unwrap()),
             u32::from_le_bytes(data[8..12].try_into().unwrap())
         ));
+        dump_packet!(logger, &data);
         let (sender, mut receiver) = channel(1);
         let max_messages = self.config.max_messages_in_flight();
         let reject = {

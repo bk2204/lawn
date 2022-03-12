@@ -272,6 +272,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags",
  "bytes",
+ "hex",
  "num-derive",
  "num-traits",
  "remote-control-errno",
