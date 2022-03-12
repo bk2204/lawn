@@ -95,9 +95,24 @@ impl Template {
             Ok(self.has_entry(&id[6..], context.senv))
         } else if id.starts_with(b"cenv?:") {
             Ok(self.has_entry(&id[6..], context.cenv))
+        } else if id.starts_with(b"sq:") {
+            Ok(self.single_quote(&self.expand_text_pattern(&id[3..], context)?))
         } else {
             Err(Error::UnknownPattern(id.to_vec().into()))
         }
+    }
+
+    fn single_quote(&self, text: &[u8]) -> Bytes {
+        let mut s: Vec<u8> = Vec::with_capacity(text.len() + 5);
+        s.push(b'\'');
+        for c in text.iter() {
+            match c {
+                b'\'' => s.extend(b"'\\''"),
+                _ => s.push(*c),
+            }
+        }
+        s.push(b'\'');
+        s.into()
     }
 
     fn expand_env(&self, id: &[u8], map: Option<&BTreeMap<Bytes, Bytes>>) -> Bytes {
@@ -156,6 +171,7 @@ mod tests {
         let cenv = [
             ("PATH", "/bin:/usr/bin:/usr/games"),
             ("HOME", "/somewhere-else"),
+            ("TEXT", "This ' text has a '\\'' lot of weird characters"),
         ]
         .iter()
         .cloned()
@@ -180,6 +196,11 @@ mod tests {
             (
                 "Do I have a random number? '%(cenv?:RANDOM)'",
                 "Do I have a random number? 'false'",
+            ),
+            // This testcase was produced with git rev-parse --sq-quote.
+            (
+                "Single quoting? %(sq:cenv:TEXT)",
+                "Single quoting? 'This '\\'' text has a '\\''\\'\\'''\\'' lot of weird characters'",
             ),
         ];
         for (input, output) in cases {
