@@ -604,7 +604,7 @@ impl Server {
             Some(cmd) => cmd,
             None => return Err(ResponseCode::NotFound.into()),
         };
-        let ctx = config.template_context(None, Some(args));
+        let ctx = config.template_context(m.env.as_ref(), Some(args));
         let logger = state.logger();
         let channels = state.channels();
         let cmd = match config::Command::new(&cfgcmd, &ctx) {

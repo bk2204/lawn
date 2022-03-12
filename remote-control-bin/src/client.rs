@@ -618,11 +618,12 @@ impl Connection {
             Some(handler) => handler,
             None => return Err(Error::new(ErrorKind::NotConnected)),
         };
+        let config = self.config.clone();
         let req = CreateChannelRequest {
             kind: (b"command" as &'static [u8]).into(),
             kind_args: None,
             args: Some(args.into()),
-            env: None,
+            env: Some(config.env_vars().clone()),
             meta: None,
             selectors: vec![0, 1, 2],
         };

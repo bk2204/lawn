@@ -151,6 +151,10 @@ impl Config {
         g.runtime_dir.clone()
     }
 
+    pub fn env_vars(&self) -> &BTreeMap<Bytes, Bytes> {
+        &self.env_vars
+    }
+
     pub fn autoprune_sockets(&self) -> bool {
         let g = self.data.read().unwrap();
         g.config_file
