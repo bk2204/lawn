@@ -1,5 +1,5 @@
 [package]
-name = "lawn-errno"
+name = "lawn-constants"
 version = "0.1.0"
 edition = "2018"
 

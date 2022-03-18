@@ -3,7 +3,7 @@ extern crate hex;
 #[macro_use]
 extern crate num_derive;
 extern crate num_traits;
-extern crate lawn_errno;
+extern crate lawn_constants;
 extern crate serde;
 extern crate serde_cbor;
 #[cfg(feature = "async")]

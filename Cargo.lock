@@ -136,7 +136,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "lawn-errno"
+name = "lawn-constants"
 version = "0.1.0"
 dependencies = [
  "libc",
@@ -151,7 +151,7 @@ dependencies = [
  "bitflags",
  "bytes",
  "hex",
- "lawn-errno",
+ "lawn-constants",
  "num-derive",
  "num-traits",
  "serde",
