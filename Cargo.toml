@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "remote-control-bin",
-    "remote-control-errno",
-    "remote-control-protocol",
+    "lawn-bin",
+    "lawn-errno",
+    "lawn-protocol",
 ]

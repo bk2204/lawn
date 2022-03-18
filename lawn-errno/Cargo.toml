@@ -1,5 +1,5 @@
 [package]
-name = "remote-control-errno"
+name = "lawn-errno"
 version = "0.1.0"
 edition = "2018"
 

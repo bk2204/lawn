@@ -1,4 +1,4 @@
-use remote_control_protocol::handler;
+use lawn_protocol::handler;
 use std::fmt;
 use std::fmt::Display;
 

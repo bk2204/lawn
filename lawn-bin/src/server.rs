@@ -7,11 +7,11 @@ use crate::unix;
 use bytes::Bytes;
 use daemonize::Daemonize;
 use num_traits::cast::FromPrimitive;
-use remote_control_protocol::config::Logger as LoggerTrait;
-use remote_control_protocol::handler;
-use remote_control_protocol::handler::ProtocolHandler;
-use remote_control_protocol::protocol;
-use remote_control_protocol::protocol::{Message, MessageKind, ResponseCode};
+use lawn_protocol::config::Logger as LoggerTrait;
+use lawn_protocol::handler;
+use lawn_protocol::handler::ProtocolHandler;
+use lawn_protocol::protocol;
+use lawn_protocol::protocol::{Message, MessageKind, ResponseCode};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::convert::TryInto;
 use std::fs::File;
@@ -224,7 +224,7 @@ impl Server {
         conn: net::UnixStream,
     ) {
         let mut rx = rx;
-        let cfg = Arc::new(remote_control_protocol::config::Config::new(
+        let cfg = Arc::new(lawn_protocol::config::Config::new(
             true,
             config.logger(),
         ));

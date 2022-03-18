@@ -114,7 +114,7 @@ impl Error {
 
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Error {
-        let lerr: remote_control_errno::Error = err.into();
+        let lerr: lawn_errno::Error = err.into();
         Error {
             code: ResponseCode::Errno,
             body: Some(ErrorBody::Errno(Errno { errno: lerr as u32 })),
@@ -133,7 +133,7 @@ impl TryInto<io::Error> for Error {
     fn try_into(self) -> Result<io::Error, Self::Error> {
         if self.code == ResponseCode::Errno {
             if let Some(ErrorBody::Errno(Errno { errno })) = self.body {
-                if let Some(e) = remote_control_errno::Error::from_u32(errno) {
+                if let Some(e) = lawn_errno::Error::from_u32(errno) {
                     return Ok(e.into());
                 }
             }

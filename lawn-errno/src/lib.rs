@@ -6,7 +6,7 @@ use std::io;
 
 /// Represents a Linux error code.
 ///
-/// These error codes are used in the 9P2000.L protocol, and we also use them in the remote-control
+/// These error codes are used in the 9P2000.L protocol, and we also use them in the lawn
 /// protocol to provide standard error codes.  They have the meanings specified by POSIX, or by
 /// Linux in case of non-POSIX codes.
 #[derive(FromPrimitive)]

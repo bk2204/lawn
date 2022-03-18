@@ -2,8 +2,8 @@
 use crate::error::{Error, ErrorKind};
 use crate::template::{Template, TemplateContext};
 use bytes::{Bytes, BytesMut};
-use remote_control_protocol::config::Logger as LoggerTrait;
-use remote_control_protocol::config::{LogFormat, LogLevel};
+use lawn_protocol::config::Logger as LoggerTrait;
+use lawn_protocol::config::{LogFormat, LogLevel};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsStr;
@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex, RwLock};
 macro_rules! trace {
     ($logger:expr, $($args : tt) *) => {
         {
-            use remote_control_protocol::config::{Logger, LogLevel};
+            use lawn_protocol::config::{Logger, LogLevel};
             if $logger.level() >= LogLevel::Trace {
                 $logger.trace(&format!($($args)*));
             }
@@ -34,7 +34,7 @@ macro_rules! trace {
 macro_rules! error {
     ($logger:expr, $($args : tt) *) => {
         {
-            use remote_control_protocol::config::{Logger, LogLevel};
+            use lawn_protocol::config::{Logger, LogLevel};
             if $logger.level() >= LogLevel::Error {
                 $logger.error(&format!($($args)*));
             }
@@ -209,7 +209,7 @@ impl Config {
         logger.trace("runtime_dir: looking for XDG_RUNTIME_DIR");
         if let Some(dir) = env("XDG_RUNTIME_DIR") {
             let mut buf: PathBuf = dir.into();
-            buf.push("remote-control");
+            buf.push("lawn");
             logger.trace(&format!("runtime_dir: found, using {:?}", buf));
             v.push(buf);
         }
@@ -218,7 +218,7 @@ impl Config {
         logger.trace(&format!("runtime_dir: looking for {}", path));
         if fs::metadata(&path).is_ok() {
             let mut buf: PathBuf = path.into();
-            buf.push("remote-control");
+            buf.push("lawn");
             logger.trace(&format!("runtime_dir: found, using {:?}", buf));
             v.push(buf);
         }
@@ -227,7 +227,7 @@ impl Config {
             let mut buf: PathBuf = dir.into();
             buf.push(".local");
             buf.push("run");
-            buf.push("remote-control");
+            buf.push("lawn");
             logger.trace(&format!("runtime_dir: found, using {:?}", buf));
             v.push(buf);
         }
@@ -350,7 +350,7 @@ impl Logger {
     }
 }
 
-impl remote_control_protocol::config::Logger for Logger {
+impl lawn_protocol::config::Logger for Logger {
     fn level(&self) -> LogLevel {
         self.level
     }

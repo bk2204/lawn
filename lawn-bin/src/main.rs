@@ -3,13 +3,13 @@ extern crate clap;
 extern crate daemonize;
 extern crate hex;
 extern crate libc;
-extern crate remote_control_protocol;
+extern crate lawn_protocol;
 extern crate tokio;
 
 use crate::encoding::{escape, osstr, path};
 use bytes::Bytes;
 use clap::{App, Arg, ArgMatches};
-use remote_control_protocol::config::Logger;
+use lawn_protocol::config::Logger;
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
@@ -40,7 +40,7 @@ fn config(verbosity: i32) -> Result<Arc<config::Config>, Error> {
         });
     let config = config.map(|x| {
         let mut path = x;
-        path.push("remote-control");
+        path.push("lawn");
         path.push("config.yaml");
         path
     });

@@ -118,6 +118,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "lawn-bin"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "clap",
+ "daemonize",
+ "hex",
+ "lawn-protocol",
+ "libc",
+ "num-traits",
+ "serde",
+ "serde_cbor",
+ "serde_yaml",
+ "signal-hook-tokio",
+ "tokio",
+]
+
+[[package]]
+name = "lawn-errno"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "num-derive",
+ "num-traits",
+]
+
+[[package]]
+name = "lawn-protocol"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "bytes",
+ "hex",
+ "lawn-errno",
+ "num-derive",
+ "num-traits",
+ "serde",
+ "serde_cbor",
+ "tokio",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -233,52 +275,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "864d3e96a899863136fc6e99f3d7cae289dafe43bf2c5ac19b70df7210c0a145"
 dependencies = [
  "proc-macro2",
-]
-
-[[package]]
-name = "remote-control-9p"
-version = "0.1.0"
-
-[[package]]
-name = "remote-control-bin"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "clap",
- "daemonize",
- "hex",
- "libc",
- "num-traits",
- "remote-control-protocol",
- "serde",
- "serde_cbor",
- "serde_yaml",
- "signal-hook-tokio",
- "tokio",
-]
-
-[[package]]
-name = "remote-control-errno"
-version = "0.1.0"
-dependencies = [
- "libc",
- "num-derive",
- "num-traits",
-]
-
-[[package]]
-name = "remote-control-protocol"
-version = "0.1.0"
-dependencies = [
- "bitflags",
- "bytes",
- "hex",
- "num-derive",
- "num-traits",
- "remote-control-errno",
- "serde",
- "serde_cbor",
- "tokio",
 ]
 
 [[package]]

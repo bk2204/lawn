@@ -6,10 +6,10 @@ use crate::error::{Error, ErrorKind};
 use crate::trace;
 use bytes::Bytes;
 use num_traits::FromPrimitive;
-use remote_control_protocol::config::Logger;
-use remote_control_protocol::handler::ProtocolHandler;
-use remote_control_protocol::protocol;
-use remote_control_protocol::protocol::{
+use lawn_protocol::config::Logger;
+use lawn_protocol::handler::ProtocolHandler;
+use lawn_protocol::protocol;
+use lawn_protocol::protocol::{
     AuthenticateRequest, AuthenticateResponse, CapabilityResponse, ChannelID,
     ChannelMetadataNotification, ChannelMetadataNotificationKind, ChannelMetadataStatusKind,
     CreateChannelRequest, CreateChannelResponse, DeleteChannelRequest,
@@ -71,7 +71,7 @@ impl Connection {
         synchronous: bool,
     ) -> Self {
         let logger = config.logger();
-        let cfg = Arc::new(remote_control_protocol::config::Config::new(false, logger));
+        let cfg = Arc::new(lawn_protocol::config::Config::new(false, logger));
         let (sread, swrite) = socket.into_split();
         let handler = Arc::new(Some(ProtocolHandler::new(cfg, sread, swrite, synchronous)));
         Self {
