@@ -94,6 +94,7 @@ pub enum ErrorKind {
     Unimplemented,
     ServerCreationFailure,
     SocketConnectionFailure,
+    NoSuchSocket,
     RuntimeDirectoryFailure,
     NotConnected,
     HandlerError,

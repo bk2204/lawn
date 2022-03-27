@@ -11,10 +11,11 @@ use crate::encoding::{escape, osstr, path};
 use bytes::Bytes;
 use clap::{App, Arg, ArgMatches};
 use lawn_protocol::config::Logger;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
 
 mod channel;
@@ -23,6 +24,7 @@ mod config;
 mod encoding;
 mod error;
 mod server;
+mod ssh_proxy;
 mod task;
 mod template;
 mod unix;
@@ -76,6 +78,44 @@ fn find_server_socket(socket: Option<&OsStr>, config: Arc<config::Config>) -> Op
             Ok(sock) => Some(sock),
             Err(_) => None,
         };
+    }
+    if let Some(path) = std::env::var_os("SSH_AUTH_SOCK") {
+        trace!(logger, "trying SSH socket {}", escape(osstr(&*path)));
+        match UnixStream::connect(path) {
+            Ok(sock) => {
+                let logger = logger.clone();
+                let config = config.clone();
+                let res = task::block_on_async(async move {
+                    trace!(logger, "SSH socket: performing client probe");
+                    match ssh_proxy::Proxy::client_probe(config.clone(), sock).await {
+                        Ok(sock) => {
+                            let config = config.clone();
+                            let (sa, sb) = tokio::net::UnixStream::pair().unwrap();
+                            tokio::spawn(async {
+                                let p = ssh_proxy::Proxy::new(
+                                    config,
+                                    None,
+                                    sa,
+                                    tokio::net::UnixStream::from_std(sock).unwrap(),
+                                );
+                                let _ = p.run_client().await;
+                            });
+                            Ok(sb)
+                        }
+                        Err(e) => {
+                            trace!(logger, "failed to connect to SSH socket");
+                            Err(e)
+                        }
+                    }
+                });
+                if let Ok(sock) = res {
+                    return Some(sock.into_std().unwrap());
+                }
+            }
+            Err(e) => {
+                trace!(logger, "SSH socket: failed to connect: {}", e);
+            }
+        }
     }
     let mut wanted = None;
     for p in config.sockets() {
@@ -153,6 +193,21 @@ fn autospawn_server(config: Arc<config::Config>) -> Result<(), Error> {
     }
 }
 
+fn find_vacant_socket(config: Arc<config::Config>, kind: &str) -> Result<PathBuf, Error> {
+    let p = config.runtime_dir();
+    for i in 0..1_000_000 {
+        let mut p = p.clone();
+        p.push(format!("{}-{}.sock", kind, i));
+        if !p.exists() {
+            return Ok(p);
+        }
+    }
+    Err(Error::new_with_message(
+        ErrorKind::ServerCreationFailure,
+        "cannot find any free socket paths",
+    ))
+}
+
 fn find_or_autostart_server(
     socket: Option<&OsStr>,
     config: Arc<config::Config>,
@@ -183,16 +238,21 @@ fn dispatch_query_test_connection(
     main: &ArgMatches,
     _m: &ArgMatches,
 ) -> Result<(), Error> {
-    let socket = find_or_autostart_server(main.value_of_os("socket"), config.clone())?;
     let logger = config.logger();
-    let client = client::Client::new(config);
     logger.trace("Starting runtime");
     let runtime = runtime();
     runtime.block_on(async {
-        logger.message(&format!(
-            "Testing socket {}",
-            escape(path(socket.peer_addr().unwrap().as_pathname().unwrap()))
-        ));
+        let socket = find_or_autostart_server(main.value_of_os("socket"), config.clone())?;
+        let client = client::Client::new(config);
+        match socket.peer_addr() {
+            Ok(addr) => match addr.as_pathname() {
+                Some(p) => logger.message(&format!("Testing socket {}", escape(path(p)))),
+                None => logger.message("Testing anonymous socket"),
+            },
+            Err(_) => {
+                logger.message("Testing SSH socket");
+            }
+        }
         let conn = match client.connect_to_socket(socket, true).await {
             Ok(conn) => {
                 logger.message("Connection: ok");
@@ -253,6 +313,70 @@ fn dispatch_query(
     }
 }
 
+fn dispatch_proxy(
+    config: Arc<config::Config>,
+    main: &ArgMatches,
+    m: &ArgMatches,
+) -> Result<(), Error> {
+    let args: Vec<OsString> = match m.values_of_os("arg") {
+        Some(args) => args.map(|x| x.to_owned()).collect(),
+        _ => return Err(Error::new(ErrorKind::MissingArguments)),
+    };
+    if args.is_empty() {
+        return Err(Error::new(ErrorKind::MissingArguments));
+    }
+    let ssh_socket = match std::env::var_os("SSH_AUTH_SOCK") {
+        Some(env) => env,
+        None => {
+            return Err(Error::new_with_message(
+                ErrorKind::NoSuchSocket,
+                "SSH_AUTH_SOCK is not set",
+            ))
+        }
+    };
+    let logger = config.logger();
+    logger.trace("Starting runtime");
+    let runtime = runtime();
+    let res: Result<i32, Error> = runtime.block_on(async move {
+        let socket = find_or_autostart_server(main.value_of_os("socket"), config.clone())?;
+        let addr = socket.peer_addr().unwrap();
+        let ours = addr.as_pathname().unwrap();
+        let multiplex = find_vacant_socket(config.clone(), "ssh")?;
+        trace!(logger, "using {} as SSH socket", escape(path(&*multiplex)));
+        let proxy = ssh_proxy::ProxyListener::new(
+            config,
+            ssh_socket.into(),
+            ours.into(),
+            multiplex.clone(),
+        )
+        .map_err(|_| Error::new(ErrorKind::SocketConnectionFailure))?;
+        tokio::spawn(async move {
+            let _ = proxy.run_server().await;
+        });
+        let ssh_sock = multiplex.clone();
+        let join = tokio::task::spawn_blocking(move || {
+            let res = std::process::Command::new(args[0].clone())
+                .stdin(Stdio::inherit())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .env("SSH_AUTH_SOCK", OsString::from(&ssh_sock))
+                .args(&args[1..])
+                .spawn();
+            match res {
+                Ok(mut child) => match child.wait() {
+                    Ok(st) => st.code().unwrap_or(127),
+                    Err(_) => 127,
+                },
+                Err(_) => 127,
+            }
+        });
+        let res = join.await.unwrap();
+        let _ = std::fs::remove_file(&multiplex);
+        Ok(res)
+    });
+    std::process::exit(res?);
+}
+
 fn dispatch_clipboard(
     _config: Arc<config::Config>,
     _main: &ArgMatches,
@@ -271,15 +395,19 @@ fn dispatch_run(
         None => return Err(Error::new(ErrorKind::MissingArguments)),
     };
     let logger = config.logger();
-    let socket = find_or_autostart_server(main.value_of_os("socket"), config.clone())?;
-    let client = client::Client::new(config);
     logger.trace("Starting runtime");
     let runtime = runtime();
     let res = runtime.block_on(async move {
-        logger.debug(&format!(
-            "Connecting to socket {}",
-            escape(path(socket.peer_addr().unwrap().as_pathname().unwrap()))
-        ));
+        let socket = find_or_autostart_server(main.value_of_os("socket"), config.clone())?;
+        let client = client::Client::new(config);
+        match socket
+            .peer_addr()
+            .ok()
+            .and_then(|x| x.as_pathname().map(|x| x.to_owned()))
+        {
+            Some(name) => logger.debug(&format!("Connecting to socket {}", escape(path(&*name)))),
+            None => logger.debug("Connecting to anonymous socket"),
+        }
         let conn = client.connect_to_socket(socket, false).await?;
         let _ = conn.negotiate_default_version().await;
         let _ = conn.auth_external().await;
@@ -313,6 +441,11 @@ fn dispatch(verbosity: &mut i32) -> Result<(), Error> {
         .subcommand(App::new("server"))
         .subcommand(App::new("query").subcommand(App::new("test-connection")))
         .subcommand(App::new("clipboard"))
+        .subcommand(
+            App::new("proxy")
+                .arg(Arg::with_name("ssh").long("ssh"))
+                .arg(Arg::with_name("arg").multiple(true)),
+        )
         .subcommand(App::new("run").arg(Arg::with_name("arg").multiple(true)))
         .get_matches();
     *verbosity = matches.occurrences_of("verbose") as i32 - matches.occurrences_of("quiet") as i32;
@@ -324,6 +457,7 @@ fn dispatch(verbosity: &mut i32) -> Result<(), Error> {
         ("server", Some(m)) => dispatch_server(config, &matches, m),
         ("query", Some(m)) => dispatch_query(config, &matches, m),
         ("clipboard", Some(m)) => dispatch_clipboard(config, &matches, m),
+        ("proxy", Some(m)) => dispatch_proxy(config, &matches, m),
         ("run", Some(m)) => dispatch_run(config, &matches, m),
         _ => Err(Error::new(ErrorKind::Unimplemented)),
     }
