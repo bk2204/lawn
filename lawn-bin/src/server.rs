@@ -6,12 +6,12 @@ use crate::error::{Error, ErrorKind};
 use crate::unix;
 use bytes::Bytes;
 use daemonize::Daemonize;
-use num_traits::cast::FromPrimitive;
 use lawn_protocol::config::Logger as LoggerTrait;
 use lawn_protocol::handler;
 use lawn_protocol::handler::ProtocolHandler;
 use lawn_protocol::protocol;
 use lawn_protocol::protocol::{Message, MessageKind, ResponseCode};
+use num_traits::cast::FromPrimitive;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::convert::TryInto;
 use std::fs::File;
@@ -224,10 +224,7 @@ impl Server {
         conn: net::UnixStream,
     ) {
         let mut rx = rx;
-        let cfg = Arc::new(lawn_protocol::config::Config::new(
-            true,
-            config.logger(),
-        ));
+        let cfg = Arc::new(lawn_protocol::config::Config::new(true, config.logger()));
         let (chandeathtx, mut chandeathrx) = sync::mpsc::channel(10);
         let (connread, connwrite) = conn.into_split();
         let state = Arc::new(ServerState {

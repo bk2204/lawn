@@ -5,7 +5,6 @@ use crate::encoding::{escape, path};
 use crate::error::{Error, ErrorKind};
 use crate::trace;
 use bytes::Bytes;
-use num_traits::FromPrimitive;
 use lawn_protocol::config::Logger;
 use lawn_protocol::handler::ProtocolHandler;
 use lawn_protocol::protocol;
@@ -17,6 +16,7 @@ use lawn_protocol::protocol::{
     PollChannelResponse, ReadChannelRequest, ReadChannelResponse, VersionRequest,
     WriteChannelRequest, WriteChannelResponse,
 };
+use num_traits::FromPrimitive;
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::TryInto;
 use std::path::{Path, PathBuf};

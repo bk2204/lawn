@@ -2,8 +2,8 @@ extern crate bytes;
 extern crate clap;
 extern crate daemonize;
 extern crate hex;
-extern crate libc;
 extern crate lawn_protocol;
+extern crate libc;
 extern crate tokio;
 
 use crate::encoding::{escape, osstr, path};
