@@ -127,6 +127,7 @@ dependencies = [
  "hex",
  "lawn-protocol",
  "libc",
+ "num-derive",
  "num-traits",
  "serde",
  "serde_cbor",

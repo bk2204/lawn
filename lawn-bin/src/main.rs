@@ -4,6 +4,7 @@ extern crate daemonize;
 extern crate hex;
 extern crate lawn_protocol;
 extern crate libc;
+extern crate num_derive;
 extern crate tokio;
 
 use crate::encoding::{escape, osstr, path};
