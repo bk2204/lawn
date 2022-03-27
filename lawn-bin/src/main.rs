@@ -423,7 +423,7 @@ fn dispatch_run(
 }
 
 fn dispatch(verbosity: &mut i32) -> Result<(), Error> {
-    let matches = App::new("remctrl")
+    let matches = App::new("lawn")
         .arg(
             Arg::with_name("verbose")
                 .long("verbose")
