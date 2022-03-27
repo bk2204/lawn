@@ -120,7 +120,7 @@ impl Server {
 
     fn pipe(&self) -> Result<(File, File), Error> {
         let mut pipefd = [-1i32; 2];
-        unix::call_with_result(|| unsafe { libc::pipe(&mut pipefd as *mut i32) })
+        unix::call_with_result(|| unsafe { libc::pipe(pipefd.as_mut_ptr()) })
             .map_err(|e| Error::new_with_cause(ErrorKind::ServerCreationFailure, e))?;
         Ok((unsafe { File::from_raw_fd(pipefd[0]) }, unsafe {
             File::from_raw_fd(pipefd[1])
