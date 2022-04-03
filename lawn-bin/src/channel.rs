@@ -114,7 +114,7 @@ pub trait Channel {
     fn set_dead(&self);
 }
 
-pub struct ServerCommandChannel {
+pub struct ServerGenericCommandChannel {
     // TODO: take the FDs out of the child and handle them individually
     cmd: Mutex<Child>,
     fds: RwLock<(
@@ -126,6 +126,39 @@ pub struct ServerCommandChannel {
     id: ChannelID,
     logger: Arc<Logger>,
     alive: AtomicBool,
+}
+
+pub struct ServerCommandChannel {
+    ch: ServerGenericCommandChannel,
+}
+
+impl ServerGenericCommandChannel {
+    fn fd_from_selector(&self, selector: u32) -> Option<i32> {
+        let g = self.fds.read().unwrap();
+        let io = match selector {
+            0 => g.0.clone(),
+            1 => g.1.clone(),
+            2 => g.2.clone(),
+            _ => return None,
+        };
+        block_on_async(async {
+            match io {
+                Some(file) => Some(file.lock().await.as_raw_fd()),
+                None => None,
+            }
+        })
+    }
+
+    // TODO: use native implementation on 1.58.1 or newer.
+    fn convert_exit(e: ExitStatus) -> i32 {
+        if let Some(sig) = e.signal() {
+            return sig;
+        }
+        if let Some(code) = e.code() {
+            return code << 8;
+        }
+        -1
+    }
 }
 
 impl ServerCommandChannel {
@@ -161,44 +194,58 @@ impl ServerCommandChannel {
             }))),
         );
         Ok(ServerCommandChannel {
-            cmd: Mutex::new(cmd),
-            fds: RwLock::new(fds),
-            exit_status: Mutex::new(None),
-            id,
-            logger,
-            alive: AtomicBool::new(true),
+            ch: ServerGenericCommandChannel {
+                cmd: Mutex::new(cmd),
+                fds: RwLock::new(fds),
+                exit_status: Mutex::new(None),
+                id,
+                logger,
+                alive: AtomicBool::new(true),
+            },
         })
-    }
-
-    fn fd_from_selector(&self, selector: u32) -> Option<i32> {
-        let g = self.fds.read().unwrap();
-        let io = match selector {
-            0 => g.0.clone(),
-            1 => g.1.clone(),
-            2 => g.2.clone(),
-            _ => return None,
-        };
-        block_on_async(async {
-            match io {
-                Some(file) => Some(file.lock().await.as_raw_fd()),
-                None => None,
-            }
-        })
-    }
-
-    // TODO: use native implementation on 1.58.1 or newer.
-    fn convert_exit(e: ExitStatus) -> i32 {
-        if let Some(sig) = e.signal() {
-            return sig;
-        }
-        if let Some(code) = e.code() {
-            return code << 8;
-        }
-        -1
     }
 }
 
 impl Channel for ServerCommandChannel {
+    fn id(&self) -> ChannelID {
+        self.ch.id()
+    }
+
+    fn read(&self, selector: u32) -> Result<Bytes, protocol::Error> {
+        self.ch.read(selector)
+    }
+
+    fn write(&self, selector: u32, data: Bytes) -> Result<u64, protocol::Error> {
+        self.ch.write(selector, data)
+    }
+
+    fn poll(
+        &self,
+        selectors: Vec<u32>,
+        duration: Duration,
+        ch: oneshot::Sender<Result<Vec<protocol::PollChannelFlags>, protocol::Error>>,
+    ) {
+        self.ch.poll(selectors, duration, ch)
+    }
+
+    fn ping(&self) -> Result<(), protocol::Error> {
+        self.ch.ping()
+    }
+
+    fn detach_selector(&self, selector: u32) -> Result<(), protocol::Error> {
+        self.ch.detach_selector(selector)
+    }
+
+    fn is_alive(&self) -> bool {
+        self.ch.is_alive()
+    }
+
+    fn set_dead(&self) {
+        self.ch.set_dead()
+    }
+}
+
+impl Channel for ServerGenericCommandChannel {
     fn id(&self) -> ChannelID {
         self.id
     }
