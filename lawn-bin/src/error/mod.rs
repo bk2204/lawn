@@ -106,6 +106,7 @@ pub enum ErrorKind {
     UnknownCommandType,
     MissingArguments,
     NotRootMachine,
+    InvalidConfigurationValue,
 }
 
 impl Into<i32> for ErrorKind {

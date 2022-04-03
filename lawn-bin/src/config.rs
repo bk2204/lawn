@@ -5,6 +5,7 @@ use bytes::{Bytes, BytesMut};
 use lawn_protocol::config::Logger as LoggerTrait;
 use lawn_protocol::config::{LogFormat, LogLevel};
 use serde::{Deserialize, Serialize};
+use serde_yaml::Value;
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsStr;
 use std::ffi::OsString;
@@ -173,10 +174,10 @@ impl Config {
             }
             // This is the default algorithm for determining whether we're running in a GUI.  It is
             // subject to change at any time.
-            g.config_file.v0.root.clone().unwrap_or_else(|| "![ -z \"$SSH_TTY\" ] && { [ -n \"$WAYLAND_DISPLAY\" ] || [ -n \"$DISPLAY\" ] || [ \"$(uname -s)\" = Darwin ]; }".to_string())
+            g.config_file.v0.root.clone().unwrap_or_else(|| Value::String("![ -z \"$SSH_TTY\" ] && { [ -n \"$WAYLAND_DISPLAY\" ] || [ -n \"$DISPLAY\" ] || [ \"$(uname -s)\" = Darwin ]; }".to_string()))
         };
         let ctx = self.template_context(None, None);
-        let result = ConfigValue::new(&val, &ctx)?.into_bool();
+        let result = ConfigValue::new(val, &ctx)?.into_bool()?;
         let mut g = self.data.write().unwrap();
         g.root = Some(result);
         Ok(result)
@@ -392,19 +393,16 @@ impl lawn_protocol::config::Logger for Logger {
 }
 
 pub struct ConfigValue<'a, 'b, 'c> {
-    command: Bytes,
+    value: Value,
     context: &'c TemplateContext<'a, 'b>,
 }
 
 impl<'a, 'b, 'c> ConfigValue<'a, 'b, 'c> {
     pub fn new(
-        command: &str,
+        value: Value,
         context: &'c TemplateContext<'a, 'b>,
     ) -> Result<ConfigValue<'a, 'b, 'c>, Error> {
-        Ok(ConfigValue {
-            command: Self::templatize(command, context)?,
-            context,
-        })
+        Ok(ConfigValue { value, context })
     }
 
     fn templatize(s: &str, context: &'c TemplateContext<'a, 'b>) -> Result<Bytes, Error> {
@@ -424,18 +422,23 @@ impl<'a, 'b, 'c> ConfigValue<'a, 'b, 'c> {
         })
     }
 
-    fn into_bool(self) -> bool {
-        let mut cmd = self.create_command(&self.command);
+    fn into_bool(self) -> Result<bool, Error> {
+        let command = match self.value {
+            Value::Bool(b) => return Ok(b),
+            Value::String(ref s) => s,
+            _ => return Err(Error::new(ErrorKind::InvalidConfigurationValue)),
+        };
+        let mut cmd = self.create_command(&Self::templatize(command, self.context)?);
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::null());
         cmd.stderr(Stdio::null());
         let mut child = match cmd.spawn() {
             Ok(c) => c,
-            Err(_) => return false,
+            Err(_) => return Ok(false),
         };
         match child.wait() {
-            Ok(es) => es.success(),
-            Err(_) => false,
+            Ok(es) => Ok(es.success()),
+            Err(_) => Ok(false),
         }
     }
 
@@ -467,7 +470,7 @@ impl<'a, 'b, 'c> ConfigValue<'a, 'b, 'c> {
 }
 
 pub struct Command<'a, 'b, 'c> {
-    condition: Option<Bytes>,
+    condition: Option<Value>,
     pre: Vec<Bytes>,
     post: Vec<Bytes>,
     command: Bytes,
@@ -494,7 +497,7 @@ impl<'a, 'b, 'c> Command<'a, 'b, 'c> {
             None => Vec::new(),
         };
         Ok(Command {
-            condition: Some(Self::templatize(&config.if_value, context)?),
+            condition: Some(config.if_value.clone()),
             pre,
             post,
             command: Self::templatize(&config.command, context)?,
@@ -573,7 +576,7 @@ impl<'a, 'b, 'c> Command<'a, 'b, 'c> {
 
     pub async fn check_condition(&self) -> Result<bool, Error> {
         match &self.condition {
-            Some(cmd) => Ok(self.run_one(cmd).await? == 0),
+            Some(condition) => ConfigValue::new(condition.clone(), self.context)?.into_bool(),
             None => Ok(false),
         }
     }
@@ -613,7 +616,7 @@ impl ConfigFile {
 
 #[derive(Serialize, Deserialize)]
 struct ConfigFileV0 {
-    root: Option<String>,
+    root: Option<Value>,
     socket: Option<ConfigSockets>,
     commands: Option<BTreeMap<String, ConfigCommand>>,
 }
@@ -626,7 +629,7 @@ pub struct ConfigSockets {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ConfigCommand {
     #[serde(rename = "if")]
-    if_value: String,
+    if_value: Value,
     command: String,
     #[serde(rename = "pre")]
     pre: Option<Vec<String>>,
@@ -637,6 +640,7 @@ pub struct ConfigCommand {
 #[cfg(test)]
 mod tests {
     use super::{Config, ConfigFile};
+    use serde_yaml::Value;
     use std::collections::BTreeMap;
     use std::ffi::OsString;
 
@@ -686,10 +690,20 @@ mod tests {
 
     #[test]
     fn is_root_with_values() {
-        let cfg = config_with_values(BTreeMap::new(), |c| c.v0.root = Some("!/bin/true".into()));
+        let cfg = config_with_values(BTreeMap::new(), |c| {
+            c.v0.root = Some(Value::String("!/bin/true".into()))
+        });
         assert_eq!(cfg.is_root().unwrap(), true);
 
-        let cfg = config_with_values(BTreeMap::new(), |c| c.v0.root = Some("!/bin/false".into()));
+        let cfg = config_with_values(BTreeMap::new(), |c| c.v0.root = Some(Value::Bool(true)));
+        assert_eq!(cfg.is_root().unwrap(), true);
+
+        let cfg = config_with_values(BTreeMap::new(), |c| {
+            c.v0.root = Some(Value::String("!/bin/false".into()))
+        });
+        assert_eq!(cfg.is_root().unwrap(), false);
+
+        let cfg = config_with_values(BTreeMap::new(), |c| c.v0.root = Some(Value::Bool(false)));
         assert_eq!(cfg.is_root().unwrap(), false);
 
         let cfg = config_with_values(BTreeMap::new(), |c| {
