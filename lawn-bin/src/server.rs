@@ -1,8 +1,9 @@
-use crate::channel::{ChannelManager, ServerCommandChannel};
+use crate::channel::{ChannelManager, ServerCommandChannel, ServerClipboardChannel};
 use crate::config;
 use crate::config::{Config, Logger};
 use crate::encoding::{escape, path};
 use crate::error::{Error, ErrorKind};
+use crate::trace;
 use crate::unix;
 use bytes::Bytes;
 use daemonize::Daemonize;
@@ -12,6 +13,7 @@ use lawn_protocol::handler::ProtocolHandler;
 use lawn_protocol::protocol;
 use lawn_protocol::protocol::{Message, MessageKind, ResponseCode};
 use num_traits::cast::FromPrimitive;
+use serde_cbor::Value;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::convert::TryInto;
 use std::fs::File;
@@ -467,12 +469,19 @@ impl Server {
                     escape(&m.kind),
                     handler.has_capability(&protocol::Capability::ChannelCommand)
                 ));
-                if m.kind != b"command" as &[u8]
-                    || !handler.has_capability(&protocol::Capability::ChannelCommand)
-                {
-                    return Err(ResponseCode::ParametersNotSupported.into());
-                }
-                match Self::create_command_channel(id, state.clone(), &m).await {
+                let kind: &[u8] = &m.kind;
+                let res = match kind {
+                    b"command" if handler.has_capability(&protocol::Capability::ChannelCommand) => {
+                        Self::create_command_channel(id, state.clone(), &m).await
+                    }
+                    b"clipboard"
+                        if handler.has_capability(&protocol::Capability::ChannelClipboard) =>
+                    {
+                        Self::create_clipboard_channel(id, state.clone(), &m).await
+                    }
+                    _ => return Err(ResponseCode::ParametersNotSupported.into()),
+                };
+                match res {
                     Ok(id) => {
                         let r = protocol::CreateChannelResponse { id };
                         Ok((false, serializer.serialize_body(&r)))
@@ -671,6 +680,78 @@ impl Server {
         let proc = cmd.run_command();
         let cid = channels.next_id();
         let ch = Arc::new(ServerCommandChannel::new(logger, cid, proc)?);
+        channels.insert(cid, ch);
+        Ok(cid)
+    }
+
+    async fn create_clipboard_channel<T: AsyncRead + Unpin, U: AsyncWrite + Unpin>(
+        id: u64,
+        state: Arc<ServerState<T, U>>,
+        m: &protocol::CreateChannelRequest,
+    ) -> Result<protocol::ChannelID, handler::Error> {
+        let meta = match &m.meta {
+            Some(meta) => meta,
+            _ => return Err(ResponseCode::InvalidParameters.into()),
+        };
+        let target = match meta.get::<Bytes>(&(b"target" as &'static [u8]).into()) {
+            Some(&Value::Text(ref s)) if s == "primary" => {
+                protocol::ClipboardChannelTarget::Primary
+            }
+            Some(&Value::Text(ref s)) if s == "clipboard" => {
+                protocol::ClipboardChannelTarget::Clipboard
+            }
+            None => protocol::ClipboardChannelTarget::Clipboard,
+            _ => return Err(ResponseCode::InvalidParameters.into()),
+        };
+        let op = match meta.get::<Bytes>(&(b"operation" as &'static [u8]).into()) {
+            Some(&Value::Text(ref s)) if s == "copy" => protocol::ClipboardChannelOperation::Copy,
+            Some(&Value::Text(ref s)) if s == "paste" => protocol::ClipboardChannelOperation::Paste,
+            _ => return Err(ResponseCode::InvalidParameters.into()),
+        };
+        let allowed: HashSet<u32> = match op {
+            protocol::ClipboardChannelOperation::Copy => vec![0].iter().cloned().collect(),
+            protocol::ClipboardChannelOperation::Paste => vec![1].iter().cloned().collect(),
+        };
+        let requested: HashSet<u32> = m.selectors.iter().cloned().collect();
+        // TODO: allow requesting a subset of file descriptors.
+        if allowed != requested {
+            return Err(ResponseCode::ParametersNotSupported.into());
+        }
+        let config = state.config();
+        let logger = config.logger();
+        match config.clipboard_enabled() {
+            Ok(true) => (),
+            Ok(false) => {
+                trace!(logger, "server: {}: clipboard disabled", id);
+                return Err(ResponseCode::NotFound.into());
+            },
+            Err(e) => {
+                trace!(logger, "server: {}: clipboard error checking if enabled: {}", id, e);
+                return Err(ResponseCode::NotFound.into());
+            }
+        }
+        let backend = match config.clipboard_backend() {
+            Ok(Some(backend)) => backend,
+            Ok(None) => {
+                trace!(logger, "server: {}: clipboard: no backend found", id);
+                return Err(ResponseCode::NotFound.into());
+            },
+            Err(e) => {
+                trace!(logger, "server: {}: clipboard error getting backend: {}", id, e);
+                return Err(ResponseCode::NotFound.into());
+            }
+        };
+        if !backend.supports_target(target) {
+                trace!(logger, "server: {}: clipboard: unsupported target", id);
+                return Err(ResponseCode::NotFound.into());
+        }
+        let args = backend.command(target, op);
+        let ctx = config.template_context(None, None);
+        let cmd = config::command_from_args(&args, &ctx);
+        let logger = state.logger();
+        let channels = state.channels();
+        let cid = channels.next_id();
+        let ch = Arc::new(ServerClipboardChannel::new(logger, cid, cmd, op)?);
         channels.insert(cid, ch);
         Ok(cid)
     }

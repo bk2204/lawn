@@ -14,9 +14,10 @@ use lawn_protocol::protocol::{
     CreateChannelRequest, CreateChannelResponse, DeleteChannelRequest,
     DetachChannelSelectorRequest, Empty, MessageKind, PollChannelFlags, PollChannelRequest,
     PollChannelResponse, ReadChannelRequest, ReadChannelResponse, VersionRequest,
-    WriteChannelRequest, WriteChannelResponse,
+    WriteChannelRequest, WriteChannelResponse, ClipboardChannelOperation, ClipboardChannelTarget,
 };
 use num_traits::FromPrimitive;
+use serde_cbor::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::TryInto;
 use std::path::{Path, PathBuf};
@@ -44,6 +45,14 @@ impl FDStatus {
     /// Returns true if write_command_fd should be called again.
     fn needs_write(&self) -> bool {
         self.open && self.last
+    }
+
+    fn closed() -> FDStatus {
+        FDStatus {
+            open: false,
+            last: false,
+            data: None,
+        }
     }
 }
 
@@ -155,6 +164,39 @@ impl Connection {
         }
     }
 
+    pub async fn run_clipboard<
+        I: AsyncReadExt + Unpin,
+        O: AsyncWriteExt + Unpin,
+    >(
+        &self,
+        stdin: I,
+        stdout: O,
+        op: ClipboardChannelOperation,
+        target: Option<ClipboardChannelTarget>,
+    ) -> Result<i32, Error> {
+        let devnull = tokio::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/null")
+            .await.unwrap();
+        let stderr = tokio::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/null")
+            .await.unwrap();
+        let id = self.create_clipboard_channel(op, target).await?;
+        match op {
+            ClipboardChannelOperation::Copy => {
+                let mut fd_status = [FDStatus::default(), FDStatus::closed(), FDStatus::closed()];
+                self.run_channel(stdin, devnull, stderr, id, &mut fd_status).await
+            }
+            ClipboardChannelOperation::Paste => {
+                let mut fd_status = [FDStatus::closed(), FDStatus::default(), FDStatus::closed()];
+                self.run_channel(devnull, stdout, stderr, id, &mut fd_status).await
+            }
+        }
+    }
+
     pub async fn run_command<
         I: AsyncReadExt + Unpin,
         O: AsyncWriteExt + Unpin,
@@ -166,15 +208,30 @@ impl Connection {
         stdout: O,
         stderr: E,
     ) -> Result<i32, Error> {
-        let mut stdin = stdin;
-        let mut stdout = stdout;
-        let mut stderr = stderr;
         let id = self.create_command_channel(args).await?;
         let mut fd_status = [
             FDStatus::default(),
             FDStatus::default(),
             FDStatus::default(),
         ];
+        self.run_channel(stdin, stdout, stderr, id, &mut fd_status).await
+    }
+
+    async fn run_channel<
+        I: AsyncReadExt + Unpin,
+        O: AsyncWriteExt + Unpin,
+        E: AsyncWriteExt + Unpin,
+    >(
+        &self,
+        stdin: I,
+        stdout: O,
+        stderr: E,
+        id: ChannelID,
+        fd_status: &mut [FDStatus]
+        )-> Result<i32, Error> {
+        let mut stdin = stdin;
+        let mut stdout = stdout;
+        let mut stderr = stderr;
         let (polltx, mut pollrx) = tokio::sync::mpsc::channel(1);
         let (cfg, chandler) = (self.config.clone(), self.handler.clone());
         tokio::spawn(async move {
@@ -626,6 +683,45 @@ impl Connection {
             env: Some(config.env_vars().clone()),
             meta: None,
             selectors: vec![0, 1, 2],
+        };
+        let resp: CreateChannelResponse = match handler
+            .send_message(MessageKind::CreateChannel, &req, Some(true))
+            .await?
+        {
+            Some(resp) => resp,
+            None => return Err(Error::new(ErrorKind::MissingResponse)),
+        };
+        Ok(resp.id)
+    }
+
+    async fn create_clipboard_channel(&self, op: ClipboardChannelOperation, target: Option<ClipboardChannelTarget>) -> Result<ChannelID, Error> {
+        let handler = match self.handler.as_ref() {
+            Some(handler) => handler,
+            None => return Err(Error::new(ErrorKind::NotConnected)),
+        };
+        let mut meta = BTreeMap::new();
+        let selectors = match op {
+            ClipboardChannelOperation::Copy => {
+                meta.insert((b"operation" as &'static [u8]).into(), Value::Text("copy".into()));
+                vec![0]
+            }
+            ClipboardChannelOperation::Paste => {
+                meta.insert((b"operation" as &'static [u8]).into(), Value::Text("paste".into()));
+                vec![1]
+            }
+        };
+        match target {
+            Some(ClipboardChannelTarget::Primary) => meta.insert((b"target" as &'static [u8]).into(), Value::Text("primary".into())),
+            Some(ClipboardChannelTarget::Clipboard) => meta.insert((b"target" as &'static [u8]).into(), Value::Text("clipboard".into())),
+            None => None,
+        };
+        let req = CreateChannelRequest {
+            kind: (b"clipboard" as &'static [u8]).into(),
+            kind_args: None,
+            args: None,
+            env: None,
+            meta: Some(meta),
+            selectors,
         };
         let resp: CreateChannelResponse = match handler
             .send_message(MessageKind::CreateChannel, &req, Some(true))

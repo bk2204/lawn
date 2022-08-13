@@ -4,6 +4,7 @@ use crate::template::{Template, TemplateContext};
 use bytes::{Bytes, BytesMut};
 use lawn_protocol::config::Logger as LoggerTrait;
 use lawn_protocol::config::{LogFormat, LogLevel};
+use lawn_protocol::protocol::{ClipboardChannelOperation, ClipboardChannelTarget};
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 use std::collections::{BTreeMap, HashSet};
@@ -11,7 +12,7 @@ use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::process::ExitStatusExt;
@@ -43,12 +44,66 @@ macro_rules! error {
     }
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ClipboardBackend {
+    XClip,
+    XSel,
+    MacOS,
+}
+
+impl ClipboardBackend {
+    pub fn supports_target(&self, target: ClipboardChannelTarget) -> bool {
+        match (self, target) {
+            (Self::XClip, _) => true,
+            (Self::XSel, _) => true,
+            (Self::MacOS, ClipboardChannelTarget::Clipboard) => true,
+            _ => false,
+        }
+    }
+
+    pub fn command(&self, target: ClipboardChannelTarget, op: ClipboardChannelOperation) -> Vec<Bytes> {
+        let mut v: Vec<&'static [u8]> = Vec::new();
+        match self {
+            Self::XClip => {
+                v.push(b"xclip");
+                v.push(b"-selection");
+                match target {
+                    ClipboardChannelTarget::Primary => v.push(b"primary"),
+                    ClipboardChannelTarget::Clipboard => v.push(b"clipboard"),
+                }
+                match op {
+                    ClipboardChannelOperation::Copy => v.push(b"-i"),
+                    ClipboardChannelOperation::Paste => v.push(b"-o"),
+                }
+            }
+            Self::XSel => {
+                v.push(b"xsel");
+                match target {
+                    ClipboardChannelTarget::Primary => v.push(b"-p"),
+                    ClipboardChannelTarget::Clipboard => v.push(b"-b"),
+                }
+                match op {
+                    ClipboardChannelOperation::Copy => v.push(b"-i"),
+                    ClipboardChannelOperation::Paste => v.push(b"-o"),
+                }
+            }
+            Self::MacOS => match op {
+                ClipboardChannelOperation::Copy => v.push(b"pbcopy"),
+                ClipboardChannelOperation::Paste => v.push(b"pbpaste"),
+            },
+        }
+        v.iter().map(|&x| x.into()).collect()
+    }
+}
+
 struct ConfigData {
     detach: bool,
     runtime_dir: PathBuf,
     format: LogFormat,
     config_file: ConfigFile,
     root: Option<bool>,
+    clipboard_backend: Option<ClipboardBackend>,
+    clipboard_enabled: Option<bool>,
 }
 
 pub struct Config {
@@ -101,6 +156,8 @@ impl Config {
                 format: LogFormat::Text,
                 config_file,
                 root: None,
+                clipboard_backend: None,
+                clipboard_enabled: None,
             }),
             env_vars: env_iter()
                 .map(|(k, v)| (k.as_bytes().to_vec().into(), v.as_bytes().to_vec().into()))
@@ -181,6 +238,64 @@ impl Config {
         let mut g = self.data.write().unwrap();
         g.root = Some(result);
         Ok(result)
+    }
+
+    fn clipboard_command_from_str(s: &str) -> Option<ClipboardBackend> {
+        match s {
+            "xclip" => Some(ClipboardBackend::XClip),
+            "xsel" => Some(ClipboardBackend::XSel),
+            "macos" => Some(ClipboardBackend::MacOS),
+            _ => None,
+        }
+    }
+
+    pub fn clipboard_enabled(&self) -> Result<bool, Error> {
+        let val = {
+            let g = self.data.read().unwrap();
+            if let Some(val) = g.clipboard_enabled {
+                return Ok(val);
+            }
+            match g.config_file.v0.clipboard.as_ref().map(|x| x.if_value.clone()) {
+                Some(v) => v,
+                None => Value::Bool(false),
+            }
+        };
+        let ctx = self.template_context(None, None);
+        let result = ConfigValue::new(val, &ctx)?.into_bool()?;
+        let mut g = self.data.write().unwrap();
+        g.clipboard_enabled = Some(result);
+        Ok(result)
+    }
+
+    pub fn clipboard_backend(&self) -> Result<Option<ClipboardBackend>, Error> {
+        let val = {
+            let g = self.data.read().unwrap();
+            if let Some(val) = g.clipboard_backend {
+                return Ok(Some(val));
+            }
+            match g.config_file.v0.clipboard.as_ref().and_then(|x| x.backend.clone()) {
+                Some(Value::String(ref s)) => {
+                    if let Some(backend) = Self::clipboard_command_from_str(s) {
+                        return Ok(Some(backend));
+                    } else if s.starts_with('!') {
+                        s.to_string()
+                    } else if s == "default" {
+                        "!f() { if command -v pbcopy >/dev/null 2>&1 && command -v pbpaste >/dev/null 2>&1; then echo macos; elif command -v xclip >/dev/null 2>&1; then echo xclip; elif command -v xsel >/dev/null 2>&1; then echo xsel; fi; };f".to_string()
+                    } else {
+                        return Err(Error::new(ErrorKind::InvalidConfigurationValue));
+                    }
+                }
+                None => return Ok(None),
+                _ => return Err(Error::new(ErrorKind::InvalidConfigurationValue)),
+            }
+        };
+        let ctx = self.template_context(None, None);
+        let val = Value::String(val);
+        let result = ConfigValue::new(val, &ctx)?.into_string()?;
+        let backend = Self::clipboard_command_from_str(&result);
+        let mut g = self.data.write().unwrap();
+        g.clipboard_backend = backend;
+        Ok(backend)
     }
 
     pub fn config_command(&self, name: &[u8]) -> Option<ConfigCommand> {
@@ -442,6 +557,36 @@ impl<'a, 'b, 'c> ConfigValue<'a, 'b, 'c> {
         }
     }
 
+    fn into_string(self) -> Result<String, Error> {
+        let s = match self.value {
+            Value::String(ref s) => s,
+            _ => return Err(Error::new(ErrorKind::InvalidConfigurationValue)),
+        };
+        if !s.starts_with('!') {
+            return Ok(s.into());
+        }
+        let mut cmd = self.create_command(&Self::templatize(s, self.context)?);
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::null());
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(_) => return Ok(String::new()),
+        };
+        let mut s = String::new();
+        if child
+            .stdout
+            .as_mut()
+            .unwrap()
+            .read_to_string(&mut s)
+            .is_err()
+        {
+            return Err(Error::new(ErrorKind::ConfigurationSpawnError));
+        }
+        let _ = child.wait();
+        Ok(s.trim_end_matches(|c| c == '\n').into())
+    }
+
     fn create_command(&self, shell: &Bytes) -> std::process::Command {
         let mut shell: BytesMut = shell.as_ref().into();
         if self.context.args.is_some() {
@@ -467,6 +612,37 @@ impl<'a, 'b, 'c> ConfigValue<'a, 'b, 'c> {
         cmd.current_dir("/");
         cmd
     }
+}
+
+pub fn command_from_shell<'a, 'b, 'c>(shell: &Bytes, context: &'c TemplateContext<'a, 'b>) -> tokio::process::Command {
+    let mut shell: BytesMut = shell.as_ref().into();
+    shell.extend_from_slice(b" \"$@\"");
+    command_from_args(&[(b"sh" as &'static [u8]).into(), (b"-c" as &'static [u8]).into(), shell.into()], context)
+}
+
+
+pub fn command_from_args<'a, 'b, 'c>(args: &[Bytes], context: &'c TemplateContext<'a, 'b>) -> tokio::process::Command {
+    let args: Vec<OsString> = args.iter().map(|x| OsString::from_vec(x.to_vec())).collect();
+    let mut cmd = tokio::process::Command::new(&args[0]);
+    if args.len() > 1 {
+        cmd.args(&args[1..]);
+    }
+    if let Some(args) = context.args {
+        for arg in args {
+            cmd.arg(OsString::from_vec(arg.to_vec()));
+        }
+    }
+    if let Some(senv) = context.senv {
+        cmd.env_clear();
+        cmd.envs(senv.iter().map(|(k, v)| {
+            (
+                OsString::from_vec(k.to_vec()),
+                OsString::from_vec(v.to_vec()),
+            )
+        }));
+    }
+    cmd.current_dir("/");
+    cmd
 }
 
 pub struct Command<'a, 'b, 'c> {
@@ -522,37 +698,13 @@ impl<'a, 'b, 'c> Command<'a, 'b, 'c> {
         })
     }
 
-    fn create_command(&self, shell: &Bytes) -> tokio::process::Command {
-        let mut shell: BytesMut = shell.as_ref().into();
-        shell.extend_from_slice(b" \"$@\"");
-        let mut cmd = tokio::process::Command::new("sh");
-        cmd.arg("-c");
-        cmd.arg(OsStr::from_bytes(&shell));
-        if let Some(args) = self.context.args {
-            for arg in args {
-                cmd.arg(OsString::from_vec(arg.to_vec()));
-            }
-        }
-        if let Some(senv) = self.context.senv {
-            cmd.env_clear();
-            cmd.envs(senv.iter().map(|(k, v)| {
-                (
-                    OsString::from_vec(k.to_vec()),
-                    OsString::from_vec(v.to_vec()),
-                )
-            }));
-        }
-        cmd.current_dir("/");
-        cmd
-    }
-
     async fn run_one(&self, shell: &Bytes) -> Result<i32, Error> {
         if shell == b"true" as &[u8] {
             return Ok(0);
         } else if shell == b"false" as &[u8] {
             return Ok(1);
         }
-        let mut cmd = self.create_command(shell);
+        let mut cmd = command_from_shell(shell, &self.context);
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::inherit());
         cmd.stderr(Stdio::inherit());
@@ -571,7 +723,7 @@ impl<'a, 'b, 'c> Command<'a, 'b, 'c> {
     }
 
     pub fn run_command(&self) -> tokio::process::Command {
-        self.create_command(&self.command)
+        command_from_shell(&self.command, &self.context)
     }
 
     pub async fn check_condition(&self) -> Result<bool, Error> {
@@ -607,6 +759,7 @@ impl ConfigFile {
         ConfigFile {
             v0: ConfigFileV0 {
                 root: None,
+                clipboard: None,
                 socket: None,
                 commands: None,
             },
@@ -617,8 +770,16 @@ impl ConfigFile {
 #[derive(Serialize, Deserialize)]
 struct ConfigFileV0 {
     root: Option<Value>,
+    clipboard: Option<ConfigClipboard>,
     socket: Option<ConfigSockets>,
     commands: Option<BTreeMap<String, ConfigCommand>>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ConfigClipboard {
+    #[serde(rename = "if")]
+    if_value: Value,
+    backend: Option<Value>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]

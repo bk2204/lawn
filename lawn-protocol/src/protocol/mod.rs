@@ -216,19 +216,24 @@ pub enum Capability {
     AuthExternal,
     ChannelCommand,
     Channel9P,
+    ChannelClipboard,
 }
 
 impl Capability {
     pub fn implemented() -> BTreeSet<Capability> {
-        [Self::AuthExternal, Self::ChannelCommand]
-            .iter()
-            .cloned()
-            .collect()
+        [
+            Self::AuthExternal,
+            Self::ChannelCommand,
+            Self::ChannelClipboard,
+        ]
+        .iter()
+        .cloned()
+        .collect()
     }
 
     pub fn is_implemented(&self) -> bool {
         match self {
-            Self::AuthExternal | Self::ChannelCommand => true,
+            Self::AuthExternal | Self::ChannelCommand | Self::ChannelClipboard => true,
             _ => false,
         }
     }
@@ -240,6 +245,7 @@ impl From<Capability> for (&'static [u8], Option<&'static [u8]>) {
             Capability::AuthExternal => (b"auth", Some(b"EXTERNAL")),
             Capability::ChannelCommand => (b"channel", Some(b"command")),
             Capability::Channel9P => (b"channel", Some(b"9p")),
+            Capability::ChannelClipboard => (b"channel", Some(b"clipboard")),
         }
     }
 }
@@ -258,6 +264,7 @@ impl TryFrom<(&[u8], Option<&[u8]>)> for Capability {
             (b"auth", Some(b"EXTERNAL")) => Ok(Capability::AuthExternal),
             (b"channel", Some(b"command")) => Ok(Capability::ChannelCommand),
             (b"channel", Some(b"9p")) => Ok(Capability::Channel9P),
+            (b"channel", Some(b"clipboard")) => Ok(Capability::ChannelClipboard),
             _ => Err(()),
         }
     }
@@ -428,6 +435,18 @@ pub struct ChannelMetadataNotification {
     pub status: Option<u32>,
     pub status_kind: Option<u32>,
     pub meta: Option<BTreeMap<Bytes, Value>>,
+}
+
+#[derive(Eq, PartialEq, Ord, PartialOrd, Copy, Clone)]
+pub enum ClipboardChannelTarget {
+    Primary,
+    Clipboard,
+}
+
+#[derive(Eq, PartialEq, Ord, PartialOrd, Copy, Clone)]
+pub enum ClipboardChannelOperation {
+    Copy,
+    Paste,
 }
 
 /// A message for the protocol.

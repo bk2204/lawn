@@ -6,7 +6,7 @@ use crate::trace;
 use crate::unix;
 use bytes::Bytes;
 use lawn_protocol::protocol;
-use lawn_protocol::protocol::{ChannelID, ErrorBody, ResponseCode};
+use lawn_protocol::protocol::{ChannelID, ErrorBody, ResponseCode, ClipboardChannelOperation};
 use std::collections::HashMap;
 use std::os::raw::c_int;
 use std::os::unix::io::{AsRawFd, FromRawFd};
@@ -498,5 +498,101 @@ impl Channel for ServerGenericCommandChannel {
 
     fn set_dead(&self) {
         self.alive.store(false, Ordering::Release);
+    }
+}
+
+pub struct ServerClipboardChannel {
+    ch: ServerGenericCommandChannel,
+}
+
+impl ServerClipboardChannel {
+    pub fn new(
+        logger: Arc<Logger>,
+        id: ChannelID,
+        cmd: Command,
+        op: ClipboardChannelOperation,
+    ) -> Result<ServerClipboardChannel, protocol::Error> {
+        let mut cmd = cmd;
+        match op {
+            ClipboardChannelOperation::Copy => {
+                cmd.stdin(Stdio::piped());
+                cmd.stdout(Stdio::null());
+            }
+            ClipboardChannelOperation::Paste => {
+                cmd.stdin(Stdio::null());
+                cmd.stdout(Stdio::piped());
+            }
+        }
+        cmd.stderr(Stdio::null());
+        trace!(logger, "channel {}: spawn {:?}", id, cmd);
+        let cmd = match cmd.spawn() {
+            Ok(cmd) => cmd,
+            Err(e) => return Err(e.into()),
+        };
+        trace!(
+            logger,
+            "channel {}: spawn ok: pid {}",
+            id,
+            cmd.id().unwrap()
+        );
+        let fds = (
+            Self::file_from_command(cmd.stdin.as_ref()),
+            Self::file_from_command(cmd.stdout.as_ref()),
+            None,
+        );
+        Ok(ServerClipboardChannel {
+            ch: ServerGenericCommandChannel {
+                cmd: Mutex::new(cmd),
+                fds: RwLock::new(fds),
+                exit_status: Mutex::new(None),
+                id,
+                logger,
+                alive: AtomicBool::new(true),
+            },
+        })
+    }
+
+    fn file_from_command<T: AsRawFd>(io: Option<&T>) -> Option<Arc<sync::Mutex<File>>> {
+        let io = io?;
+        Some(Arc::new(sync::Mutex::new(unsafe { File::from_raw_fd(io.as_raw_fd()) })))
+    }
+}
+
+impl Channel for ServerClipboardChannel {
+    fn id(&self) -> ChannelID {
+        self.ch.id()
+    }
+
+    fn read(&self, selector: u32) -> Result<Bytes, protocol::Error> {
+        self.ch.read(selector)
+    }
+
+    fn write(&self, selector: u32, data: Bytes) -> Result<u64, protocol::Error> {
+        self.ch.write(selector, data)
+    }
+
+    fn poll(
+        &self,
+        selectors: Vec<u32>,
+        duration: Duration,
+        ch: oneshot::Sender<Result<Vec<protocol::PollChannelFlags>, protocol::Error>>,
+    ) {
+        self.ch.poll(selectors, duration, ch)
+    }
+
+    fn ping(&self) -> Result<(), protocol::Error> {
+        self.ch.ping()
+    }
+
+    fn detach_selector(&self, selector: u32) -> Result<(), protocol::Error> {
+        self.ch.detach_selector(selector)
+    }
+
+    fn is_alive(&self) -> bool {
+        self.ch.is_alive()
+    }
+
+    fn set_dead(&self) {
+        self.ch.set_dead()
     }
 }

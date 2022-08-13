@@ -11,6 +11,7 @@ use crate::encoding::{escape, osstr, path};
 use bytes::Bytes;
 use clap::{App, Arg, ArgMatches};
 use lawn_protocol::config::Logger;
+use lawn_protocol::protocol::{ClipboardChannelTarget, ClipboardChannelOperation};
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
@@ -377,12 +378,47 @@ fn dispatch_proxy(
     std::process::exit(res?);
 }
 
-fn dispatch_clipboard(
-    _config: Arc<config::Config>,
-    _main: &ArgMatches,
-    _m: &ArgMatches,
+fn dispatch_clip(
+    config: Arc<config::Config>,
+    main: &ArgMatches,
+    m: &ArgMatches,
 ) -> Result<(), Error> {
-    Err(Error::new(ErrorKind::Unimplemented))
+    let op = match (m.is_present("copy"), m.is_present("paste")) {
+        (true, false) => ClipboardChannelOperation::Copy,
+        (false, true) => ClipboardChannelOperation::Paste,
+        _ => return Err(Error::new_with_message(ErrorKind::IncompatibleArguments, "exactly one of -i or -o is required")),
+    };
+    let target = match (m.is_present("primary"), m.is_present("clipboard")) {
+        (true, false) => Some(ClipboardChannelTarget::Primary),
+        (false, true) => Some(ClipboardChannelTarget::Clipboard),
+        (false, false) => None,
+        _ => return Err(Error::new_with_message(ErrorKind::IncompatibleArguments, "at most one of -p and -b is permitted")),
+    };
+    let logger = config.logger();
+    logger.trace("Starting runtime");
+    let runtime = runtime();
+    let res = runtime.block_on(async move {
+        let socket = find_or_autostart_server(main.value_of_os("socket"), config.clone())?;
+        let client = client::Client::new(config);
+        match socket
+            .peer_addr()
+            .ok()
+            .and_then(|x| x.as_pathname().map(|x| x.to_owned()))
+        {
+            Some(name) => logger.debug(&format!("Connecting to socket {}", escape(path(&*name)))),
+            None => logger.debug("Connecting to anonymous socket"),
+        }
+        let conn = client.connect_to_socket(socket, false).await?;
+        let _ = conn.negotiate_default_version().await;
+        let _ = conn.auth_external().await;
+        conn.run_clipboard(
+            tokio::io::stdin(),
+            tokio::io::stdout(),
+            op, target,
+        )
+        .await
+    })?;
+    std::process::exit(res);
 }
 
 fn dispatch_run(
@@ -440,7 +476,12 @@ fn dispatch(verbosity: &mut i32) -> Result<(), Error> {
         .arg(Arg::with_name("no-detach").long("no-detach"))
         .subcommand(App::new("server"))
         .subcommand(App::new("query").subcommand(App::new("test-connection")))
-        .subcommand(App::new("clipboard"))
+        .subcommand(App::new("clip")
+                    .arg(Arg::with_name("copy").long("copy").short("i"))
+                    .arg(Arg::with_name("paste").long("paste").short("o"))
+                    .arg(Arg::with_name("primary").long("primary").short("p"))
+                    .arg(Arg::with_name("clipboard").long("clipboard").short("b"))
+                    )
         .subcommand(
             App::new("proxy")
                 .arg(Arg::with_name("ssh").long("ssh"))
@@ -456,7 +497,7 @@ fn dispatch(verbosity: &mut i32) -> Result<(), Error> {
     match matches.subcommand() {
         ("server", Some(m)) => dispatch_server(config, &matches, m),
         ("query", Some(m)) => dispatch_query(config, &matches, m),
-        ("clipboard", Some(m)) => dispatch_clipboard(config, &matches, m),
+        ("clip", Some(m)) => dispatch_clip(config, &matches, m),
         ("proxy", Some(m)) => dispatch_proxy(config, &matches, m),
         ("run", Some(m)) => dispatch_run(config, &matches, m),
         _ => Err(Error::new(ErrorKind::Unimplemented)),

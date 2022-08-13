@@ -105,8 +105,10 @@ pub enum ErrorKind {
     TemplateError,
     UnknownCommandType,
     MissingArguments,
+    IncompatibleArguments,
     NotRootMachine,
     InvalidConfigurationValue,
+    ConfigurationSpawnError,
 }
 
 impl Into<i32> for ErrorKind {
