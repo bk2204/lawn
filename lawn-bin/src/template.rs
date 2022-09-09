@@ -153,7 +153,7 @@ mod tests {
             ("Hello, world!", "Hello, world!"),
             ("Hello, %% world!", "Hello, % world!"),
         ];
-        for (input, output) in cases {
+        for (input, output) in &cases {
             let t = Template::new(input.as_bytes());
             let ctx = Default::default();
             assert_eq!(t.expand(&ctx).unwrap(), output);
@@ -203,7 +203,7 @@ mod tests {
                 "Single quoting? 'This '\\'' text has a '\\''\\'\\'''\\'' lot of weird characters'",
             ),
         ];
-        for (input, output) in cases {
+        for (input, output) in &cases {
             let t = Template::new(input.as_bytes());
             assert_eq!(t.expand(&ctx).unwrap(), output);
         }
