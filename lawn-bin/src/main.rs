@@ -28,6 +28,8 @@ mod server;
 mod ssh_proxy;
 mod task;
 mod template;
+#[cfg(test)]
+mod tests;
 mod unix;
 
 use error::{Error, ErrorKind};

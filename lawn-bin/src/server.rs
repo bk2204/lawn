@@ -54,11 +54,12 @@ macro_rules! assert_authenticated {
 
 pub struct Server {
     config: Arc<Config>,
+    destroyer: Mutex<Option<sync::oneshot::Sender<()>>>,
 }
 
 impl Server {
     pub fn new(config: Arc<Config>) -> Self {
-        Self { config }
+        Self { config, destroyer: Mutex::new(None) }
     }
 
     pub fn run(&self) -> Result<(), Error> {
@@ -82,6 +83,34 @@ impl Server {
         ));
         logger.trace("server: starting runtime");
         self.runtime(&socket_path, fdwr)
+    }
+
+    #[allow(dead_code)]
+    pub async fn run_async(&self) -> Result<(), Error> {
+        let logger = self.config.logger();
+        let mut socket_path: PathBuf = self.config.runtime_dir();
+        socket_path.push("server-0.sock");
+        logger.trace(&format!(
+            "server: socket is {}",
+            escape(path(socket_path.as_ref()))
+        ));
+        let (tx, rx) = sync::oneshot::channel();
+        {
+            let mut g = self.destroyer.lock().unwrap();
+            *g = Some(tx);
+        }
+        self.runtime_async(&socket_path, None, rx).await
+    }
+
+    #[allow(dead_code)]
+    pub async fn shutdown(&self) {
+        let rx = {
+            let mut g = self.destroyer.lock().unwrap();
+            g.take()
+        };
+        if let Some(rx) = rx {
+            let _ = rx.send(());
+        }
     }
 
     pub fn run_forked(&self) -> Result<(), Error> {
@@ -131,6 +160,16 @@ impl Server {
 
     #[tokio::main]
     async fn runtime(&self, socket_path: &Path, fdwr: Option<File>) -> Result<(), Error> {
+        let (tx, rx) = sync::oneshot::channel();
+        {
+            let mut g = self.destroyer.lock().unwrap();
+            *g = Some(tx);
+        }
+        self.runtime_async(socket_path, fdwr, rx).await
+    }
+
+    async fn runtime_async(&self, socket_path: &Path, fdwr: Option<File>, rx: sync::oneshot::Receiver<()>) -> Result<(), Error> {
+        let mut rx = rx;
         let logger = self.config.logger();
         logger.trace("server: runtime started, installing SIGTERM handler");
         let mut sig =
@@ -168,6 +207,20 @@ impl Server {
                         }
                     }
                     return Ok(());
+                }
+                res = &mut rx => {
+                    {
+                        let mut g = storage.lock().unwrap();
+                        for (tx, _) in g.values_mut() {
+                            let _ = tx.send(()).await;
+                        }
+                        for (_, (_, handle)) in g.drain() {
+                            let _ = handle.await;
+                        }
+                    }
+                    if res.is_ok() {
+                        return Ok(());
+                    }
                 }
                 conn = socket.accept() => {
                     // TODO: gracefully handle the disappearance of our socket
