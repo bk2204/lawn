@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "lawn-9p",
     "lawn-bin",
     "lawn-constants",
     "lawn-protocol",

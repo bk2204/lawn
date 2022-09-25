@@ -136,6 +136,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lawn-9p"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "lawn-constants",
+ "libc",
+]
+
+[[package]]
 name = "lawn-bin"
 version = "0.1.0"
 dependencies = [
