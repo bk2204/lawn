@@ -2,6 +2,7 @@ extern crate libc;
 extern crate num_derive;
 
 use num_derive::FromPrimitive;
+use std::fmt;
 use std::io;
 
 /// Represents a Linux error code.
@@ -9,7 +10,7 @@ use std::io;
 /// These error codes are used in the 9P2000.L protocol, and we also use them in the lawn
 /// protocol to provide standard error codes.  They have the meanings specified by POSIX, or by
 /// Linux in case of non-POSIX codes.
-#[derive(FromPrimitive)]
+#[derive(FromPrimitive, Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub enum Error {
     EPERM = 1,
     ENOENT = 2,
@@ -142,6 +143,15 @@ pub enum Error {
     ENOTRECOVERABLE = 131,
     ERFKILL = 132,
     EHWPOISON = 133,
+}
+
+impl std::error::Error for Error {}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        let e: io::Error = (*self).into();
+        write!(f, "{}", e)
+    }
 }
 
 impl From<Error> for io::Error {
