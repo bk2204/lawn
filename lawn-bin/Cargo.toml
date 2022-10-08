@@ -15,6 +15,7 @@ serde_cbor = "0.11"
 serde_yaml = "0.8"
 libc = "*"
 signal-hook-tokio = "0.3"
+lawn-constants = { path = "../lawn-constants", version = "0.1.0" }
 lawn-protocol = { path = "../lawn-protocol", version = "0.1.0", features = ["async"] }
 tokio = { version = "1", features = [ "io-std", "macros", "net", "process", "rt", "rt-multi-thread", "signal", "time" ] }
 daemonize = "0.4"

@@ -152,6 +152,7 @@ dependencies = [
  "clap",
  "daemonize",
  "hex",
+ "lawn-constants",
  "lawn-protocol",
  "libc",
  "num-derive",

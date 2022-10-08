@@ -2,8 +2,8 @@
 use crate::error::{Error, ErrorKind};
 use crate::template::{Template, TemplateContext};
 use bytes::{Bytes, BytesMut};
-use lawn_protocol::config::Logger as LoggerTrait;
-use lawn_protocol::config::{LogFormat, LogLevel};
+use lawn_constants::logger::Logger as LoggerTrait;
+use lawn_constants::logger::{LogFormat, LogLevel};
 use lawn_protocol::protocol::{ClipboardChannelOperation, ClipboardChannelTarget};
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
