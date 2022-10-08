@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::convert::TryInto;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::UnixStream;
@@ -233,12 +233,27 @@ impl Connection {
         let mut stdin = stdin;
         let mut stdout = stdout;
         let mut stderr = stderr;
-        let (polltx, mut pollrx) = tokio::sync::mpsc::channel(1);
+        let (polltx, mut pollrx) = tokio::sync::mpsc::unbounded_channel();
+        let (pollertx, mut pollerrx) = tokio::sync::mpsc::unbounded_channel();
         let (cfg, chandler) = (self.config.clone(), self.handler.clone());
+        let selectors: &'static [u32] = &[1, 2];
         tokio::spawn(async move {
+            use tokio::sync::mpsc::error::TryRecvError;
+
+            const DURATIONS: &[u64] = &[10, 20, 40, 80, 160, 320, 500];
+            let mut offset = 0;
             loop {
-                let results = Self::poll_channel(cfg.clone(), chandler.clone(), id, &[1, 2]).await;
-                let _ = polltx.send(results).await;
+                let until = Instant::now() + Duration::from_millis(DURATIONS[offset]);
+                let results =
+                    Self::poll_channel(cfg.clone(), chandler.clone(), id, selectors).await;
+                let _ = polltx.send(results);
+                match pollerrx.try_recv() {
+                    Ok(true) => offset = offset.saturating_sub(1),
+                    Ok(false) => offset = std::cmp::min(offset + 1, DURATIONS.len()),
+                    Err(TryRecvError::Disconnected) => return,
+                    Err(TryRecvError::Empty) => (),
+                }
+                tokio::time::sleep_until(tokio::time::Instant::from_std(until)).await;
             }
         });
         let rhandler = self.handler.clone();
@@ -296,16 +311,19 @@ impl Connection {
                         Ok(0) => fd_status[0] = self.read_command_fd(id, 0, &fd_status[0], &mut stdin).await,
                         _ => (),
                     }
+                    let _ = pollertx.send(fd_status[0].last || fd_status[0].data.is_some());
                 }
                 results = pollrx.recv() => {
                     trace!(logger, "channel {}: poll: results {:?}", id, results);
                     let results = results.unwrap();
+                    let mut last = false;
                     if let Ok(results) = results {
                         if let Some(flags) = results.get(&0) {
                             let mask = (PollChannelFlags::Output | PollChannelFlags::Hangup | PollChannelFlags::Invalid).bits();
                             if (flags & mask) != 0 {
                                 trace!(logger, "channel {}: selector 0: reading", id);
                                 fd_status[0] = self.read_command_fd(id, 0, &fd_status[0], &mut stdin).await;
+                                last = last || fd_status[0].last || fd_status[0].data.as_ref().map(|x| x.len()).unwrap_or_default() != 0;
                             }
                         }
                         if let Some(flags) = results.get(&1) {
@@ -313,6 +331,7 @@ impl Connection {
                             if (flags & mask) != 0 {
                                 trace!(logger, "channel {}: selector 1: writing", id);
                                 fd_status[1] = self.write_command_fd(id, 1, &fd_status[1], &mut stdout).await;
+                                last = last || fd_status[1].last || fd_status[1].data.as_ref().map(|x| x.len()).unwrap_or_default() != 0;
                             }
                         }
                         if let Some(flags) = results.get(&2) {
@@ -320,9 +339,11 @@ impl Connection {
                             if (flags & mask) != 0 {
                                 trace!(logger, "channel {}: selector 2: writing", id);
                                 fd_status[2] = self.write_command_fd(id, 2, &fd_status[2], &mut stderr).await;
+                                last = last || fd_status[2].last || fd_status[2].data.as_ref().map(|x| x.len()).unwrap_or_default() != 0;
                             }
                         }
                     }
+                    let _ = pollertx.send(last);
                 }
             }
         }
