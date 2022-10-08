@@ -20,30 +20,6 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, RwLock};
 
-#[macro_export]
-macro_rules! trace {
-    ($logger:expr, $($args : tt) *) => {
-        {
-            use lawn_protocol::config::{Logger, LogLevel};
-            if $logger.level() >= LogLevel::Trace {
-                $logger.trace(&format!($($args)*));
-            }
-        }
-    }
-}
-
-#[macro_export]
-macro_rules! error {
-    ($logger:expr, $($args : tt) *) => {
-        {
-            use lawn_protocol::config::{Logger, LogLevel};
-            if $logger.level() >= LogLevel::Error {
-                $logger.error(&format!($($args)*));
-            }
-        }
-    }
-}
-
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ClipboardBackend {
     XClip,

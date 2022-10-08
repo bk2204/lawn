@@ -2,6 +2,8 @@ extern crate bytes;
 extern crate clap;
 extern crate daemonize;
 extern crate hex;
+#[macro_use]
+extern crate lawn_constants;
 extern crate lawn_protocol;
 extern crate libc;
 extern crate num_derive;

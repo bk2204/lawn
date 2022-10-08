@@ -1,6 +1,5 @@
 use crate::config::Config;
 use crate::encoding::escape;
-use crate::trace;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use std::convert::TryInto;

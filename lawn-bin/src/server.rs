@@ -3,7 +3,6 @@ use crate::config;
 use crate::config::{Config, Logger};
 use crate::encoding::{escape, path};
 use crate::error::{Error, ErrorKind};
-use crate::trace;
 use crate::unix;
 use bytes::Bytes;
 use daemonize::Daemonize;

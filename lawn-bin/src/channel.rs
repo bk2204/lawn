@@ -2,7 +2,6 @@
 
 use crate::config::Logger;
 use crate::task::block_on_async;
-use crate::trace;
 use crate::unix;
 use bytes::Bytes;
 use lawn_protocol::protocol;

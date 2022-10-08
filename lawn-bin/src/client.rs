@@ -3,7 +3,6 @@
 use crate::config::Config;
 use crate::encoding::{escape, path};
 use crate::error::{Error, ErrorKind};
-use crate::trace;
 use bytes::Bytes;
 use lawn_protocol::config::Logger;
 use lawn_protocol::handler::ProtocolHandler;
