@@ -277,7 +277,7 @@ impl Connection {
             }
         });
         let logger = self.config.logger();
-        let mut buf = [0u8; 1];
+        let mut buf = [0u8; 65536];
         loop {
             select! {
                 res = finalrx.recv() => {
@@ -303,8 +303,8 @@ impl Connection {
                     match res {
                         Ok(x) if x != 0 => {
                             match &mut fd_status[0].data {
-                                Some(data) => data.extend(&buf),
-                                None => fd_status[0].data = Some(buf.into()),
+                                Some(data) => data.extend(&buf[0..x]),
+                                None => fd_status[0].data = Some(buf[0..x].into()),
                             }
                             fd_status[0] = self.read_command_fd(id, 0, &fd_status[0], &mut stdin).await;
                         },
