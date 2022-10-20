@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::Arc;
 
 #[derive(Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]
@@ -61,6 +62,77 @@ impl<T: Logger> Logger for Arc<T> {
 
     fn trace(&self, msg: &str) {
         self.as_ref().trace(msg);
+    }
+}
+
+pub trait AsLogStr<'a> {
+    fn as_log_str(&'a self) -> LogStr<'a>;
+}
+
+impl<'a> AsLogStr<'a> for &'a [u8] {
+    fn as_log_str(&'a self) -> LogStr<'a> {
+        LogStr::Bytes(self)
+    }
+}
+
+pub trait AsHexLogStr<'a> {
+    fn as_hex_log_str(&'a self) -> HexLogStr<'a>;
+}
+
+impl<'a> AsHexLogStr<'a> for &'a [u8] {
+    fn as_hex_log_str(&'a self) -> HexLogStr<'a> {
+        HexLogStr::Bytes(self)
+    }
+}
+
+pub enum LogStr<'a> {
+    Bytes(&'a [u8]),
+}
+
+impl<'a> fmt::Display for LogStr<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        use std::fmt::Write;
+        match self {
+            Self::Bytes(arr) => {
+                for c in arr
+                    .iter()
+                    .flat_map(|c| std::ascii::escape_default(*c))
+                    .map(|c| c as char)
+                {
+                    f.write_char(c)?
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<'a> fmt::Debug for LogStr<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+pub enum HexLogStr<'a> {
+    Bytes(&'a [u8]),
+}
+
+impl<'a> fmt::Display for HexLogStr<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        match self {
+            Self::Bytes(arr) => {
+                for b in *arr {
+                    write!(f, "{:02x}", b)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<'a> fmt::Debug for HexLogStr<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        fmt::Display::fmt(self, f)
     }
 }
 
