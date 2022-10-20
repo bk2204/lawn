@@ -197,6 +197,24 @@ impl Connection {
         }
     }
 
+    pub async fn run_9p<I: AsyncReadExt + Unpin, O: AsyncWriteExt + Unpin>(
+        &self,
+        stdin: I,
+        stdout: O,
+        target: Bytes,
+    ) -> Result<i32, Error> {
+        let devnull = tokio::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/null")
+            .await
+            .unwrap();
+        let id = self.create_9p_channel(target).await?;
+        let mut fd_status = [FDStatus::default(), FDStatus::default()];
+        self.run_channel(stdin, stdout, devnull, id, &mut fd_status)
+            .await
+    }
+
     pub async fn run_command<
         I: AsyncReadExt + Unpin,
         O: AsyncWriteExt + Unpin,
@@ -236,7 +254,7 @@ impl Connection {
         let (polltx, mut pollrx) = tokio::sync::mpsc::unbounded_channel();
         let (pollertx, mut pollerrx) = tokio::sync::mpsc::unbounded_channel();
         let (cfg, chandler) = (self.config.clone(), self.handler.clone());
-        let selectors: &'static [u32] = &[1, 2];
+        let selectors: &'static [u32] = if fd_status.len() > 2 { &[1, 2] } else { &[1] };
         tokio::spawn(async move {
             use tokio::sync::mpsc::error::TryRecvError;
 
@@ -284,7 +302,9 @@ impl Connection {
                     trace!(logger, "processing final message");
                     fd_status[0] = self.read_command_fd(id, 0, &fd_status[0], &mut stdin).await;
                     fd_status[1] = self.write_command_fd(id, 1, &fd_status[1], &mut stdout).await;
-                    fd_status[2] = self.write_command_fd(id, 2, &fd_status[2], &mut stderr).await;
+                    if fd_status.len() > 2 {
+                        fd_status[2] = self.write_command_fd(id, 2, &fd_status[2], &mut stderr).await;
+                    }
 
                     while fd_status[0].needs_read() {
                         fd_status[0] = self.read_command_fd(id, 0, &fd_status[0], &mut stdin).await;
@@ -292,7 +312,7 @@ impl Connection {
                     while fd_status[1].needs_write() {
                         fd_status[1] = self.write_command_fd(id, 1, &fd_status[1], &mut stdout).await;
                     }
-                    while fd_status[2].needs_write() {
+                    while fd_status.len() > 2 && fd_status[2].needs_write() {
                         fd_status[2] = self.write_command_fd(id, 2, &fd_status[2], &mut stderr).await;
                     }
                     let _ = self.delete_channel(id).await;
@@ -336,7 +356,7 @@ impl Connection {
                         }
                         if let Some(flags) = results.get(&2) {
                             let mask = (PollChannelFlags::Input | PollChannelFlags::Hangup | PollChannelFlags::Invalid).bits();
-                            if (flags & mask) != 0 {
+                            if (flags & mask) != 0 && fd_status.len() > 2 {
                                 trace!(logger, "channel {}: selector 2: writing", id);
                                 fd_status[2] = self.write_command_fd(id, 2, &fd_status[2], &mut stderr).await;
                                 last = last || fd_status[2].last || fd_status[2].data.as_ref().map(|x| x.len()).unwrap_or_default() != 0;
@@ -761,6 +781,29 @@ impl Connection {
             env: None,
             meta: Some(meta),
             selectors,
+        };
+        let resp: CreateChannelResponse = match handler
+            .send_message(MessageKind::CreateChannel, &req, Some(true))
+            .await?
+        {
+            Some(resp) => resp,
+            None => return Err(Error::new(ErrorKind::MissingResponse)),
+        };
+        Ok(resp.id)
+    }
+
+    async fn create_9p_channel(&self, target: Bytes) -> Result<ChannelID, Error> {
+        let handler = match self.handler.as_ref() {
+            Some(handler) => handler,
+            None => return Err(Error::new(ErrorKind::NotConnected)),
+        };
+        let req = CreateChannelRequest {
+            kind: (b"9p" as &'static [u8]).into(),
+            kind_args: None,
+            args: Some(vec![target]),
+            env: Some(self.config.env_vars().clone()),
+            meta: None,
+            selectors: vec![0, 1],
         };
         let resp: CreateChannelResponse = match handler
             .send_message(MessageKind::CreateChannel, &req, Some(true))
