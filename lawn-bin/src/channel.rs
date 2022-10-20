@@ -8,7 +8,7 @@ use lawn_protocol::protocol;
 use lawn_protocol::protocol::{ChannelID, ClipboardChannelOperation, ErrorBody, ResponseCode};
 use std::collections::HashMap;
 use std::os::raw::c_int;
-use std::os::unix::io::{AsRawFd, FromRawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::process::ExitStatusExt;
 use std::process::{ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -95,6 +95,103 @@ impl ChannelManager {
             }
         }
     }
+}
+
+fn poll(
+    logger: Arc<Logger>,
+    selectors: Vec<u32>,
+    fds: Vec<RawFd>,
+    id: ChannelID,
+    duration: Duration,
+    ch: oneshot::Sender<Result<Vec<protocol::PollChannelFlags>, protocol::Error>>,
+) {
+    let base_flags = protocol::PollChannelFlags::default();
+    block_on_async(async move {
+        if selectors.len() > 3 {
+            ch.send(Err(protocol::Error {
+                code: ResponseCode::InvalidParameters,
+                body: None,
+            }))
+            .unwrap();
+            return;
+        }
+        if duration > Duration::from_millis(30 * 1000) {
+            ch.send(Err(protocol::Error {
+                code: ResponseCode::InvalidParameters,
+                body: None,
+            }))
+            .unwrap();
+            return;
+        }
+        trace!(
+            logger,
+            "channel {}: poll: polling {:?} for {:?}",
+            id,
+            selectors,
+            duration
+        );
+        let mut pfd = Vec::with_capacity(selectors.len());
+        for fd in fds {
+            pfd.push(libc::pollfd {
+                fd,
+                events: libc::POLLIN | libc::POLLOUT | libc::POLLHUP,
+                revents: 0,
+            });
+        }
+        trace!(logger, "channel {}: poll: starting blocking task", id);
+        tokio::task::spawn_blocking(move || {
+            let pfd: &mut [libc::pollfd] = &mut pfd;
+            trace!(logger, "channel {}: poll: starting poll(2)", id);
+            let res = unix::call_with_result(|| unsafe {
+                libc::poll(
+                    pfd.as_mut_ptr(),
+                    pfd.len() as libc::nfds_t,
+                    duration.as_millis() as c_int,
+                )
+            });
+            trace!(
+                logger,
+                "channel {}: poll: finished poll(2): {:?} ready",
+                id,
+                res
+            );
+            let msg = match res {
+                Ok(_) => {
+                    let mut v = Vec::with_capacity(selectors.len());
+                    vec![base_flags; selectors.len()];
+                    for fd in pfd {
+                        let mut flags = base_flags;
+                        if (fd.revents & libc::POLLIN) != 0 {
+                            flags |= protocol::PollChannelFlags::Input;
+                        }
+                        if (fd.revents & libc::POLLOUT) != 0 {
+                            flags |= protocol::PollChannelFlags::Output;
+                        }
+                        if (fd.revents & libc::POLLHUP) != 0 {
+                            flags |= protocol::PollChannelFlags::Hangup;
+                        }
+                        if (fd.revents & libc::POLLERR) != 0 {
+                            flags |= protocol::PollChannelFlags::Error;
+                        }
+                        if (fd.revents & libc::POLLNVAL) != 0 {
+                            flags |= protocol::PollChannelFlags::Invalid;
+                        }
+                        trace!(
+                            logger,
+                            "channel {}: poll: fd {}: flags {}",
+                            id,
+                            fd.fd,
+                            flags.bits()
+                        );
+                        v.push(flags);
+                    }
+                    Ok(v)
+                }
+                Err(e) => Err(e.into()),
+            };
+            let _ = ch.send(msg);
+        });
+    })
 }
 
 pub trait Channel {
@@ -335,107 +432,21 @@ impl Channel for ServerGenericCommandChannel {
         //};
         trace!(logger, "channel {}: poll: flags {:?}", self.id, base_flags);
         let id = self.id;
-        let fds: Vec<_> = selectors
+        let fds: Result<Vec<_>, protocol::Error> = selectors
             .iter()
-            .map(|s| self.fd_from_selector(*s))
+            .map(|s| {
+                self.fd_from_selector(*s).ok_or(protocol::Error {
+                    code: ResponseCode::InvalidParameters,
+                    body: None,
+                })
+            })
             .collect();
-        block_on_async(async move {
-            if selectors.len() > 3 {
-                ch.send(Err(protocol::Error {
-                    code: ResponseCode::InvalidParameters,
-                    body: None,
-                }))
-                .unwrap();
-                return;
+        match fds {
+            Ok(fds) => poll(logger, selectors, fds, id, duration, ch),
+            Err(e) => {
+                let _ = ch.send(Err(e));
             }
-            if duration > Duration::from_millis(30 * 1000) {
-                ch.send(Err(protocol::Error {
-                    code: ResponseCode::InvalidParameters,
-                    body: None,
-                }))
-                .unwrap();
-                return;
-            }
-            trace!(
-                logger,
-                "channel {}: poll: polling {:?} for {:?}",
-                id,
-                selectors,
-                duration
-            );
-            let mut pfd = Vec::with_capacity(selectors.len());
-            for (sel, fd) in selectors.iter().zip(fds.iter()) {
-                let fd = match (sel, fd) {
-                    (0, Some(_)) | (1, Some(_)) | (2, Some(_)) => fd.unwrap(),
-                    _ => {
-                        ch.send(Err(protocol::Error {
-                            code: ResponseCode::InvalidParameters,
-                            body: None,
-                        }))
-                        .unwrap();
-                        return;
-                    }
-                };
-                pfd.push(libc::pollfd {
-                    fd,
-                    events: libc::POLLIN | libc::POLLOUT | libc::POLLHUP,
-                    revents: 0,
-                });
-            }
-            trace!(logger, "channel {}: poll: starting blocking task", id);
-            tokio::task::spawn_blocking(move || {
-                let pfd: &mut [libc::pollfd] = &mut pfd;
-                trace!(logger, "channel {}: poll: starting poll(2)", id);
-                let res = unix::call_with_result(|| unsafe {
-                    libc::poll(
-                        pfd.as_mut_ptr(),
-                        pfd.len() as libc::nfds_t,
-                        duration.as_millis() as c_int,
-                    )
-                });
-                trace!(
-                    logger,
-                    "channel {}: poll: finished poll(2): {:?} ready",
-                    id,
-                    res
-                );
-                let msg = match res {
-                    Ok(_) => {
-                        let mut v = Vec::with_capacity(selectors.len());
-                        vec![base_flags; selectors.len()];
-                        for fd in pfd {
-                            let mut flags = base_flags;
-                            if (fd.revents & libc::POLLIN) != 0 {
-                                flags |= protocol::PollChannelFlags::Input;
-                            }
-                            if (fd.revents & libc::POLLOUT) != 0 {
-                                flags |= protocol::PollChannelFlags::Output;
-                            }
-                            if (fd.revents & libc::POLLHUP) != 0 {
-                                flags |= protocol::PollChannelFlags::Hangup;
-                            }
-                            if (fd.revents & libc::POLLERR) != 0 {
-                                flags |= protocol::PollChannelFlags::Error;
-                            }
-                            if (fd.revents & libc::POLLNVAL) != 0 {
-                                flags |= protocol::PollChannelFlags::Invalid;
-                            }
-                            trace!(
-                                logger,
-                                "channel {}: poll: fd {}: flags {}",
-                                id,
-                                fd.fd,
-                                flags.bits()
-                            );
-                            v.push(flags);
-                        }
-                        Ok(v)
-                    }
-                    Err(e) => Err(e.into()),
-                };
-                let _ = ch.send(msg);
-            });
-        })
+        }
     }
 
     fn ping(&self) -> Result<(), protocol::Error> {
