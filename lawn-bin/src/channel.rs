@@ -4,9 +4,15 @@ use crate::config::Logger;
 use crate::task::block_on_async;
 use crate::unix;
 use bytes::Bytes;
+use lawn_9p::auth::{AuthenticationInfo, Authenticator};
+use lawn_9p::backend::libc::LibcBackend;
+use lawn_9p::backend::ToIdentifier;
+use lawn_9p::server::Server as Server9P;
+use lawn_constants::error::Error as Errno;
 use lawn_protocol::protocol;
 use lawn_protocol::protocol::{ChannelID, ClipboardChannelOperation, ErrorBody, ResponseCode};
 use std::collections::HashMap;
+use std::io;
 use std::os::raw::c_int;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::process::ExitStatusExt;
@@ -17,6 +23,8 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
 use tokio::select;
 use tokio::sync;
@@ -604,5 +612,321 @@ impl Channel for ServerClipboardChannel {
 
     fn set_dead(&self) {
         self.ch.set_dead()
+    }
+}
+
+#[derive(Ord, PartialOrd, Eq, PartialEq)]
+pub struct Server9PSessionHandle {
+    target: Bytes,
+    location: Bytes,
+    user: Bytes,
+    nuname: Option<u32>,
+    valid: bool,
+}
+
+impl ToIdentifier for Server9PSessionHandle {
+    fn to_identifier(&self) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend((self.target.len() as u64).to_le_bytes());
+        v.extend((self.location.len() as u64).to_le_bytes());
+        v.extend((self.user.len() as u64).to_le_bytes());
+        v.extend(&self.target);
+        v.extend(&self.location);
+        v.extend(&self.user);
+        v
+    }
+}
+
+pub struct Server9PAuthenticator {
+    target: Bytes,
+    location: Bytes,
+    logger: Arc<Logger>,
+}
+
+impl Server9PAuthenticator {
+    pub fn new(target: Bytes, location: Bytes, logger: Arc<Logger>) -> Self {
+        Self {
+            target,
+            location,
+            logger,
+        }
+    }
+}
+
+impl Authenticator for Server9PAuthenticator {
+    type SessionHandle = Server9PSessionHandle;
+
+    fn create(&self, uname: &[u8], aname: &[u8], nuname: Option<u32>) -> Self::SessionHandle {
+        // TODO: implement logging trait
+        trace!(
+            self.logger,
+            "9P authenticator: user {} location {} target {} nuname {:?} aname {} valid {}",
+            hex::encode(uname),
+            hex::encode(&self.location),
+            hex::encode(&self.target),
+            nuname,
+            hex::encode(aname),
+            aname == self.target
+        );
+        Server9PSessionHandle {
+            user: uname.to_vec().into(),
+            location: self.location.to_vec().into(),
+            target: self.target.to_vec().into(),
+            nuname,
+            valid: aname == self.target || aname.is_empty(),
+        }
+    }
+
+    fn read(&self, _handle: &mut Self::SessionHandle, _data: &mut [u8]) -> Result<u32, Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+
+    fn write(&self, _handle: &mut Self::SessionHandle, _data: &[u8]) -> Result<u32, Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+
+    fn info<'a>(&self, handle: &'a Self::SessionHandle) -> Option<AuthenticationInfo<'a>> {
+        if !handle.valid {
+            return None;
+        }
+        Some(AuthenticationInfo::new(
+            handle.nuname,
+            &handle.user,
+            &handle.target,
+            &handle.location,
+        ))
+    }
+}
+
+pub struct Server9PChannel {
+    rd: Arc<sync::Mutex<Option<OwnedReadHalf>>>,
+    wr: Arc<sync::Mutex<Option<OwnedWriteHalf>>>,
+    rdwr: RawFd,
+    alive: AtomicBool,
+    exit_status: Arc<Mutex<Option<i32>>>,
+    id: ChannelID,
+    logger: Arc<Logger>,
+}
+
+impl Server9PChannel {
+    pub fn new(
+        logger: Arc<Logger>,
+        id: ChannelID,
+        target: Bytes,
+        location: Bytes,
+    ) -> Result<Server9PChannel, protocol::Error> {
+        const BUFFER_SIZE: usize = 128 * 1024;
+        let (str1, str2) = UnixStream::pair()?;
+        let rdwr = str2.as_raw_fd();
+        let (rd1, wr1) = str1.into_split();
+        let (rd2, wr2) = str2.into_split();
+        let exit_status = Arc::new(Mutex::new(None));
+        let es = exit_status.clone();
+        let serv = Server9P::new(
+            logger.clone(),
+            LibcBackend::new(
+                logger.clone(),
+                Server9PAuthenticator::new(target, location, logger.clone()),
+                BUFFER_SIZE as u32,
+            ),
+            rd1,
+            wr1,
+        );
+        let serv_logger = logger.clone();
+        tokio::spawn(async move {
+            let mut serv = serv;
+            let r = serv.run().await;
+            trace!(serv_logger, "channel {}: 9P server exiting: {:?}", id, &r);
+            let mut g = es.lock().unwrap();
+            *g = Some(if r.is_ok() { 0 } else { 3 });
+        });
+        Ok(Self {
+            logger,
+            id,
+            rdwr,
+            exit_status,
+            alive: AtomicBool::new(true),
+            rd: Arc::new(sync::Mutex::new(Some(rd2))),
+            wr: Arc::new(sync::Mutex::new(Some(wr2))),
+        })
+    }
+}
+
+impl Channel for Server9PChannel {
+    fn id(&self) -> ChannelID {
+        self.id
+    }
+
+    fn read(&self, selector: u32) -> Result<Bytes, protocol::Error> {
+        let fd = self.rd.clone();
+        let logger = self.logger.clone();
+        let id = self.id;
+        block_on_async(async move {
+            let mut g = fd.lock().await;
+            match (selector, &mut *g) {
+                (1, Some(reader)) => {
+                    trace!(logger, "channel {}: reading {}", id, selector);
+                    let mut buf = vec![0u8; 65536];
+                    let n = match reader.try_read(&mut buf) {
+                        Ok(n) => n,
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                            return Err(protocol::Error::from_errno(libc::EAGAIN));
+                        }
+                        Err(e) => {
+                            trace!(
+                                logger,
+                                "channel {}: reading {} failed with {}",
+                                id,
+                                selector,
+                                e
+                            );
+                            return Err(e.into());
+                        }
+                    };
+                    trace!(logger, "channel {}: read {} bytes from {}", id, n, selector);
+                    buf.truncate(n);
+                    Ok(buf.into())
+                }
+                _ => {
+                    trace!(
+                        logger,
+                        "channel {}: bad descriptor {} for reading",
+                        id,
+                        selector
+                    );
+                    Err(protocol::Error::from_errno(libc::EBADF))
+                }
+            }
+        })
+    }
+
+    fn write(&self, selector: u32, data: Bytes) -> Result<u64, protocol::Error> {
+        let fd = self.wr.clone();
+        let logger = self.logger.clone();
+        let id = self.id;
+        block_on_async(async move {
+            let mut g = fd.lock().await;
+            match (selector, &mut *g) {
+                (0, Some(writer)) => {
+                    trace!(logger, "channel {}: writing {}", id, selector);
+                    let n = match writer.try_write(&data) {
+                        Ok(n) => n,
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                            return Err(protocol::Error::from_errno(libc::EAGAIN));
+                        }
+                        Err(e) => {
+                            trace!(
+                                logger,
+                                "channel {}: writing {} failed with {}",
+                                id,
+                                selector,
+                                e
+                            );
+                            return Err(e.into());
+                        }
+                    };
+                    trace!(
+                        logger,
+                        "channel {}: wrote {} bytes from {}",
+                        id,
+                        data.len(),
+                        selector
+                    );
+                    Ok(n as u64)
+                }
+                _ => {
+                    trace!(
+                        logger,
+                        "channel {}: bad descriptor {} for writing",
+                        id,
+                        selector
+                    );
+                    Err(protocol::Error::from_errno(libc::EBADF))
+                }
+            }
+        })
+    }
+
+    fn poll(
+        &self,
+        selectors: Vec<u32>,
+        duration: Duration,
+        ch: oneshot::Sender<Result<Vec<protocol::PollChannelFlags>, protocol::Error>>,
+    ) {
+        let base_flags = {
+            let g = self.exit_status.lock().unwrap();
+            if g.is_some() {
+                protocol::PollChannelFlags::Gone
+            } else {
+                protocol::PollChannelFlags::default()
+            }
+        };
+        trace!(
+            self.logger,
+            "channel {}: poll: flags {:?}",
+            self.id,
+            base_flags
+        );
+        let id = self.id;
+        let mut fds = Vec::new();
+        for sel in &selectors {
+            let f = match sel {
+                0 => self.wr.blocking_lock().as_ref().map(|_| self.rdwr),
+                1 => self.rd.blocking_lock().as_ref().map(|_| self.rdwr),
+                _ => None,
+            };
+            let fd = match f {
+                Some(f) => f,
+                None => {
+                    let _ = ch.send(Err(protocol::Error {
+                        code: ResponseCode::InvalidParameters,
+                        body: None,
+                    }));
+                    return;
+                }
+            };
+            fds.push(fd);
+        }
+        poll(self.logger.clone(), selectors, fds, id, duration, ch);
+    }
+
+    fn ping(&self) -> Result<(), protocol::Error> {
+        {
+            let g = self.exit_status.lock().unwrap();
+            if let Some(st) = *g {
+                return Err(protocol::Error {
+                    code: ResponseCode::Gone,
+                    body: Some(ErrorBody::Exit(st)),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn detach_selector(&self, selector: u32) -> Result<(), protocol::Error> {
+        let rd = self.rd.clone();
+        let wr = self.wr.clone();
+        block_on_async(async move {
+            match selector {
+                0 => {
+                    let mut g = wr.lock().await;
+                    *g = None
+                }
+                1 => {
+                    let mut g = rd.lock().await;
+                    *g = None
+                }
+                _ => return Err(protocol::Error::from_errno(libc::EBADF)),
+            }
+            Ok(())
+        })
+    }
+
+    fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Acquire)
+    }
+
+    fn set_dead(&self) {
+        self.alive.store(false, Ordering::Release);
     }
 }
