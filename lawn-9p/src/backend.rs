@@ -10,6 +10,9 @@ use std::time::SystemTime;
 
 type Result<T> = std::result::Result<T, Error>;
 
+#[cfg(feature = "unix")]
+pub mod libc;
+
 /// The interface to store and access files.
 pub trait Backend {
     fn version(&self, meta: &Metadata, max_size: u32, version: &[u8]) -> Result<(u32, Vec<u8>)>;
