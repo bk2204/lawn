@@ -1,4 +1,6 @@
-use crate::channel::{ChannelManager, ServerClipboardChannel, ServerCommandChannel};
+use crate::channel::{
+    ChannelManager, Server9PChannel, ServerClipboardChannel, ServerCommandChannel,
+};
 use crate::config;
 use crate::config::{Config, Logger};
 use crate::encoding::{escape, path};
@@ -539,6 +541,9 @@ impl Server {
                     {
                         Self::create_clipboard_channel(id, state.clone(), &m).await
                     }
+                    b"9p" if handler.has_capability(&protocol::Capability::Channel9P) => {
+                        Self::create_9p_channel(id, state.clone(), &m).await
+                    }
                     _ => return Err(ResponseCode::ParametersNotSupported.into()),
                 };
                 match res {
@@ -823,6 +828,85 @@ impl Server {
         let channels = state.channels();
         let cid = channels.next_id();
         let ch = Arc::new(ServerClipboardChannel::new(logger, cid, cmd, op)?);
+        channels.insert(cid, ch);
+        Ok(cid)
+    }
+
+    async fn create_9p_channel<T: AsyncRead + Unpin, U: AsyncWrite + Unpin>(
+        id: u64,
+        state: Arc<ServerState<T, U>>,
+        m: &protocol::CreateChannelRequest,
+    ) -> Result<protocol::ChannelID, handler::Error> {
+        let allowed: HashSet<u32> = vec![0, 1].iter().cloned().collect();
+        let requested: HashSet<u32> = m.selectors.iter().cloned().collect();
+        if allowed != requested {
+            return Err(ResponseCode::ParametersNotSupported.into());
+        }
+        let args = match &m.args {
+            Some(args) if !args.is_empty() => args,
+            _ => return Err(ResponseCode::InvalidParameters.into()),
+        };
+        if args.len() != 1 {
+            return Err(ResponseCode::InvalidParameters.into());
+        }
+        let mount = match std::str::from_utf8(&args[0]) {
+            Ok(s) => s,
+            Err(_) => return Err(ResponseCode::InvalidParameters.into()),
+        };
+        let config = state.config();
+        let logger = config.logger();
+        match config.p9p_enabled(mount) {
+            Ok(true) => (),
+            Ok(false) => {
+                trace!(logger, "server: {}: 9P disabled for mount {}", id, mount);
+                return Err(ResponseCode::NotFound.into());
+            }
+            Err(e) => {
+                trace!(
+                    logger,
+                    "server: {}: 9P error checking if enabled for mount {}: {}",
+                    id,
+                    mount,
+                    e
+                );
+                return Err(ResponseCode::NotFound.into());
+            }
+        }
+        let location = match config.p9p_location(mount) {
+            Ok(Some(loc)) => {
+                trace!(
+                    logger,
+                    "server: {}: 9P mount {} points to {}",
+                    id,
+                    mount,
+                    loc
+                );
+                loc
+            }
+            Ok(None) => {
+                trace!(logger, "server: {}: 9P mount {} does not exist", id, mount);
+                return Err(ResponseCode::NotFound.into());
+            }
+            Err(e) => {
+                trace!(
+                    logger,
+                    "server: {}: 9P error checking if mount {} exists: {}",
+                    id,
+                    mount,
+                    e
+                );
+                return Err(ResponseCode::NotFound.into());
+            }
+        };
+        let logger = state.logger();
+        let channels = state.channels();
+        let cid = channels.next_id();
+        let ch = Arc::new(Server9PChannel::new(
+            logger,
+            cid,
+            mount.to_string().into(),
+            location.into(),
+        )?);
         channels.insert(cid, ch);
         Ok(cid)
     }
