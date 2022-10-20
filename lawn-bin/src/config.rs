@@ -219,6 +219,49 @@ impl Config {
         Ok(result)
     }
 
+    pub fn p9p_enabled(&self, name: &str) -> Result<bool, Error> {
+        let val = {
+            let g = self.data.read().unwrap();
+            if let Some(val) = g.clipboard_enabled {
+                return Ok(val);
+            }
+            match g
+                .config_file
+                .v0
+                .p9p
+                .as_ref()
+                .and_then(|p| p.get(name))
+                .map(|x| x.if_value.clone())
+            {
+                Some(v) => v,
+                None => Value::Bool(false),
+            }
+        };
+        let ctx = self.template_context(None, None);
+        ConfigValue::new(val, &ctx)?.into_bool()
+    }
+
+    pub fn p9p_location(&self, name: &str) -> Result<Option<String>, Error> {
+        let val = {
+            let g = self.data.read().unwrap();
+            match g
+                .config_file
+                .v0
+                .p9p
+                .as_ref()
+                .and_then(|p| p.get(name))
+                .and_then(|x| x.location.clone())
+            {
+                Some(Value::String(ref s)) => s.clone(),
+                None => return Ok(None),
+                _ => return Err(Error::new(ErrorKind::InvalidConfigurationValue)),
+            }
+        };
+        let ctx = self.template_context(None, None);
+        let val = Value::String(val);
+        Ok(Some(ConfigValue::new(val, &ctx)?.into_string()?))
+    }
+
     fn clipboard_command_from_str(s: &str) -> Option<ClipboardBackend> {
         match s {
             "xclip" => Some(ClipboardBackend::XClip),
@@ -768,6 +811,7 @@ impl ConfigFile {
                 clipboard: None,
                 socket: None,
                 commands: None,
+                p9p: None,
             },
         }
     }
@@ -779,6 +823,8 @@ struct ConfigFileV0 {
     clipboard: Option<ConfigClipboard>,
     socket: Option<ConfigSockets>,
     commands: Option<BTreeMap<String, ConfigCommand>>,
+    #[serde(rename = "9p")]
+    p9p: Option<BTreeMap<String, Config9P>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -802,6 +848,13 @@ pub struct ConfigCommand {
     pre: Option<Vec<String>>,
     #[serde(rename = "post")]
     post: Option<Vec<String>>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Config9P {
+    #[serde(rename = "if")]
+    if_value: Value,
+    location: Option<Value>,
 }
 
 #[cfg(test)]
