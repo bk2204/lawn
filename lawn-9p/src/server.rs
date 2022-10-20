@@ -11,6 +11,10 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
+mod implementation;
+
+pub use implementation::{Server, ServerError};
+
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 pub struct Tag(pub [u8; 2]);
 
