@@ -225,6 +225,7 @@ impl Capability {
             Self::AuthExternal,
             Self::ChannelCommand,
             Self::ChannelClipboard,
+            Self::Channel9P,
         ]
         .iter()
         .cloned()
@@ -234,7 +235,7 @@ impl Capability {
     pub fn is_implemented(&self) -> bool {
         matches!(
             self,
-            Self::AuthExternal | Self::ChannelCommand | Self::ChannelClipboard
+            Self::AuthExternal | Self::ChannelCommand | Self::ChannelClipboard | Self::Channel9P
         )
     }
 }

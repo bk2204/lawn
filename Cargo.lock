@@ -192,6 +192,7 @@ dependencies = [
  "clap",
  "daemonize",
  "hex",
+ "lawn-9p",
  "lawn-constants",
  "lawn-protocol",
  "libc",
