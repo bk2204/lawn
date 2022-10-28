@@ -271,14 +271,14 @@ impl Channel for ServerGenericCommandChannel {
             select! {
                 res = g.read(&mut v) => {
                     trace!(logger, "channel {}: read: {:?}", id, res);
-                    return match res {
+                    match res {
                         Ok(n) => Ok(v[..n].to_vec().into()),
                         Err(e) => Err(e.into()),
-                    };
+                    }
                 },
                 _ = interval.tick() => {
                     trace!(logger, "channel {}: read: EAGAIN", id);
-                    return Err(protocol::Error::from_errno(libc::EAGAIN));
+                    Err(protocol::Error::from_errno(libc::EAGAIN))
                 }
             }
         })
@@ -305,14 +305,14 @@ impl Channel for ServerGenericCommandChannel {
             select! {
                 res = g.write(&data) => {
                     trace!(logger, "channel {}: write: {:?}", id, res);
-                    return match res {
+                    match res {
                         Ok(n) => Ok(n as u64),
                         Err(e) => Err(e.into())
-                    };
+                    }
                 },
                 _ = interval.tick() => {
                     trace!(logger, "channel {}: read: EAGAIN", id);
-                    return Err(protocol::Error::from_errno(libc::EAGAIN));
+                    Err(protocol::Error::from_errno(libc::EAGAIN))
                 }
             }
         })
@@ -454,10 +454,10 @@ impl Channel for ServerGenericCommandChannel {
             Ok(Some(st)) => {
                 let mut g = self.exit_status.lock().unwrap();
                 *g = Some(st);
-                return Err(protocol::Error {
+                Err(protocol::Error {
                     code: ResponseCode::Gone,
                     body: Some(ErrorBody::Exit(Self::convert_exit(st))),
-                });
+                })
             }
             Ok(None) => Ok(()),
             Err(e) => Err(e.into()),
