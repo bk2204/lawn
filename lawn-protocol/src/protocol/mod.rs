@@ -461,6 +461,7 @@ pub struct Response {
     pub message: Option<Bytes>,
 }
 
+#[derive(Default)]
 pub struct ProtocolSerializer {}
 
 pub enum Data {
