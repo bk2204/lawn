@@ -26,6 +26,7 @@ mod client;
 mod config;
 mod encoding;
 mod error;
+mod p9p_proxy;
 mod server;
 mod ssh_proxy;
 mod task;
@@ -347,6 +348,7 @@ fn dispatch_proxy(
         let addr = socket.peer_addr().unwrap();
         let ours = addr.as_pathname().unwrap();
         let multiplex = find_vacant_socket(config.clone(), "ssh")?;
+
         trace!(logger, "using {} as SSH socket", escape(path(&*multiplex)));
         let proxy = ssh_proxy::ProxyListener::new(
             config,
@@ -377,6 +379,89 @@ fn dispatch_proxy(
         });
         let res = join.await.unwrap();
         let _ = std::fs::remove_file(&multiplex);
+        Ok(res)
+    });
+    std::process::exit(res?);
+}
+
+fn dispatch_mount(
+    config: Arc<config::Config>,
+    main: &ArgMatches,
+    m: &ArgMatches,
+) -> Result<(), Error> {
+    let args: Vec<OsString> = match m.values_of_os("arg") {
+        Some(args) => args.map(|x| x.to_owned()).collect(),
+        _ => return Err(Error::new(ErrorKind::MissingArguments)),
+    };
+    if args.is_empty() {
+        return Err(Error::new(ErrorKind::MissingArguments));
+    }
+    let logger = config.logger();
+    logger.trace("Starting runtime");
+    let runtime = runtime();
+    let res: Result<i32, Error> = runtime.block_on(async move {
+        let socket = find_or_autostart_server(main.value_of_os("socket"), config.clone())?;
+        let target_9p = m.value_of_os("9p").unwrap();
+        let addr = socket.peer_addr().unwrap();
+        let ours = addr.as_pathname().unwrap();
+        let p9p_sock = find_vacant_socket(config.clone(), "9p")?;
+        let p9p_sock_loc = p9p_sock.clone();
+        trace!(logger, "using {} as 9P socket", escape(path(&*p9p_sock)));
+        let proxy = p9p_proxy::ProxyListener::new(
+            config,
+            p9p_sock.clone(),
+            ours.into(),
+            target_9p.as_bytes().to_vec().into(),
+        )
+        .map_err(|_| Error::new(ErrorKind::SocketConnectionFailure))?;
+        let want_socket = if m.is_present("socket") {
+            true
+        } else if m.is_present("fd") {
+            false
+        } else {
+            error!(logger, "one of --socket or --fd is required");
+            return Err(Error::new(ErrorKind::MissingArguments));
+        };
+        let handle = tokio::spawn(async move {
+            if !want_socket {
+                let _ = proxy.run_server_once().await;
+            } else {
+                let _ = proxy.run_server().await;
+            }
+        });
+        let join = tokio::task::spawn_blocking(move || {
+            let mut res = std::process::Command::new(args[0].clone());
+            res.stdin(Stdio::inherit())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit());
+            if want_socket {
+                res.env("P9P_SOCK", OsString::from(&p9p_sock));
+            } else {
+                use std::os::unix::io::{FromRawFd, IntoRawFd};
+
+                let sock = match std::os::unix::net::UnixStream::connect(p9p_sock) {
+                    Ok(sock) => sock,
+                    Err(e) => {
+                        error!(logger, "failed to connect to socket: {}", e);
+                        return 127;
+                    }
+                };
+                let fd = sock.into_raw_fd();
+                res.stdin(unsafe { Stdio::from_raw_fd(fd) });
+                res.stdout(unsafe { Stdio::from_raw_fd(fd) });
+            }
+            let res = res.args(&args[1..]).spawn();
+            match res {
+                Ok(mut child) => match child.wait() {
+                    Ok(st) => st.code().unwrap_or(127),
+                    Err(_) => 127,
+                },
+                Err(_) => 127,
+            }
+        });
+        let _ = handle.await;
+        let res = join.await.unwrap();
+        let _ = std::fs::remove_file(&p9p_sock_loc);
         Ok(res)
     });
     std::process::exit(res?);
@@ -498,6 +583,13 @@ fn dispatch(verbosity: &mut i32) -> Result<(), Error> {
                 .arg(Arg::with_name("ssh").long("ssh"))
                 .arg(Arg::with_name("arg").multiple(true)),
         )
+        .subcommand(
+            App::new("mount")
+                .arg(Arg::with_name("socket").long("socket"))
+                .arg(Arg::with_name("fd").long("fd"))
+                .arg(Arg::with_name("9p").required(true))
+                .arg(Arg::with_name("arg").multiple(true).required(true)),
+        )
         .subcommand(App::new("run").arg(Arg::with_name("arg").multiple(true)))
         .get_matches();
     *verbosity = matches.occurrences_of("verbose") as i32 - matches.occurrences_of("quiet") as i32;
@@ -509,6 +601,7 @@ fn dispatch(verbosity: &mut i32) -> Result<(), Error> {
         ("server", Some(m)) => dispatch_server(config, &matches, m),
         ("query", Some(m)) => dispatch_query(config, &matches, m),
         ("clip", Some(m)) => dispatch_clip(config, &matches, m),
+        ("mount", Some(m)) => dispatch_mount(config, &matches, m),
         ("proxy", Some(m)) => dispatch_proxy(config, &matches, m),
         ("run", Some(m)) => dispatch_run(config, &matches, m),
         _ => Err(Error::new(ErrorKind::Unimplemented)),
