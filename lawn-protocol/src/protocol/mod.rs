@@ -232,10 +232,7 @@ impl Capability {
     }
 
     pub fn is_implemented(&self) -> bool {
-        match self {
-            Self::AuthExternal | Self::ChannelCommand | Self::ChannelClipboard => true,
-            _ => false,
-        }
+        matches!(self, Self::AuthExternal | Self::ChannelCommand | Self::ChannelClipboard)
     }
 }
 
