@@ -25,7 +25,7 @@ pub fn uri_encode<T: AsRef<[u8]>>(data: T) -> String {
                 let mut v = "%".to_string();
                 unsafe {
                     let s = std::str::from_utf8_unchecked(&buf);
-                    v.extend(s.chars());
+                    v.push_str(s);
                 };
                 v.chars().collect::<Vec<char>>()
             } else {
@@ -68,7 +68,7 @@ pub fn escape<T: AsRef<[u8]>>(data: T) -> String {
                 let mut v = "\\x".to_string();
                 unsafe {
                     let s = std::str::from_utf8_unchecked(&buf);
-                    v.extend(s.chars());
+                    v.push_str(s);
                 };
                 v.chars().collect()
             } else {
