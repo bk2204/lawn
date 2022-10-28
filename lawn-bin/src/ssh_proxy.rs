@@ -36,6 +36,7 @@ struct Message {
     data: Vec<u8>,
 }
 
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug)]
 pub enum Error {
     IOError(io::Error),
