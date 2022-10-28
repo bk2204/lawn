@@ -83,9 +83,9 @@ impl From<handler::Error> for Error {
     }
 }
 
-impl Into<i32> for Error {
-    fn into(self) -> i32 {
-        self.kind.into()
+impl From<Error> for i32 {
+    fn from(e: Error) -> i32 {
+        e.kind.into()
     }
 }
 
@@ -111,8 +111,8 @@ pub enum ErrorKind {
     ConfigurationSpawnError,
 }
 
-impl Into<i32> for ErrorKind {
-    fn into(self) -> i32 {
+impl From<ErrorKind> for i32 {
+    fn from(_e: ErrorKind) -> i32 {
         2
     }
 }
