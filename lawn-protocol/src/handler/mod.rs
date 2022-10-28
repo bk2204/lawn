@@ -445,7 +445,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
             g.as_mut().write_all(data).await?;
         }
         if synchronous {
-            logger.trace(&format!("synchronous mode: waiting for response"));
+            logger.trace("synchronous mode: waiting for response");
             loop {
                 match self.recv().await {
                     Ok(None) => {
