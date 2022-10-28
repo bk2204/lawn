@@ -610,14 +610,14 @@ impl<'a, 'b, 'c> ConfigValue<'a, 'b, 'c> {
     }
 }
 
-pub fn command_from_shell<'a, 'b, 'c>(shell: &Bytes, context: &'c TemplateContext<'a, 'b>) -> tokio::process::Command {
+pub fn command_from_shell(shell: &Bytes, context: &TemplateContext<'_, '_>) -> tokio::process::Command {
     let mut shell: BytesMut = shell.as_ref().into();
     shell.extend_from_slice(b" \"$@\"");
     command_from_args(&[(b"sh" as &'static [u8]).into(), (b"-c" as &'static [u8]).into(), shell.into()], context)
 }
 
 
-pub fn command_from_args<'a, 'b, 'c>(args: &[Bytes], context: &'c TemplateContext<'a, 'b>) -> tokio::process::Command {
+pub fn command_from_args(args: &[Bytes], context: &TemplateContext<'_, '_>) -> tokio::process::Command {
     let args: Vec<OsString> = args.iter().map(|x| OsString::from_vec(x.to_vec())).collect();
     let mut cmd = tokio::process::Command::new(&args[0]);
     if args.len() > 1 {
