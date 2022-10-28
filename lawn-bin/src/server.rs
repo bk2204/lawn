@@ -185,8 +185,8 @@ impl Server {
         })?;
         let mut interval = time::interval(Duration::from_secs(1));
         let mut counter = 0u64;
-        let storage: Mutex<HashMap<u64, (sync::mpsc::Sender<()>, task::JoinHandle<u64>)>> =
-            Mutex::new(HashMap::new());
+        let storage: sync::Mutex<HashMap<u64, (sync::mpsc::Sender<()>, task::JoinHandle<u64>)>> =
+            sync::Mutex::new(HashMap::new());
         if let Some(fdwr) = fdwr {
             logger.trace("server: writing pipe");
             let mut fdwr = fdwr;
@@ -198,7 +198,7 @@ impl Server {
                 _ = sig.recv() => {
                     logger.trace("server: received SIGTERM");
                     {
-                        let mut g = storage.lock().unwrap();
+                        let mut g = storage.lock().await;
                         for (tx, _) in g.values_mut() {
                             let _ = tx.send(()).await;
                         }
@@ -210,7 +210,7 @@ impl Server {
                 }
                 res = &mut rx => {
                     {
-                        let mut g = storage.lock().unwrap();
+                        let mut g = storage.lock().await;
                         for (tx, _) in g.values_mut() {
                             let _ = tx.send(()).await;
                         }
@@ -237,7 +237,7 @@ impl Server {
                             id
                         });
                         {
-                            let mut g = storage.lock().unwrap();
+                            let mut g = storage.lock().await;
                             g.insert(id, (tx, handle));
                         }
                     }
@@ -245,7 +245,7 @@ impl Server {
                 _ = interval.tick() => {
                     let mut to_delete = BTreeSet::new();
                     {
-                        let mut g = storage.lock().unwrap();
+                        let mut g = storage.lock().await;
                         for (id, (_, handle)) in g.iter_mut() {
                             let mut ready = false;
                             select!{
@@ -262,7 +262,7 @@ impl Server {
                         }
                     }
                     {
-                        let mut g = storage.lock().unwrap();
+                        let mut g = storage.lock().await;
                         for id in to_delete {
                             g.remove(&id);
                         }
