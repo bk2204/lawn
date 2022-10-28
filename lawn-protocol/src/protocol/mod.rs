@@ -477,7 +477,7 @@ impl ProtocolSerializer {
     }
 
     pub fn is_valid_size(&self, size: u32) -> bool {
-        size >= 8 && size <= Self::MAX_MESSAGE_SIZE
+        (8..=Self::MAX_MESSAGE_SIZE).contains(&size)
     }
 
     pub fn serialize_message_simple(&self, msg: &Message) -> Option<Bytes> {
