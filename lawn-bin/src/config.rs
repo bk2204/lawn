@@ -53,12 +53,7 @@ pub enum ClipboardBackend {
 
 impl ClipboardBackend {
     pub fn supports_target(&self, target: ClipboardChannelTarget) -> bool {
-        match (self, target) {
-            (Self::XClip, _) => true,
-            (Self::XSel, _) => true,
-            (Self::MacOS, ClipboardChannelTarget::Clipboard) => true,
-            _ => false,
-        }
+        matches!((self, target), (Self::XClip, _) | (Self::XSel, _) | (Self::MacOS, ClipboardChannelTarget::Clipboard))
     }
 
     pub fn command(&self, target: ClipboardChannelTarget, op: ClipboardChannelOperation) -> Vec<Bytes> {
