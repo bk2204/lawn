@@ -700,7 +700,7 @@ impl<'a, 'b, 'c> Command<'a, 'b, 'c> {
         } else if shell == b"false" as &[u8] {
             return Ok(1);
         }
-        let mut cmd = command_from_shell(shell, &self.context);
+        let mut cmd = command_from_shell(shell, self.context);
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::inherit());
         cmd.stderr(Stdio::inherit());
@@ -719,7 +719,7 @@ impl<'a, 'b, 'c> Command<'a, 'b, 'c> {
     }
 
     pub fn run_command(&self) -> tokio::process::Command {
-        command_from_shell(&self.command, &self.context)
+        command_from_shell(&self.command, self.context)
     }
 
     pub async fn check_condition(&self) -> Result<bool, Error> {

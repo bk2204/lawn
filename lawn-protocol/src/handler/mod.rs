@@ -125,7 +125,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
 
     pub fn has_capability(&self, capa: &protocol::Capability) -> bool {
         let g = self.capability.read().unwrap();
-        g.capabilities.contains(&capa)
+        g.capabilities.contains(capa)
     }
 
     pub fn set_capabilities(&self, capa: &BTreeSet<protocol::Capability>) {
@@ -332,7 +332,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
     async fn send_response(&self, resp: &Bytes) -> Result<(), Error> {
         {
             let mut g = self.outp.lock().await;
-            g.as_mut().write_all(&resp).await?
+            g.as_mut().write_all(resp).await?
         }
         Ok(())
     }
@@ -442,7 +442,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
         }
         {
             let mut g = self.outp.lock().await;
-            g.as_mut().write_all(&data).await?;
+            g.as_mut().write_all(data).await?;
         }
         if synchronous {
             logger.trace(&format!("synchronous mode: waiting for response"));
