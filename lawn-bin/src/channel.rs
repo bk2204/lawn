@@ -114,14 +114,12 @@ pub trait Channel {
     fn set_dead(&self);
 }
 
+type OptionLockedFile = Option<Arc<sync::Mutex<File>>>;
+
 pub struct ServerGenericCommandChannel {
     // TODO: take the FDs out of the child and handle them individually
     cmd: Mutex<Child>,
-    fds: RwLock<(
-        Option<Arc<sync::Mutex<File>>>,
-        Option<Arc<sync::Mutex<File>>>,
-        Option<Arc<sync::Mutex<File>>>,
-    )>,
+    fds: RwLock<(OptionLockedFile, OptionLockedFile, OptionLockedFile)>,
     exit_status: Mutex<Option<ExitStatus>>,
     id: ChannelID,
     logger: Arc<Logger>,
