@@ -694,6 +694,7 @@ impl Connection {
         Ok(resp.id)
     }
 
+    #[allow(clippy::mutable_key_type)]
     async fn create_clipboard_channel(&self, op: ClipboardChannelOperation, target: Option<ClipboardChannelTarget>) -> Result<ChannelID, Error> {
         let handler = match self.handler.as_ref() {
             Some(handler) => handler,

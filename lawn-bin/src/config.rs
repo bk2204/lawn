@@ -204,6 +204,7 @@ impl Config {
         g.runtime_dir.clone()
     }
 
+    #[allow(clippy::mutable_key_type)]
     pub fn env_vars(&self) -> &BTreeMap<Bytes, Bytes> {
         &self.env_vars
     }

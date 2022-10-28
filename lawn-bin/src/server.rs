@@ -742,6 +742,7 @@ impl Server {
         state: Arc<ServerState<T, U>>,
         m: &protocol::CreateChannelRequest,
     ) -> Result<protocol::ChannelID, handler::Error> {
+        #[allow(clippy::mutable_key_type)]
         let meta = match &m.meta {
             Some(meta) => meta,
             _ => return Err(ResponseCode::InvalidParameters.into()),
