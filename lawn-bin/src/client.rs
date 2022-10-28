@@ -252,12 +252,10 @@ impl Connection {
         let mut stdout = stdout;
         let mut stderr = stderr;
         let (polltx, mut pollrx) = tokio::sync::mpsc::unbounded_channel();
-        let (pollertx, mut pollerrx) = tokio::sync::mpsc::unbounded_channel();
+        let (pollertx, pollerrx) = tokio::sync::watch::channel(true);
         let (cfg, chandler) = (self.config.clone(), self.handler.clone());
         let selectors: &'static [u32] = if fd_status.len() > 2 { &[1, 2] } else { &[1] };
         tokio::spawn(async move {
-            use tokio::sync::mpsc::error::TryRecvError;
-
             const DURATIONS: &[u64] = &[10, 20, 40, 80, 160, 320, 500];
             let mut offset = 0;
             loop {
@@ -265,11 +263,14 @@ impl Connection {
                 let results =
                     Self::poll_channel(cfg.clone(), chandler.clone(), id, selectors).await;
                 let _ = polltx.send(results);
-                match pollerrx.try_recv() {
-                    Ok(true) => offset = offset.saturating_sub(1),
-                    Ok(false) => offset = std::cmp::min(offset + 1, DURATIONS.len()),
-                    Err(TryRecvError::Disconnected) => return,
-                    Err(TryRecvError::Empty) => (),
+                match pollerrx
+                    .has_changed()
+                    .map(|x| if x { Some(*pollerrx.borrow()) } else { None })
+                {
+                    Ok(Some(true)) => offset = offset.saturating_sub(1),
+                    Ok(Some(false)) => offset = std::cmp::min(offset + 1, DURATIONS.len() - 1),
+                    Ok(None) => (),
+                    Err(_) => return,
                 }
                 tokio::time::sleep_until(tokio::time::Instant::from_std(until)).await;
             }
