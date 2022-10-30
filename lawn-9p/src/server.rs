@@ -1055,6 +1055,46 @@ impl FileType {
     }
 }
 
+impl LinuxFileType {
+    #[cfg(feature = "unix")]
+    pub fn from_metadata(metadata: &fs::Metadata) -> Self {
+        let ft = metadata.file_type();
+        let kind = if ft.is_fifo() {
+            Self::S_IFIFO
+        } else if ft.is_socket() {
+            Self::S_IFSOCK
+        } else if ft.is_block_device() {
+            Self::S_IFBLK
+        } else if ft.is_char_device() {
+            Self::S_IFCHR
+        } else if ft.is_dir() {
+            Self::S_IFDIR
+        } else if ft.is_symlink() {
+            Self::S_IFLNK
+        } else {
+            Self::from_bits(0).unwrap()
+        };
+        let mode = Self::from_bits(metadata.mode() & 0o7777).unwrap();
+        kind | mode
+    }
+
+    #[cfg(feature = "unix")]
+    pub fn from_unix(mode: u32) -> Self {
+        let kind = match mode & libc::S_IFMT {
+            libc::S_IFSOCK => Self::S_IFSOCK,
+            libc::S_IFLNK => Self::S_IFLNK,
+            libc::S_IFBLK => Self::S_IFBLK,
+            libc::S_IFCHR => Self::S_IFCHR,
+            libc::S_IFIFO => Self::S_IFIFO,
+            libc::S_IFDIR => Self::S_IFDIR,
+            libc::S_IFREG => Self::S_IFREG,
+            _ => Self::from_bits(0).unwrap(),
+        };
+        let dmode = Self::from_bits(mode & 0o7777).unwrap();
+        kind | dmode
+    }
+}
+
 struct Deserializer<'a> {
     data: &'a [u8],
     off: AtomicUsize,

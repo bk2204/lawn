@@ -241,23 +241,7 @@ impl FromMetadata for UnixStat {
 
 impl FromMetadata for LinuxStat {
     fn from_metadata(meta: &fs::Metadata) -> Option<Self> {
-        let ft = meta.file_type();
-        let mode = LinuxFileType::from_bits(meta.mode() & 0o7777)?
-            | if ft.is_block_device() {
-                LinuxFileType::S_IFBLK
-            } else if ft.is_char_device() {
-                LinuxFileType::S_IFCHR
-            } else if ft.is_dir() {
-                LinuxFileType::S_IFDIR
-            } else if ft.is_fifo() {
-                LinuxFileType::S_IFIFO
-            } else if ft.is_symlink() {
-                LinuxFileType::S_IFLNK
-            } else if ft.is_socket() {
-                LinuxFileType::S_IFSOCK
-            } else {
-                LinuxFileType::S_IFREG
-            };
+        let mode = LinuxFileType::from_unix(meta.mode());
         Some(Self {
             qid: QID([0u8; 13]),
             mode: mode.bits(),
