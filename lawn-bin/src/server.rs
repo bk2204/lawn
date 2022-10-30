@@ -185,7 +185,8 @@ impl Server {
         })?;
         let mut interval = time::interval(Duration::from_secs(1));
         let mut counter = 0u64;
-        let storage: sync::Mutex<HashMap<u64, (sync::mpsc::Sender<()>, task::JoinHandle<u64>)>> =
+        type JobInfo = (sync::mpsc::Sender<()>, task::JoinHandle<u64>);
+        let storage: sync::Mutex<HashMap<u64, JobInfo>> =
             sync::Mutex::new(HashMap::new());
         if let Some(fdwr) = fdwr {
             logger.trace("server: writing pipe");
