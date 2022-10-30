@@ -615,7 +615,7 @@ impl Channel for ServerClipboardChannel {
     }
 }
 
-#[derive(Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct Server9PSessionHandle {
     target: Bytes,
     location: Bytes,

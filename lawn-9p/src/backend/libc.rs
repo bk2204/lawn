@@ -1,4 +1,4 @@
-use super::{Backend, FIDKind, FileKind, QIDMapper, Result, ToIdentifier};
+use super::{Backend, FileKind, QIDMapper, Result, ToIdentifier};
 use crate::auth::Authenticator;
 use crate::server::{
     DirEntry, FileType, IsFlush, LinuxFileType, LinuxOpenMode, LinuxStat, LinuxStatValidity, Lock,
@@ -23,38 +23,86 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::SystemTime;
 
-trait MaybeIDInfo {
-    fn id_info(&self) -> Option<&dyn IDInfo>;
+#[derive(Clone)]
+struct OpenFileID {
+    dev: u64,
+    ino: u64,
+    file: Arc<File>,
+    full_path: PathBuf,
 }
 
-impl<AH: ToIdentifier> MaybeIDInfo for FIDKind<AH, FileID, FileID, OpaqueFileID> {
-    fn id_info(&self) -> Option<&dyn IDInfo> {
-        match self {
-            FIDKind::File(f) => Some(f),
-            FIDKind::Dir(f) => Some(f),
-            FIDKind::Special(f) => Some(f),
-            FIDKind::Symlink(f) => Some(f),
-            FIDKind::Auth(_) => None,
-        }
+impl ToIdentifier for OpenFileID {
+    fn to_identifier(&self) -> Vec<u8> {
+        let mut buf = [0u8; 8 + 8];
+        buf[0..8].copy_from_slice(&self.dev.to_le_bytes());
+        buf[8..16].copy_from_slice(&self.ino.to_le_bytes());
+        buf.into()
     }
 }
 
-trait IDInfo {
-    fn dev(&self) -> u64;
-    fn ino(&self) -> u64;
-    fn file(&self) -> Option<Arc<File>>;
-    fn dir(&self) -> Option<Arc<File>>;
-    fn path(&self) -> Option<&[u8]>;
-    fn full_path(&self) -> &[u8];
+impl Eq for OpenFileID {}
+
+impl PartialEq for OpenFileID {
+    fn eq(&self, other: &OpenFileID) -> bool {
+        self.cmp(other) == cmp::Ordering::Equal
+    }
+}
+
+impl PartialOrd for OpenFileID {
+    fn partial_cmp(&self, other: &OpenFileID) -> Option<cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for OpenFileID {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
+        self.dev
+            .cmp(&other.dev)
+            .then_with(|| self.ino.cmp(&other.ino))
+            .then_with(|| self.file.as_raw_fd().cmp(&other.file.as_raw_fd()))
+            .then_with(|| self.full_path.cmp(&other.full_path))
+    }
+}
+
+impl IDInfo for OpenFileID {
+    fn dev(&self) -> u64 {
+        self.dev
+    }
+
+    fn ino(&self) -> u64 {
+        self.ino
+    }
+
+    fn file(&self) -> Option<Arc<File>> {
+        Some(self.file.clone())
+    }
+
+    fn full_path(&self) -> &Path {
+        &self.full_path
+    }
+
+    fn full_path_bytes(&self) -> &[u8] {
+        self.full_path.as_os_str().as_bytes()
+    }
+
+    fn file_kind(&self) -> Result<FileKind> {
+        Ok(FileKind::from_metadata(&self.file.metadata()?))
+    }
 }
 
 struct FileID {
     dev: u64,
     ino: u64,
-    file: Arc<File>,
-    dir: Option<Arc<File>>,
-    path: Option<Vec<u8>>,
-    full_path: Vec<u8>,
+    full_path: PathBuf,
+}
+
+impl ToIdentifier for FileID {
+    fn to_identifier(&self) -> Vec<u8> {
+        let mut buf = [0u8; 8 + 8];
+        buf[0..8].copy_from_slice(&self.dev.to_le_bytes());
+        buf[8..16].copy_from_slice(&self.ino.to_le_bytes());
+        buf.into()
+    }
 }
 
 impl Eq for FileID {}
@@ -76,16 +124,7 @@ impl Ord for FileID {
         self.dev
             .cmp(&other.dev)
             .then_with(|| self.ino.cmp(&other.ino))
-            .then_with(|| self.file.as_raw_fd().cmp(&other.file.as_raw_fd()))
-    }
-}
-
-impl ToIdentifier for FileID {
-    fn to_identifier(&self) -> Vec<u8> {
-        let mut buf = [0u8; 8 + 8];
-        buf[0..8].copy_from_slice(&self.dev.to_le_bytes());
-        buf[8..16].copy_from_slice(&self.ino.to_le_bytes());
-        buf.into()
+            .then_with(|| self.full_path.cmp(&other.full_path))
     }
 }
 
@@ -93,83 +132,75 @@ impl IDInfo for FileID {
     fn dev(&self) -> u64 {
         self.dev
     }
+
     fn ino(&self) -> u64 {
         self.ino
     }
-    fn file(&self) -> Option<Arc<File>> {
-        Some(self.file.clone())
-    }
-    fn dir(&self) -> Option<Arc<File>> {
-        self.dir.clone()
-    }
-    fn path(&self) -> Option<&[u8]> {
-        self.path.as_deref()
-    }
-    fn full_path(&self) -> &[u8] {
-        &self.full_path
-    }
-}
 
-struct OpaqueFileID {
-    dev: u64,
-    ino: u64,
-    dir: Arc<File>,
-    path: Vec<u8>,
-    full_path: Vec<u8>,
-}
-
-impl Eq for OpaqueFileID {}
-
-impl PartialEq for OpaqueFileID {
-    fn eq(&self, other: &OpaqueFileID) -> bool {
-        self.cmp(other) == cmp::Ordering::Equal
-    }
-}
-
-impl PartialOrd for OpaqueFileID {
-    fn partial_cmp(&self, other: &OpaqueFileID) -> Option<cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for OpaqueFileID {
-    fn cmp(&self, other: &Self) -> cmp::Ordering {
-        self.dev
-            .cmp(&other.dev)
-            .then_with(|| self.ino.cmp(&other.ino))
-            .then_with(|| self.dir.as_raw_fd().cmp(&other.dir.as_raw_fd()))
-            .then_with(|| self.path.cmp(&other.path))
-    }
-}
-
-impl ToIdentifier for OpaqueFileID {
-    fn to_identifier(&self) -> Vec<u8> {
-        let mut buf = [0u8; 8 + 8];
-        buf[0..8].copy_from_slice(&self.dev.to_le_bytes());
-        buf[8..16].copy_from_slice(&self.ino.to_le_bytes());
-        buf.into()
-    }
-}
-
-impl IDInfo for OpaqueFileID {
-    fn dev(&self) -> u64 {
-        self.dev
-    }
-    fn ino(&self) -> u64 {
-        self.ino
-    }
     fn file(&self) -> Option<Arc<File>> {
         None
     }
-    fn dir(&self) -> Option<Arc<File>> {
-        Some(self.dir.clone())
-    }
-    fn path(&self) -> Option<&[u8]> {
-        Some(&*self.path)
-    }
-    fn full_path(&self) -> &[u8] {
+
+    fn full_path(&self) -> &Path {
         &self.full_path
     }
+
+    fn full_path_bytes(&self) -> &[u8] {
+        self.full_path.as_os_str().as_bytes()
+    }
+
+    fn file_kind(&self) -> Result<FileKind> {
+        Ok(FileKind::from_metadata(&fs::metadata(&self.full_path)?))
+    }
+}
+
+#[derive(Ord, PartialOrd, Eq, PartialEq)]
+enum FIDKind<AH: ToIdentifier> {
+    Open(OpenFileID),
+    Closed(FileID),
+    Auth(AH),
+}
+
+trait MaybeIDInfo {
+    fn id_info(&self) -> Option<&dyn IDInfo>;
+}
+
+impl<AH: ToIdentifier> MaybeIDInfo for FIDKind<AH> {
+    fn id_info(&self) -> Option<&dyn IDInfo> {
+        match self {
+            FIDKind::Open(f) => Some(f),
+            FIDKind::Closed(f) => Some(f),
+            FIDKind::Auth(_) => None,
+        }
+    }
+}
+
+impl<AH: ToIdentifier> FIDKind<AH> {
+    fn file_kind(&self) -> Result<FileKind> {
+        match self.id_info() {
+            Some(idi) => idi.file_kind(),
+            None => Ok(FileKind::Auth),
+        }
+    }
+}
+
+impl<AH: ToIdentifier> ToIdentifier for FIDKind<AH> {
+    fn to_identifier(&self) -> Vec<u8> {
+        match self {
+            FIDKind::Open(f) => f.to_identifier(),
+            FIDKind::Closed(f) => f.to_identifier(),
+            FIDKind::Auth(a) => a.to_identifier(),
+        }
+    }
+}
+
+trait IDInfo {
+    fn dev(&self) -> u64;
+    fn ino(&self) -> u64;
+    fn file(&self) -> Option<Arc<File>>;
+    fn full_path(&self) -> &Path;
+    fn full_path_bytes(&self) -> &[u8];
+    fn file_kind(&self) -> Result<FileKind>;
 }
 
 // These constants are arbitrary but are designed to not share byte patterns to help in debugging.
@@ -335,17 +366,20 @@ fn with_error<F: FnOnce() -> i32>(f: F) -> Result<i32> {
 }
 
 #[allow(clippy::type_complexity)]
-pub struct LibcBackend<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> {
+pub struct LibcBackend<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Sync>
+{
     max_size: u32,
     auth: A,
-    fid: HashMap<FID, FIDKind<AH, FileID, FileID, OpaqueFileID>>,
+    fid: HashMap<FID, FIDKind<AH>>,
     dir_offsets: HashMap<FID, HashMap<(u64, ProtocolVersion), Option<Arc<Mutex<fs::ReadDir>>>>>,
     qidmapper: QIDMapper,
     root: RwLock<Option<Vec<u8>>>,
     logger: Arc<dyn Logger + Send + Sync>,
 }
 
-impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> LibcBackend<A, AH> {
+impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Sync>
+    LibcBackend<A, AH>
+{
     pub fn new(
         logger: Arc<dyn Logger + Send + Sync>,
         auth: A,
@@ -394,95 +428,41 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> LibcB
     #[allow(clippy::too_many_arguments)]
     fn open_file(
         &self,
-        path: &[u8],
+        full_path: &[u8],
         flags: i32,
         mode: u32,
-        dirfd: Option<RawFd>,
-        stored_dirfd: Option<Arc<File>>,
-        stored_path: Option<&[u8]>,
-        dir_full_path: &[u8],
-    ) -> Result<FIDKind<AH, FileID, FileID, OpaqueFileID>> {
-        let (full_path, fd) = match dirfd {
-            Some(_) => {
-                let mut full_path = dir_full_path.to_vec();
-                full_path.extend([b'/']);
-                full_path.extend(path);
-                self.maybe_open_symlink(&full_path, flags, mode)?
-            }
-            None => self.maybe_open_symlink(dir_full_path, flags, mode)?,
-        };
+        saved_path: Option<&[u8]>,
+    ) -> Result<FIDKind<AH>> {
+        let (full_path, fd) = self.maybe_open_symlink(full_path, flags, mode)?;
         let f = unsafe { File::from_raw_fd(fd) };
         let metadata = f.metadata()?;
-        let path = if stored_path.is_some() {
-            full_path.file_name().map(|c| c.as_bytes().to_vec())
-        } else {
-            None
+        let full_path = match saved_path {
+            Some(p) => PathBuf::from(OsStr::from_bytes(p)),
+            None => full_path,
         };
-        if metadata.is_file() {
-            Ok(FIDKind::File(FileID {
-                dev: metadata.dev(),
-                ino: metadata.ino(),
-                file: Arc::new(f),
-                dir: stored_dirfd,
-                path,
-                full_path: full_path.into_os_string().into_vec(),
-            }))
-        } else if metadata.is_dir() {
-            Ok(FIDKind::Dir(FileID {
-                dev: metadata.dev(),
-                ino: metadata.ino(),
-                file: Arc::new(f),
-                dir: stored_dirfd,
-                path,
-                full_path: full_path.into_os_string().into_vec(),
-            }))
-        } else {
-            let st = LinuxStat::from_metadata(&metadata);
-            trace!(
-                self.logger,
-                "opening file: unknown type {:?}",
-                st.and_then(|st| LinuxFileType::from_bits(st.mode))
-            );
-            Err(Error::EOPNOTSUPP)
-        }
+        Ok(FIDKind::Open(OpenFileID {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+            file: Arc::new(f),
+            full_path,
+        }))
     }
 
     fn clone_with_mode(
         &self,
-        f: &FIDKind<AH, FileID, FileID, OpaqueFileID>,
+        f: &FIDKind<AH>,
         flags: i32,
         mode: Option<u32>,
-    ) -> Result<FIDKind<AH, FileID, FileID, OpaqueFileID>> {
-        let (file, dir, path, full_path): (Option<RawFd>, _, Option<&[u8]>, _) = match &f {
-            FIDKind::File(f) => (
-                Some(f.file.as_raw_fd()),
-                f.dir.clone(),
-                f.path.as_deref(),
-                &*f.full_path,
-            ),
-            FIDKind::Dir(f) => (
-                Some(f.file.as_raw_fd()),
-                f.dir.clone(),
-                f.path.as_deref(),
-                &*f.full_path,
-            ),
-            FIDKind::Symlink(f) => (None, Some(f.dir.clone()), Some(&f.path), &*f.full_path),
-            _ => return Err(Error::EOPNOTSUPP),
-        };
+    ) -> Result<FIDKind<AH>> {
+        let idi = f.id_info().ok_or(Error::EOPNOTSUPP)?;
+        let (file, full_path): (Option<RawFd>, _) =
+            (idi.file().map(|f| f.as_raw_fd()), idi.full_path_bytes());
         let fname = if let Some(file) = file {
             self.file_name(&file)
         } else {
             full_path.to_vec()
         };
-        self.open_file(
-            &*fname,
-            flags,
-            mode.unwrap_or(0),
-            None,
-            dir,
-            path,
-            full_path,
-        )
+        self.open_file(&fname, flags, mode.unwrap_or(0), Some(full_path))
     }
 
     #[cfg(any(
@@ -529,14 +509,28 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> LibcB
     }
 
     #[cfg(target_os = "linux")]
-    fn ftruncate<F: AsRawFd>(&self, f: &F, size: u64) -> Result<()> {
+    fn ftruncate<F: AsRawFd>(f: &F, size: u64) -> Result<()> {
         with_error(|| unsafe { libc::ftruncate64(f.as_raw_fd(), size as i64) })?;
         Ok(())
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn ftruncate<F: AsRawFd>(&self, f: &F, size: u64) -> Result<()> {
+    fn ftruncate<F: AsRawFd>(f: &F, size: u64) -> Result<()> {
         with_error(|| unsafe { libc::ftruncate(f.as_raw_fd(), size as i64) })?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn truncate(full_path: &[u8], size: u64) -> Result<()> {
+        let c = CString::new(full_path.to_vec()).map_err(|_| Error::EINVAL)?;
+        with_error(|| unsafe { libc::truncate64(c.as_ptr(), size as i64) })?;
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn truncate(full_path: &[u8], size: u64) -> Result<()> {
+        let c = CString::new(full_path.to_vec()).map_err(|_| Error::EINVAL)?;
+        with_error(|| unsafe { libc::truncate(c.as_ptr(), size as i64) })?;
         Ok(())
     }
 
@@ -552,7 +546,8 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> LibcB
             Some(e) => {
                 let fk = self.clone_with_mode(e, flags, None)?;
                 self.fid.remove(&fid, &tg);
-                let qid = self.qidmapper.qid(&fk);
+                let ftk = fk.file_kind()?;
+                let qid = self.qidmapper.qid_from_value(ftk, &fk);
                 self.fid.insert(fid, fk, &tg);
                 Ok((qid, 0))
             }
@@ -697,7 +692,6 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> LibcB
                 st.kind = FileKind::Dir;
                 st.next_full_path = st.full_path.clone();
                 st.file = Some(file);
-                st.dir = None;
                 st.dev = dev;
                 st.ino = ino;
                 Ok(self.qid_from_dev_ino(FileKind::Dir, dev, ino))
@@ -736,9 +730,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> LibcB
         let idg;
         let new;
         let iter = if offset == 0 {
-            new = Arc::new(Mutex::new(fs::read_dir(OsStr::from_bytes(
-                idi.full_path(),
-            ))?));
+            new = Arc::new(Mutex::new(fs::read_dir(idi.full_path())?));
             &new
         } else {
             match self.dir_offsets.get(&fid, &dg) {
@@ -799,7 +791,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> LibcB
     }
 }
 
-impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backend
+impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Sync> Backend
     for LibcBackend<A, AH>
 {
     fn version(&self, _meta: &Metadata, max_size: u32, version: &[u8]) -> Result<(u32, Vec<u8>)> {
@@ -823,7 +815,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
     ) -> Result<QID> {
         let handle = self.auth.create(uname, aname, nuname);
         let handle = FIDKind::Auth(handle);
-        let qid = self.qidmapper.qid(&handle);
+        let qid = self.qidmapper.qid_from_value(FileKind::Auth, &handle);
         {
             let g = self.fid.guard();
             if self.fid.try_insert(afid, handle, &g).is_err() {
@@ -888,7 +880,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
             let location = info.location();
             let location = fs::canonicalize(Path::new(OsStr::from_bytes(location)))?;
             let location = location.as_os_str().as_bytes();
-            let file = self.open_file(location, libc::O_RDONLY, 0, None, None, None, location)?;
+            let file = self.open_file(location, libc::O_RDONLY, 0, None)?;
             trace!(
                 self.logger,
                 "9P attach: mounting location \"{}\" as root: fid {}",
@@ -899,7 +891,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
             file
         };
         trace!(self.logger, "9P attach: mapping fid");
-        let qid = self.qidmapper.qid(&file);
+        let qid = self.qidmapper.qid_from_value(file.file_kind()?, &file);
         let g = self.fid.guard();
         match self.fid.try_insert(fid, file, &g) {
             Ok(_) => {
@@ -979,39 +971,34 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
         trace!(self.logger, "9P create: unix mode {:04o}", mode);
         self.assert_valid_path_component(name, false)?;
         let g = self.fid.guard();
-        let (dir, dir_path) = match self.fid.get(&fid, &g) {
-            Some(FIDKind::Dir(dh)) => (dh.file.clone(), &*dh.full_path),
+        let dir_path = match self.fid.get(&fid, &g).map(|f| f.id_info()) {
+            Some(Some(idi)) => idi.full_path(),
             _ => return Err(Error::ENOTDIR),
         };
-        let mut full_path = dir_path.to_vec();
-        full_path.extend([b'/']);
-        full_path.extend(name);
-        let cpath = CString::new(name).map_err(|_| Error::EINVAL)?;
+        let mut full_path = dir_path.to_owned();
+        full_path.push(OsStr::from_bytes(name));
+        let cpath =
+            CString::new(Vec::from(full_path.as_os_str().as_bytes())).map_err(|_| Error::EINVAL)?;
         let (mmode, mdev) = match (
             perm & !(FileType::DMACCMODE | FileType::DMSETUID | FileType::DMSETGID),
             extension,
         ) {
             (FileType::DMDIR, None) => {
+                trace!(self.logger, "9P create: directory: {}", full_path.display());
+                with_error(|| unsafe { libc::mkdir(cpath.as_ptr(), mode) })?;
                 trace!(
                     self.logger,
-                    "9P create: directory: {}",
-                    (&*full_path).as_log_str()
+                    "9P create: directory creation OK, statting directory"
                 );
-                with_error(|| unsafe { libc::mkdirat(dir.as_raw_fd(), cpath.as_ptr(), mode) })?;
-                trace!(
-                    self.logger,
-                    "9P create: directory creation OK, opening file"
-                );
-                let file = self.open_file(
-                    name,
-                    libc::O_RDONLY,
-                    0,
-                    Some(dir.as_raw_fd()),
-                    Some(dir),
-                    Some(name),
-                    dir_path,
-                )?;
-                let qid = self.qidmapper.qid(&file);
+                let md = fs::symlink_metadata(&full_path)?;
+                let file = FIDKind::Closed(FileID {
+                    dev: md.dev(),
+                    ino: md.ino(),
+                    full_path,
+                });
+                let qid = self
+                    .qidmapper
+                    .qid_from_value(FileKind::from_metadata(&md), &file);
                 self.fid.insert(fid, file, &g);
                 return Ok((qid, 0));
             }
@@ -1019,42 +1006,30 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
                 trace!(
                     self.logger,
                     "9P create: symlink: {} {}",
-                    (&*full_path).as_log_str(),
+                    full_path.display(),
                     dest.as_log_str()
                 );
-                let cdest = CString::new(dest).map_err(|_| Error::EINVAL)?;
-                with_error(|| unsafe {
-                    libc::symlinkat(cdest.as_ptr(), dir.as_raw_fd(), cpath.as_ptr())
-                })?;
-                let (dev, ino) = self.fstatat_dev_ino(&dir.as_raw_fd(), name, false)?;
-                let file = FIDKind::<AH, FileID, FileID, OpaqueFileID>::Symlink(OpaqueFileID {
-                    dev,
-                    ino,
-                    dir,
-                    path: name.to_vec(),
+                std::os::unix::fs::symlink(OsStr::from_bytes(dest), &full_path)?;
+                let md = fs::symlink_metadata(&full_path)?;
+                let file = FIDKind::Closed(FileID {
+                    dev: md.dev(),
+                    ino: md.ino(),
                     full_path,
                 });
-                let qid = self.qidmapper.qid(&file);
+                let qid = self
+                    .qidmapper
+                    .qid_from_value(FileKind::from_metadata(&md), &file);
                 self.fid.insert(fid, file, &g);
                 return Ok((qid, 0));
             }
             (x, None) if x == FileType::empty() => {
-                trace!(
-                    self.logger,
-                    "9P create: file: {}",
-                    (&*full_path).as_log_str()
-                );
+                trace!(self.logger, "9P create: file: {}", full_path.display());
                 let omode = omode.to_unix().ok_or(Error::EINVAL)? | libc::O_CREAT | libc::O_EXCL;
-                let file = self.open_file(
-                    name,
-                    omode,
-                    mode,
-                    Some(dir.as_raw_fd()),
-                    Some(dir),
-                    Some(name),
-                    dir_path,
-                )?;
-                let qid = self.qidmapper.qid(&file);
+                let file = self.open_file(full_path.as_os_str().as_bytes(), omode, mode, None)?;
+                let md = fs::symlink_metadata(&full_path)?;
+                let qid = self
+                    .qidmapper
+                    .qid_from_value(FileKind::from_metadata(&md), &file);
                 self.fid.insert(fid, file, &g);
                 return Ok((qid, 0));
             }
@@ -1063,21 +1038,17 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
             (FileType::DMNAMEDPIPE, None) => (libc::S_IFIFO, 0),
             _ => return Err(Error::EINVAL),
         };
-        trace!(
-            self.logger,
-            "9P create: mknod: {}",
-            (&*full_path).as_log_str()
-        );
-        with_error(|| unsafe { libc::mknodat(dir.as_raw_fd(), cpath.as_ptr(), mmode, mdev) })?;
-        let (dev, ino) = self.fstatat_dev_ino(&dir.as_raw_fd(), name, false)?;
-        let file = FIDKind::<AH, FileID, FileID, OpaqueFileID>::Special(OpaqueFileID {
-            dev,
-            ino,
-            dir,
-            path: name.to_vec(),
+        trace!(self.logger, "9P create: mknod: {}", full_path.display());
+        with_error(|| unsafe { libc::mknod(cpath.as_ptr(), mmode, mdev) })?;
+        let md = fs::symlink_metadata(&full_path)?;
+        let file = FIDKind::Closed(FileID {
+            dev: md.dev(),
+            ino: md.ino(),
             full_path,
         });
-        let qid = self.qidmapper.qid(&file);
+        let qid = self
+            .qidmapper
+            .qid_from_value(FileKind::from_metadata(&md), &file);
         self.fid.insert(fid, file, &g);
         Ok((qid, 0))
     }
@@ -1092,21 +1063,18 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
     ) -> Result<(QID, u32)> {
         self.assert_valid_path_component(name, false)?;
         let g = self.fid.guard();
-        let (dir, dir_path) = match self.fid.get(&fid, &g) {
-            Some(FIDKind::Dir(dh)) => (dh.file.clone(), &*dh.full_path),
-            _ => return Err(Error::EINVAL),
+        let dir_path = match self.fid.get(&fid, &g).map(|f| f.id_info()) {
+            Some(Some(idi)) => idi.full_path(),
+            _ => return Err(Error::ENOTDIR),
         };
+        let mut full_path = dir_path.to_owned();
+        full_path.push(OsStr::from_bytes(name));
         let flags = libc::O_CREAT | libc::O_WRONLY | libc::O_TRUNC | libc::O_EXCL;
-        let file = self.open_file(
-            name,
-            flags,
-            mode,
-            Some(dir.as_raw_fd()),
-            Some(dir),
-            Some(name),
-            dir_path,
-        )?;
-        let qid = self.qidmapper.qid(&file);
+        let file = self.open_file(full_path.as_os_str().as_bytes(), flags, mode, None)?;
+        let md = file.id_info().unwrap().file().unwrap().metadata()?;
+        let qid = self
+            .qidmapper
+            .qid_from_value(FileKind::from_metadata(&md), &file);
         Ok((qid, 0))
     }
     fn read(&self, meta: &Metadata, fid: FID, offset: u64, data: &mut [u8]) -> Result<u32> {
@@ -1114,17 +1082,21 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
             return Err(Error::EINVAL);
         }
         let g = self.fid.guard();
-        match self.fid.get(&fid, &g) {
-            Some(FIDKind::File(fh)) => match fh.file.read_at(data, offset) {
+        let idi = match self.fid.get(&fid, &g).map(|f| f.id_info()) {
+            Some(Some(idi)) => idi,
+            _ => return Err(Error::EBADF),
+        };
+        match (idi.file_kind()?, idi.file()) {
+            (FileKind::File, Some(fh)) => match fh.read_at(data, offset) {
                 Ok(len) => Ok(len as u32),
                 Err(e) => Err(e.into()),
             },
-            Some(FIDKind::Dir(dh)) => {
+            (FileKind::Dir, Some(_)) => {
                 let entries = self.do_readdir(fid, offset, meta.protocol, data.len() as u32)?;
                 let mut size = 0;
-                let path = dh.full_path();
+                let path = idi.full_path();
                 for entry in entries {
-                    let mut path = PathBuf::from(OsStr::from_bytes(path));
+                    let mut path: PathBuf = path.into();
                     path.push(OsStr::from_bytes(&entry.name));
                     let fsmeta = fs::symlink_metadata(&path)?;
                     match meta.protocol {
@@ -1152,6 +1124,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
                 }
                 Ok(size as u32)
             }
+            (FileKind::File, None) | (FileKind::Dir, None) => Err(Error::EBADF),
             _ => Err(Error::EINVAL),
         }
     }
@@ -1168,16 +1141,20 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
         }
         trace!(self.logger, "9P write: validated data");
         let g = self.fid.guard();
-        match self.fid.get(&fid, &g) {
-            Some(FIDKind::File(fh)) => match fh.file.write_at(data, offset) {
+        let idi = match self.fid.get(&fid, &g).map(|f| f.id_info()) {
+            Some(Some(idi)) => idi,
+            _ => return Err(Error::EBADF),
+        };
+        match (idi.file_kind()?, idi.file()) {
+            (FileKind::File, Some(fh)) => match fh.write_at(data, offset) {
                 Ok(len) => Ok(len as u32),
                 Err(e) => Err(e.into()),
             },
-            Some(f) => {
-                trace!(self.logger, "9P write: invalid type {:?}", f.file_kind());
+            (kind, Some(_)) => {
+                trace!(self.logger, "9P write: invalid type {:?}", kind);
                 Err(Error::EBADF)
             }
-            None => {
+            (_, None) => {
                 trace!(self.logger, "9P write: no such descriptor");
                 Err(Error::EBADF)
             }
@@ -1186,52 +1163,33 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
     fn remove(&self, _meta: &Metadata, fid: FID) -> Result<()> {
         trace!(self.logger, "9P remove: fid {}", fid);
         let g = self.fid.guard();
-        let result = match self.fid.get(&fid, &g) {
+        match self.fid.get(&fid, &g) {
             Some(fk) => {
                 self.fid.remove(&fid, &g);
-                let (path, full_path, dir, is_dir) = match &fk {
-                    FIDKind::File(fh) => (fh.path(), fh.full_path(), fh.dir(), false),
-                    FIDKind::Dir(dh) => (dh.path(), dh.full_path(), dh.dir(), true),
-                    FIDKind::Symlink(sh) => (sh.path(), sh.full_path(), sh.dir(), false),
-                    FIDKind::Special(sh) => (sh.path(), sh.full_path(), sh.dir(), false),
+                let full_path = match fk.id_info().map(|idi| idi.full_path()) {
+                    Some(p) => p,
                     _ => return Err(Error::EOPNOTSUPP),
                 };
+                let ftk = fk.file_kind()?;
                 trace!(
                     self.logger,
-                    "9P remove: kind {:?} path {:?} has_dir {} is_dir {}",
-                    fk.file_kind(),
-                    path,
-                    dir.is_some(),
-                    is_dir
+                    "9P remove: kind {:?} path {:?}",
+                    ftk,
+                    full_path,
                 );
-                match (path, dir, is_dir) {
-                    (Some(path), Some(dir), true) => {
-                        let cpath = CString::new(path).map_err(|_| Error::EINVAL)?;
-                        with_error(|| unsafe {
-                            libc::unlinkat(dir.as_raw_fd(), cpath.as_ptr(), libc::AT_REMOVEDIR)
-                        })
-                    }
-                    (Some(path), Some(dir), false) => {
-                        let cpath = CString::new(path).map_err(|_| Error::EINVAL)?;
-                        with_error(|| unsafe { libc::unlinkat(dir.as_raw_fd(), cpath.as_ptr(), 0) })
-                    }
-                    (_, _, true) => {
-                        let cpath = CString::new(full_path).map_err(|_| Error::EINVAL)?;
-                        with_error(|| unsafe { libc::rmdir(cpath.as_ptr()) })
-                    }
-                    (_, _, false) => {
-                        let cpath = CString::new(full_path).map_err(|_| Error::EINVAL)?;
-                        with_error(|| unsafe { libc::unlink(cpath.as_ptr()) })
-                    }
+                if ftk == FileKind::Dir {
+                    fs::remove_dir(&full_path)?
+                } else {
+                    fs::remove_file(&full_path)?
                 }
+                Ok(())
             }
             None => Err(Error::EBADF),
-        };
-        result.map(|_| ())
+        }
     }
     fn fsync(&self, _meta: &Metadata, fid: FID) {
         let g = self.fid.guard();
-        if let Some(FIDKind::File(fh)) = self.fid.get(&fid, &g) {
+        if let Some(FIDKind::Open(fh)) = self.fid.get(&fid, &g) {
             let _ = fh.file.sync_all();
         }
     }
@@ -1245,13 +1203,11 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
                     None => return Err(Error::EBADF),
                 };
                 trace!(self.logger, "9P stat: found fid {}", fid);
-                let qid = self.qidmapper.qid(desc);
-                let (path, full_path) = match desc {
-                    FIDKind::File(fh) => (fh.path(), &*fh.full_path),
-                    FIDKind::Dir(dh) => (dh.path(), &*dh.full_path),
-                    FIDKind::Symlink(sh) => (sh.path(), &*sh.full_path),
-                    FIDKind::Special(sh) => (sh.path(), &*sh.full_path),
+                let full_path = match desc {
+                    FIDKind::Open(fh) => fh.full_path(),
+                    FIDKind::Closed(fh) => fh.full_path(),
                     FIDKind::Auth(_) => {
+                        let qid = self.qidmapper.qid_from_value(FileKind::Auth, desc);
                         return Ok(Box::new(PlainStat {
                             size: UnixStat::FIXED_SIZE as u16,
                             kind: 0,
@@ -1265,22 +1221,25 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
                             uid: Vec::new(),
                             gid: Vec::new(),
                             muid: Vec::new(),
-                        }))
+                        }));
                     }
                 };
-                let fsmeta = fs::symlink_metadata(OsStr::from_bytes(full_path))?;
+                let fsmeta = fs::symlink_metadata(&full_path)?;
                 let mut pst = PlainStat::from_metadata(&fsmeta).ok_or(Error::ENOMEM)?;
-                pst.qid = self.qid_from_dev_ino(FileKind::File, fsmeta.dev(), fsmeta.ino());
-                pst.qid.0[0] = (pst.mode >> 24) as u8;
+                pst.qid = self.qid_from_dev_ino(
+                    FileKind::from_metadata(&fsmeta),
+                    fsmeta.dev(),
+                    fsmeta.ino(),
+                );
                 let root = self.root.read().unwrap();
                 pst.name = if let Some(ref p) = *root {
-                    if p == full_path {
+                    if p == full_path.as_os_str().as_bytes() {
                         vec![b'/']
                     } else {
-                        path.unwrap_or_default().to_vec()
+                        full_path.file_name().unwrap().as_bytes().to_vec()
                     }
                 } else {
-                    path.unwrap_or_default().to_vec()
+                    full_path.file_name().unwrap().as_bytes().to_vec()
                 };
                 pst.size += pst.name.len() as u16;
                 trace!(
@@ -1297,13 +1256,11 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
                     None => return Err(Error::EBADF),
                 };
                 trace!(self.logger, "9P stat: found fid {}", fid);
-                let qid = self.qidmapper.qid(desc);
-                let (path, full_path, is_symlink) = match desc {
-                    FIDKind::File(fh) => (fh.path(), &*fh.full_path, false),
-                    FIDKind::Dir(dh) => (dh.path(), &*dh.full_path, false),
-                    FIDKind::Symlink(sh) => (sh.path(), &*sh.full_path, true),
-                    FIDKind::Special(sh) => (sh.path(), &*sh.full_path, true),
+                let full_path = match desc {
+                    FIDKind::Open(fh) => fh.full_path(),
+                    FIDKind::Closed(fh) => fh.full_path(),
                     FIDKind::Auth(_) => {
+                        let qid = self.qidmapper.qid_from_value(FileKind::Auth, desc);
                         return Ok(Box::new(UnixStat {
                             size: UnixStat::FIXED_SIZE as u16,
                             kind: 0,
@@ -1321,26 +1278,26 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
                             nuid: u32::MAX,
                             ngid: u32::MAX,
                             nmuid: u32::MAX,
-                        }))
+                        }));
                     }
                 };
-                let fsmeta = fs::symlink_metadata(OsStr::from_bytes(full_path))?;
+                let fsmeta = fs::symlink_metadata(&full_path)?;
+                let ftk = FileKind::from_metadata(&fsmeta);
                 let mut ust = UnixStat::from_metadata(&fsmeta).ok_or(Error::ENOMEM)?;
-                ust.qid = self.qid_from_dev_ino(FileKind::File, fsmeta.dev(), fsmeta.ino());
-                ust.qid.0[0] = (ust.mode >> 24) as u8;
+                ust.qid = self.qid_from_dev_ino(ftk, fsmeta.dev(), fsmeta.ino());
                 let root = self.root.read().unwrap();
                 ust.name = if let Some(ref p) = *root {
-                    if p == full_path {
+                    if p == full_path.as_os_str().as_bytes() {
                         vec![b'/']
                     } else {
-                        path.unwrap_or_default().to_vec()
+                        full_path.file_name().unwrap().as_bytes().to_vec()
                     }
                 } else {
-                    path.unwrap_or_default().to_vec()
+                    full_path.file_name().unwrap().as_bytes().to_vec()
                 };
                 ust.size += ust.name.len() as u16;
-                if is_symlink {
-                    ust.extension = match fs::read_link(OsStr::from_bytes(full_path)) {
+                if ftk == FileKind::Symlink {
+                    ust.extension = match fs::read_link(full_path) {
                         Ok(p) => p.into_os_string().into_vec(),
                         Err(_) => vec![],
                     };
@@ -1360,36 +1317,31 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
         match meta.protocol {
             ProtocolVersion::Original | ProtocolVersion::Unix => {
                 let g = self.fid.guard();
-                let desc = match self.fid.get(&fid, &g) {
-                    Some(desc) => desc,
-                    None => return Err(Error::EBADF),
+                let idi = match self.fid.get(&fid, &g).map(|f| f.id_info()) {
+                    Some(Some(idi)) => idi,
+                    _ => return Err(Error::EBADF),
                 };
-                let (file, full_path, is_symlink) = match desc {
-                    FIDKind::File(fh) => (Some(fh.file.clone()), &*fh.full_path, false),
-                    FIDKind::Dir(dh) => (Some(dh.file.clone()), &*dh.full_path, false),
-                    FIDKind::Symlink(sh) => (None, &*sh.full_path, true),
-                    FIDKind::Special(sh) => (None, &*sh.full_path, false),
-                    FIDKind::Auth(_) => return Err(Error::EOPNOTSUPP),
+                let full_path = idi.full_path().to_owned();
+                let metadata = match idi.file() {
+                    Some(ref f) => f.metadata()?,
+                    None => fs::symlink_metadata(&full_path)?,
                 };
-                let full_path = full_path.to_vec();
+                let file = idi.file();
                 std::mem::drop(g);
+                let is_symlink = FileKind::from_metadata(&metadata) == FileKind::Symlink;
                 if !stat.kind().is_flush()
                     || !stat.dev().unwrap_or(u32::MAX).is_flush()
                     || (!is_symlink && stat.extension().is_some())
                 {
                     return Err(Error::EINVAL);
                 }
-                let metadata = match file {
-                    Some(ref f) => f.metadata()?,
-                    None => fs::metadata(OsStr::from_bytes(&full_path))?,
-                };
                 let mut ac = AtomicCommitter::new();
-                let mut dest_full_path: PathBuf = OsString::from_vec(full_path.clone()).into();
+                let mut dest_full_path: PathBuf = full_path.clone();
                 if !stat.name().is_empty() {
                     dest_full_path = dest_full_path.parent().unwrap().into();
                     dest_full_path.push(OsStr::from_bytes(stat.name()));
-                    let fp1 = OsString::from_vec(full_path.clone());
-                    let fp2 = OsString::from_vec(full_path.clone());
+                    let fp1 = full_path.clone();
+                    let fp2 = full_path.clone();
                     let dfp1 = dest_full_path.clone();
                     let dfp2 = dest_full_path.clone();
                     // We don't yet support changing the name of a file in this way.
@@ -1409,7 +1361,8 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
                     if !stgid.is_flush() && oldgid != stgid {
                         let file = file.clone();
                         let rfile = file.clone();
-                        let c = CString::new(full_path.clone()).map_err(|_| Error::EINVAL)?;
+                        let c = CString::new(Vec::from(full_path.as_os_str().as_bytes()))
+                            .map_err(|_| Error::EINVAL)?;
                         let c2 = c.clone();
                         ac.add(
                             Box::new(move || {
@@ -1465,7 +1418,8 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
                     if oldmode & 0o6777 != mode {
                         let file = file.clone();
                         let rfile = file.clone();
-                        let c = CString::new(full_path.clone()).map_err(|_| Error::EINVAL)?;
+                        let c = CString::new(Vec::from(full_path.as_os_str().as_bytes()))
+                            .map_err(|_| Error::EINVAL)?;
                         let c2 = c.clone();
                         ac.add(
                             Box::new(move || {
@@ -1496,16 +1450,12 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
                 if !stat.length().is_flush() {
                     let len = stat.length();
                     if len != metadata.len() {
-                        let c = CString::new(full_path.clone()).map_err(|_| Error::EINVAL)?;
+                        let full_path = full_path.clone();
                         ac.add(
                             Box::new(move || {
                                 match file {
-                                    Some(ref f) => with_error(|| unsafe {
-                                        libc::ftruncate(f.as_raw_fd(), len as libc::off_t)
-                                    })?,
-                                    None => with_error(|| unsafe {
-                                        libc::truncate(c.as_ptr(), len as libc::off_t)
-                                    })?,
+                                    Some(ref f) => Self::ftruncate(f, len)?,
+                                    None => Self::truncate(full_path.as_os_str().as_bytes(), len)?,
                                 };
                                 Ok(())
                             }),
@@ -1515,64 +1465,36 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
                 }
                 match ac.commit() {
                     Ok(()) => {
-                        if dest_full_path.as_os_str().as_bytes() != full_path {
+                        if dest_full_path != full_path {
                             let g = self.fid.guard();
                             match self.fid.get(&fid, &g) {
-                                Some(FIDKind::Dir(d)) => {
+                                Some(FIDKind::Open(f)) => {
                                     self.fid.insert(
                                         fid,
-                                        FIDKind::Dir(FileID {
-                                            dev: d.dev,
-                                            ino: d.ino,
-                                            file: d.file.clone(),
-                                            dir: d.dir.clone(),
-                                            path: Some(stat.name().into()),
-                                            full_path: dest_full_path.into_os_string().into_vec(),
-                                        }),
-                                        &g,
-                                    );
-                                }
-                                Some(FIDKind::File(f)) => {
-                                    self.fid.insert(
-                                        fid,
-                                        FIDKind::File(FileID {
+                                        FIDKind::Open(OpenFileID {
                                             dev: f.dev,
                                             ino: f.ino,
                                             file: f.file.clone(),
-                                            dir: f.dir.clone(),
-                                            path: Some(stat.name().into()),
-                                            full_path: dest_full_path.into_os_string().into_vec(),
+                                            full_path: dest_full_path,
                                         }),
                                         &g,
                                     );
                                 }
-                                Some(FIDKind::Symlink(s)) => {
+                                Some(FIDKind::Closed(f)) => {
                                     self.fid.insert(
                                         fid,
-                                        FIDKind::Symlink(OpaqueFileID {
-                                            dev: s.dev,
-                                            ino: s.ino,
-                                            dir: s.dir.clone(),
-                                            path: stat.name().into(),
-                                            full_path: dest_full_path.into_os_string().into_vec(),
+                                        FIDKind::Closed(FileID {
+                                            dev: f.dev,
+                                            ino: f.ino,
+                                            full_path: dest_full_path,
                                         }),
                                         &g,
                                     );
                                 }
-                                Some(FIDKind::Special(s)) => {
-                                    self.fid.insert(
-                                        fid,
-                                        FIDKind::Special(OpaqueFileID {
-                                            dev: s.dev,
-                                            ino: s.ino,
-                                            dir: s.dir.clone(),
-                                            path: stat.name().into(),
-                                            full_path: dest_full_path.into_os_string().into_vec(),
-                                        }),
-                                        &g,
-                                    );
+                                Some(FIDKind::Auth(s)) => {
+                                    self.fid.insert(fid, FIDKind::Auth(s.clone()), &g);
                                 }
-                                _ => (),
+                                None => (),
                             }
                         }
                         Ok(())
@@ -1598,99 +1520,35 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
         };
         trace!(self.logger, "9P walk: found root");
         let g = self.fid.guard();
-        let (file, kind, full_path, dir, path, dev, ino) = match self.fid.get(&fid, &g) {
-            Some(FIDKind::File(fh)) => (
-                Some(fh.file.clone()),
-                FileKind::File,
-                &*fh.full_path,
-                fh.dir(),
-                fh.path(),
-                fh.dev(),
-                fh.ino(),
-            ),
-            Some(FIDKind::Dir(dh)) => (
-                Some(dh.file.clone()),
-                FileKind::Dir,
-                &*dh.full_path,
-                dh.dir(),
-                dh.path(),
-                dh.dev(),
-                dh.ino(),
-            ),
-            Some(FIDKind::Symlink(sh)) => (
-                None,
-                FileKind::Symlink,
-                &*sh.full_path,
-                sh.dir(),
-                sh.path(),
-                sh.dev(),
-                sh.ino(),
-            ),
-            Some(FIDKind::Special(sh)) => (
-                None,
-                FileKind::Special,
-                &*sh.full_path,
-                sh.dir(),
-                sh.path(),
-                sh.dev(),
-                sh.ino(),
-            ),
-            _ => return Err(Error::EOPNOTSUPP),
+        let (file, full_path, dev, ino) = match self.fid.get(&fid, &g) {
+            Some(FIDKind::Open(fh)) => (Some(fh.file.clone()), &*fh.full_path, fh.dev(), fh.ino()),
+            Some(FIDKind::Closed(fh)) => (None, &*fh.full_path, fh.dev(), fh.ino()),
+            _ => return Err(Error::EBADF),
         };
         let full_path = full_path.to_owned();
-        let path = path.map(|p| p.to_owned());
         std::mem::drop(g);
         if name.is_empty() {
             let g = self.fid.guard();
-            match (kind, &file) {
-                (FileKind::File, Some(f)) => self.fid.insert(
+            match &file {
+                Some(f) => self.fid.insert(
                     newfid,
-                    FIDKind::File(FileID {
+                    FIDKind::Open(OpenFileID {
                         dev,
                         ino,
                         file: f.clone(),
-                        dir,
-                        path,
                         full_path,
                     }),
                     &g,
                 ),
-                (FileKind::Dir, Some(f)) => self.fid.insert(
+                None => self.fid.insert(
                     newfid,
-                    FIDKind::Dir(FileID {
+                    FIDKind::Closed(FileID {
                         dev,
                         ino,
-                        file: f.clone(),
-                        dir,
-                        path,
                         full_path,
                     }),
                     &g,
                 ),
-                (FileKind::Symlink, _) => self.fid.insert(
-                    newfid,
-                    FIDKind::Symlink(OpaqueFileID {
-                        dev,
-                        ino,
-                        dir: dir.unwrap(),
-                        path: path.unwrap(),
-                        full_path,
-                    }),
-                    &g,
-                ),
-                (FileKind::Special, _) => self.fid.insert(
-                    newfid,
-                    FIDKind::Special(OpaqueFileID {
-                        dev,
-                        ino,
-                        dir: dir.unwrap(),
-                        path: path.unwrap(),
-                        full_path,
-                    }),
-                    &g,
-                ),
-                // This is an auth descriptor.
-                _ => return Err(Error::EOPNOTSUPP),
             };
             return Ok(Vec::new());
         }
@@ -1702,10 +1560,10 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
                 self.logger,
                 "9P walk: verifying full path for fd {} path {}",
                 file.as_raw_fd(),
-                (&*full_path).as_log_str(),
+                full_path.display(),
             );
             let fst = self.fstatat_dev_ino(&file.as_raw_fd(), b"", false)?;
-            let lst = self.lstat_dev_ino(&full_path)?;
+            let lst = self.lstat_dev_ino(full_path.as_os_str().as_bytes())?;
             trace!(
                 self.logger,
                 "9P walk: verifying full path: fstatat {}/{} lstat {}/{}",
@@ -1719,12 +1577,11 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
             }
         }
         trace!(self.logger, "9P walk: full path verified");
-        let full_path: PathBuf = OsString::from_vec(full_path.to_vec()).into();
         let buf = [0u8; 0];
         let mut st = WalkState {
             root,
             component: &buf,
-            dir,
+            dir: None,
             file,
             kind: FileKind::File,
             next_full_path: full_path.clone(),
@@ -1749,78 +1606,21 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
             }
             if i != name.len() - 1 {
                 st.full_path = st.next_full_path.clone();
-                st.dir = st.file;
+                st.dir = st.file.clone();
                 st.file = None;
             }
         }
         if result.len() == name.len() {
-            let path = st
-                .full_path
-                .as_os_str()
-                .as_bytes()
-                .rsplitn(2, |x| *x == b'/')
-                .next();
             let g = self.fid.guard();
-            match (st.kind, &st.file, &st.dir) {
-                (FileKind::File, Some(f), d) => self.fid.insert(
-                    newfid,
-                    FIDKind::File(FileID {
-                        dev,
-                        ino,
-                        file: f.clone(),
-                        dir: d.clone(),
-                        path: path.map(ToOwned::to_owned),
-                        full_path: st.full_path.into_os_string().into_vec(),
-                    }),
-                    &g,
-                ),
-                (FileKind::Dir, Some(f), d) => self.fid.insert(
-                    newfid,
-                    FIDKind::Dir(FileID {
-                        dev,
-                        ino,
-                        file: f.clone(),
-                        dir: d.clone(),
-                        path: path.map(ToOwned::to_owned),
-                        full_path: st.full_path.into_os_string().into_vec(),
-                    }),
-                    &g,
-                ),
-                (FileKind::Symlink, _, Some(dir)) => self.fid.insert(
-                    newfid,
-                    FIDKind::Symlink(OpaqueFileID {
-                        dev,
-                        ino,
-                        dir: dir.clone(),
-                        path: path.map(ToOwned::to_owned).unwrap(),
-                        full_path: st.full_path.into_os_string().into_vec(),
-                    }),
-                    &g,
-                ),
-                (FileKind::Special, _, Some(dir)) => self.fid.insert(
-                    newfid,
-                    FIDKind::Special(OpaqueFileID {
-                        dev,
-                        ino,
-                        dir: dir.clone(),
-                        path: path.map(ToOwned::to_owned).unwrap(),
-                        full_path: st.full_path.into_os_string().into_vec(),
-                    }),
-                    &g,
-                ),
-                // This is possibly an auth descriptor.  How we got here is unknown.
-                (kind, file, dir) => {
-                    trace!(
-                        self.logger,
-                        "9P walk: walk failed, {} components, kind {:?}, has_file {}, has_dir {}",
-                        result.len(),
-                        kind,
-                        file.is_some(),
-                        dir.is_some()
-                    );
-                    return Err(Error::EOPNOTSUPP);
-                }
-            };
+            self.fid.insert(
+                newfid,
+                FIDKind::Closed(FileID {
+                    dev,
+                    ino,
+                    full_path: st.full_path,
+                }),
+                &g,
+            );
         }
         trace!(
             self.logger,
@@ -1848,7 +1648,8 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
             Some(idi) => idi.id_info().ok_or(Error::EOPNOTSUPP)?,
             None => return Err(Error::EBADF),
         };
-        let file = idi.file().ok_or(Error::EINVAL)?;
+        let mut full_path = idi.full_path().to_owned();
+        full_path.push(OsStr::from_bytes(name));
         let target = if target.starts_with(b"/") {
             let mut full_path = root.clone();
             full_path.extend(target);
@@ -1857,12 +1658,11 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
             target.to_vec()
         };
         let ctarget = CString::new(target).map_err(|_| Error::EINVAL)?;
-        let cname = CString::new(name.to_vec()).map_err(|_| Error::EINVAL)?;
-        with_error(|| unsafe {
-            libc::symlinkat(ctarget.as_ptr(), file.as_raw_fd(), cname.as_ptr())
-        })?;
-        let (dev, ino) = self.fstatat_dev_ino(&file.as_raw_fd(), name, false)?;
-        Ok(self.qid_from_dev_ino(FileKind::Symlink, dev, ino))
+        let cname =
+            CString::new(full_path.as_os_str().as_bytes().to_vec()).map_err(|_| Error::EINVAL)?;
+        with_error(|| unsafe { libc::symlink(ctarget.as_ptr(), cname.as_ptr()) })?;
+        let meta = fs::symlink_metadata(&full_path)?;
+        Ok(self.qid_from_dev_ino(FileKind::Symlink, meta.dev(), meta.ino()))
     }
     fn mknod(
         &self,
@@ -1891,76 +1691,30 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
             None => return Err(Error::EBADF),
         };
         trace!(self.logger, "9P rename: verified fid {}", dfid);
-        let olddir = oldidi.dir().ok_or(Error::ENOTDIR)?;
-        let oldname = oldidi.path().ok_or(Error::EOPNOTSUPP)?;
-        trace!(self.logger, "9P rename: verified old directory info");
-        let newdir = newidi.file().ok_or(Error::ENOTDIR)?;
-        trace!(self.logger, "9P rename: verified new directory info");
-        let coldname = CString::new(oldname.to_vec()).map_err(|_| Error::EINVAL)?;
-        let cnewname = CString::new(newname.to_vec()).map_err(|_| Error::EINVAL)?;
+        let oldname = oldidi.full_path();
         trace!(self.logger, "9P rename: verified path info");
-        let new_path = newname.to_vec();
-        let mut new_full_path = newidi.full_path().to_vec();
-        new_full_path.push(b'/');
-        new_full_path.extend(newname);
-        with_error(|| unsafe {
-            libc::renameat(
-                olddir.as_raw_fd(),
-                coldname.as_ptr(),
-                newdir.as_raw_fd(),
-                cnewname.as_ptr(),
-            )
-        })?;
+        let mut new_full_path = newidi.full_path().to_owned();
+        new_full_path.push(OsStr::from_bytes(newname));
+        fs::rename(oldname, &new_full_path)?;
         match self.fid.get(&fid, &g) {
-            Some(FIDKind::Dir(d)) => {
+            Some(FIDKind::Open(f)) => {
                 self.fid.insert(
                     fid,
-                    FIDKind::Dir(FileID {
-                        dev: d.dev,
-                        ino: d.ino,
-                        file: d.file.clone(),
-                        dir: newidi.file(),
-                        path: Some(new_path),
-                        full_path: new_full_path,
-                    }),
-                    &g,
-                );
-            }
-            Some(FIDKind::File(f)) => {
-                self.fid.insert(
-                    fid,
-                    FIDKind::File(FileID {
+                    FIDKind::Open(OpenFileID {
                         dev: f.dev,
                         ino: f.ino,
                         file: f.file.clone(),
-                        dir: newidi.file(),
-                        path: Some(new_path),
                         full_path: new_full_path,
                     }),
                     &g,
                 );
             }
-            Some(FIDKind::Symlink(s)) => {
+            Some(FIDKind::Closed(f)) => {
                 self.fid.insert(
                     fid,
-                    FIDKind::Symlink(OpaqueFileID {
-                        dev: s.dev,
-                        ino: s.ino,
-                        dir: newidi.file().unwrap(),
-                        path: new_path,
-                        full_path: new_full_path,
-                    }),
-                    &g,
-                );
-            }
-            Some(FIDKind::Special(s)) => {
-                self.fid.insert(
-                    fid,
-                    FIDKind::Special(OpaqueFileID {
-                        dev: s.dev,
-                        ino: s.ino,
-                        dir: newidi.file().unwrap(),
-                        path: new_path,
+                    FIDKind::Closed(FileID {
+                        dev: f.dev,
+                        ino: f.ino,
                         full_path: new_full_path,
                     }),
                     &g,
@@ -1976,9 +1730,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
             Some(idi) => idi.id_info().ok_or(Error::EOPNOTSUPP)?,
             None => return Err(Error::EBADF),
         };
-        let dest = fs::read_link(OsStr::from_bytes(idi.full_path()))?
-            .into_os_string()
-            .into_vec();
+        let dest = fs::read_link(idi.full_path())?.into_os_string().into_vec();
         Ok(dest)
     }
     fn getattr(&self, _meta: &Metadata, fid: FID, _mask: LinuxStatValidity) -> Result<LinuxStat> {
@@ -1988,16 +1740,8 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
             None => return Err(Error::EBADF),
         };
         let full_path = idi.full_path();
-        let meta = fs::metadata(OsStr::from_bytes(full_path))?;
-        let ft = if meta.file_type().is_dir() {
-            FileKind::Dir
-        } else if meta.file_type().is_symlink() {
-            FileKind::Symlink
-        } else if meta.file_type().is_file() {
-            FileKind::File
-        } else {
-            FileKind::Special
-        };
+        let meta = fs::symlink_metadata(full_path)?;
+        let ft = FileKind::from_metadata(&meta);
         let mut st = LinuxStat::from_metadata(&meta).ok_or(Error::EOVERFLOW)?;
         st.qid = self.qid_from_dev_ino(ft, meta.dev(), meta.ino());
         Ok(st)
@@ -2038,41 +1782,25 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
         };
         trace!(self.logger, "9P setattr: verified fid");
         let file = idi.file();
-        let dir = idi.dir();
-        let path = idi.path();
-        let (fd, cpath) = match (dir, path) {
-            (Some(dir), Some(path)) => (
-                dir.as_raw_fd(),
-                CString::new(path.to_vec()).map_err(|_| Error::EINVAL)?,
-            ),
-            _ => (
-                -1,
-                CString::new(idi.full_path().to_vec()).map_err(|_| Error::EINVAL)?,
-            ),
-        };
+        let full_path = idi.full_path();
+        let cpath =
+            CString::new(full_path.as_os_str().as_bytes().to_vec()).map_err(|_| Error::EINVAL)?;
         if let Some(mode) = mode {
-            let flag = if file.is_none() {
-                libc::AT_SYMLINK_NOFOLLOW
-            } else {
-                0
-            };
-            with_error(|| unsafe { libc::fchmodat(fd, cpath.as_ptr(), mode & 0o7777, flag) })?;
+            with_error(|| unsafe { libc::chmod(cpath.as_ptr(), mode & 0o7777) })?;
         }
         if uid.is_some() || gid.is_some() {
             with_error(|| unsafe {
-                libc::fchownat(
-                    fd,
+                libc::chown(
                     cpath.as_ptr(),
                     uid.unwrap_or(-1i32 as libc::uid_t),
                     gid.unwrap_or(-1i32 as libc::gid_t),
-                    libc::AT_SYMLINK_NOFOLLOW,
                 )
             })?;
         }
         if let Some(size) = size {
             match file {
-                Some(f) => self.ftruncate(&f, size)?,
-                None => return Err(Error::EINVAL),
+                Some(f) => Self::ftruncate(&f, size)?,
+                None => Self::truncate(full_path.as_os_str().as_bytes(), size)?,
             };
         }
         if atime.is_some() || mtime.is_some() {
@@ -2080,7 +1808,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
                 self.system_time_to_timespec(atime, set_atime),
                 self.system_time_to_timespec(mtime, set_mtime),
             ];
-            with_error(|| unsafe { libc::utimensat(fd, cpath.as_ptr(), times.as_ptr(), 0) })?;
+            with_error(|| unsafe { libc::utimensat(-1, cpath.as_ptr(), times.as_ptr(), 0) })?;
         }
         Ok(())
     }
@@ -2140,20 +1868,12 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
             Some(idi) => idi.id_info().ok_or(Error::ENOTDIR)?,
             None => return Err(Error::EBADF),
         };
-        let dfile = didi.file().ok_or(Error::ENOTDIR)?;
-        let dir = idi.dir().ok_or(Error::EOPNOTSUPP)?;
-        let path = idi.path().ok_or(Error::EOPNOTSUPP)?;
-        let cpath = CString::new(path.to_vec()).map_err(|_| Error::EINVAL)?;
-        let cname = CString::new(name.to_vec()).map_err(|_| Error::EINVAL)?;
-        with_error(|| unsafe {
-            libc::linkat(
-                dir.as_raw_fd(),
-                cpath.as_ptr(),
-                dfile.as_raw_fd(),
-                cname.as_ptr(),
-                0,
-            )
-        })?;
+        let mut dpath = didi.full_path().to_owned();
+        dpath.push(OsStr::from_bytes(name));
+        let oldpath = CString::new(idi.full_path().as_os_str().as_bytes().to_vec())
+            .map_err(|_| Error::EINVAL)?;
+        let newpath = CString::new(dpath.into_os_string().into_vec()).map_err(|_| Error::EINVAL)?;
+        with_error(|| unsafe { libc::link(oldpath.as_ptr(), newpath.as_ptr()) })?;
         Ok(())
     }
     fn mkdir(&self, _meta: &Metadata, dfid: FID, name: &[u8], mode: u32, _gid: u32) -> Result<QID> {
@@ -2163,12 +1883,14 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
             Some(idi) => idi.id_info().ok_or(Error::ENOTDIR)?,
             None => return Err(Error::EBADF),
         };
-        let dir = didi.file().ok_or(Error::ENOTDIR)?;
+        let mut full_path = didi.full_path().to_owned();
+        full_path.push(OsStr::from_bytes(name));
         let mode = mode & 0o7777;
-        let cname = CString::new(name.to_vec()).map_err(|_| Error::EINVAL)?;
-        with_error(|| unsafe { libc::mkdirat(dir.as_raw_fd(), cname.as_ptr(), mode) })?;
-        let (dev, ino) = self.fstatat_dev_ino(&dir.as_raw_fd(), name, false)?;
-        Ok(self.qid_from_dev_ino(FileKind::Symlink, dev, ino))
+        let cname =
+            CString::new(Vec::from(full_path.as_os_str().as_bytes())).map_err(|_| Error::EINVAL)?;
+        with_error(|| unsafe { libc::mkdir(cname.as_ptr(), mode) })?;
+        let meta = fs::symlink_metadata(&full_path)?;
+        Ok(self.qid_from_dev_ino(FileKind::Dir, meta.dev(), meta.ino()))
     }
     fn renameat(
         &self,
@@ -2211,7 +1933,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Send + Sync> Backe
 
 #[cfg(test)]
 mod tests {
-    use super::{IDInfo, LibcBackend};
+    use super::{IDInfo, LibcBackend, MaybeIDInfo};
     use crate::auth::{AuthenticationInfo, Authenticator};
     use crate::backend::{Backend, FIDKind, ToIdentifier};
     use crate::server::{
@@ -2389,28 +2111,34 @@ mod tests {
 
     fn verify_file_is_path<F: FnOnce(&StdFileType) -> bool>(
         inst: &TestInstance,
-        file: Arc<File>,
+        file: Option<Arc<File>>,
         path: &Path,
         f: F,
     ) {
-        let (dev, ino) = inst
-            .server
-            .fstatat_dev_ino(&file.as_raw_fd(), b"", false)
-            .unwrap();
         let meta = std::fs::symlink_metadata(path).unwrap();
-        assert_eq!((dev, ino), (meta.dev(), meta.ino()), "same file");
         assert!(f(&meta.file_type()), "file is of correct type");
+        if let Some(file) = file {
+            let (dev, ino) = inst
+                .server
+                .fstatat_dev_ino(&file.as_raw_fd(), b"", false)
+                .unwrap();
+            assert_eq!((dev, ino), (meta.dev(), meta.ino()), "same file");
+        }
     }
 
     fn verify_dir(inst: &mut TestInstance, fid: FID, path: Option<&[u8]>) {
         let g = inst.server.fid.guard();
         let entry = inst.server.fid.get(&fid, &g);
-        if let Some(FIDKind::Dir(d)) = entry {
+        if let Some(idi) = entry.and_then(|e| e.id_info()) {
             let mut full_path = inst.dir.path().to_owned();
             full_path.push(OsStr::from_bytes(path.unwrap_or_default()));
-            assert_ne!(d.path(), Some(b".." as &[u8]), "not dot-dot");
+            assert_ne!(
+                idi.full_path().file_name().map(|n| n.as_bytes()),
+                Some(b".." as &[u8]),
+                "not dot-dot"
+            );
             assert_eq!(
-                fs::canonicalize(OsStr::from_bytes(d.full_path())).unwrap(),
+                fs::canonicalize(idi.full_path()).unwrap(),
                 fs::canonicalize(&full_path).unwrap(),
                 "full path is correct"
             );
@@ -2419,21 +2147,12 @@ mod tests {
                     if path.is_empty() {
                         assert_eq!(full_path, inst.dir.path(), "path is root");
                     } else {
-                        assert_eq!(
-                            d.path().unwrap(),
-                            full_path.file_name().unwrap().as_bytes(),
-                            "path is correct"
-                        );
+                        assert_eq!(idi.full_path(), full_path, "path is correct");
                     }
                 }
-                None => assert!(d.path().is_none(), "path is empty"),
+                None => assert_eq!(full_path, inst.dir.path(), "path is root"),
             }
-            if let Some(d) = d.dir() {
-                verify_file_is_path(&inst, d, full_path.parent().unwrap(), |f| f.is_dir())
-            }
-            if let Some(f) = d.file() {
-                verify_file_is_path(&inst, f, &full_path, |f| f.is_dir())
-            }
+            verify_file_is_path(&inst, idi.file(), &full_path, |f| f.is_dir());
         } else {
             panic!("Not a directory");
         }
@@ -2442,30 +2161,21 @@ mod tests {
     fn verify_file(inst: &mut TestInstance, fid: FID, path: &[u8]) {
         let g = inst.server.fid.guard();
         let entry = inst.server.fid.get(&fid, &g);
-        if let Some(FIDKind::File(d)) = entry {
+        if let Some(idi) = entry.and_then(|e| e.id_info()) {
             let mut full_path = inst.dir.path().to_owned();
             full_path.push(OsStr::from_bytes(path));
-            assert_ne!(d.path(), Some(b".." as &[u8]), "not dot-dot");
+            assert_ne!(
+                idi.full_path().file_name().map(|n| n.as_bytes()),
+                Some(b".." as &[u8]),
+                "not dot-dot"
+            );
             assert_eq!(
-                fs::canonicalize(OsStr::from_bytes(d.full_path())).unwrap(),
+                fs::canonicalize(idi.full_path()).unwrap(),
                 fs::canonicalize(&full_path).unwrap(),
                 "full path is correct"
             );
-            assert_eq!(
-                d.path().unwrap(),
-                full_path.file_name().unwrap().as_bytes(),
-                "path is correct"
-            );
-            if let Some(d) = d.dir() {
-                verify_file_is_path(&inst, d, full_path.parent().unwrap(), |f| f.is_dir())
-            } else {
-                panic!("No directory!");
-            }
-            if let Some(f) = d.file() {
-                verify_file_is_path(&inst, f, &full_path, |f| f.is_file())
-            } else {
-                panic!("No file!");
-            }
+            assert_eq!(idi.full_path(), full_path, "path is correct");
+            verify_file_is_path(&inst, idi.file(), &full_path, |f| f.is_file());
         } else {
             panic!("Not a file");
         }
@@ -2474,25 +2184,17 @@ mod tests {
     fn verify_symlink(inst: &mut TestInstance, fid: FID, path: &[u8], dest: &[u8]) {
         let g = inst.server.fid.guard();
         let entry = inst.server.fid.get(&fid, &g);
-        if let Some(FIDKind::Symlink(s)) = entry {
+        if let Some(idi) = entry.and_then(|e| e.id_info()) {
             let mut full_path = inst.dir.path().to_owned();
             full_path.push(OsStr::from_bytes(path));
-            assert_ne!(s.path(), Some(b".." as &[u8]), "not dot-dot");
-            assert_eq!(
-                fs::canonicalize(OsStr::from_bytes(s.full_path())).unwrap(),
-                fs::canonicalize(&full_path).unwrap(),
-                "full path is correct"
+            assert_ne!(
+                idi.full_path().file_name().map(|n| n.as_bytes()),
+                Some(b".." as &[u8]),
+                "not dot-dot"
             );
-            assert_eq!(
-                s.path().unwrap(),
-                full_path.file_name().unwrap().as_bytes(),
-                "path is correct"
-            );
-            if let Some(d) = s.dir() {
-                verify_file_is_path(&inst, d, full_path.parent().unwrap(), |f| f.is_dir())
-            } else {
-                panic!("No directory!");
-            }
+            assert_eq!(idi.full_path(), &full_path, "full path is correct");
+            assert_eq!(idi.full_path(), full_path, "path is correct");
+            verify_file_is_path(&inst, None, &full_path, |f| f.is_symlink());
             let read_dest = fs::read_link(&full_path).unwrap();
             assert_eq!(
                 read_dest.as_os_str().as_bytes(),
@@ -2882,7 +2584,7 @@ mod tests {
                 SimpleOpenMode::O_RDWR | SimpleOpenMode::O_TRUNC,
             )
             .unwrap();
-        verify_file(&mut inst, fid(1), b"dir/file");
+        verify_symlink(&mut inst, fid(1), b"dir/symlink", b"file");
         let message = b"This is a test.  This is only a test.\n";
         inst.server
             .write(&inst.next_meta(), fid(1), 0, message)
@@ -2931,7 +2633,7 @@ mod tests {
                 LinuxOpenMode::O_RDWR | LinuxOpenMode::O_TRUNC,
             )
             .unwrap();
-        verify_file(&mut inst, fid(1), b"dir/file");
+        verify_symlink(&mut inst, fid(1), b"dir/symlink", b"file");
         let message = b"This is a test.  This is only a test.\n";
         inst.server
             .write(&inst.next_meta(), fid(1), 0, message)
@@ -2944,7 +2646,7 @@ mod tests {
         inst.server
             .lopen(&inst.next_meta(), fid(1), LinuxOpenMode::O_RDWR)
             .unwrap();
-        verify_file(&mut inst, fid(1), b"dir/file");
+        verify_symlink(&mut inst, fid(1), b"dir/symlink", b"file");
         let mut buf = vec![0u8; message.len()];
         inst.server
             .read(&inst.next_meta(), fid(1), 0, &mut buf)

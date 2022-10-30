@@ -4,6 +4,7 @@ use crate::server::{
 };
 use lawn_constants::Error;
 use std::collections::BTreeMap;
+use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -209,6 +210,24 @@ pub enum FileKind {
     Special = 0xff,
 }
 
+impl FileKind {
+    #[cfg(feature = "unix")]
+    pub fn from_metadata(metadata: &fs::Metadata) -> Self {
+        use std::os::unix::fs::FileTypeExt;
+
+        let ft = metadata.file_type();
+        if ft.is_fifo() || ft.is_socket() || ft.is_block_device() || ft.is_char_device() {
+            Self::Special
+        } else if ft.is_dir() {
+            Self::Dir
+        } else if ft.is_symlink() {
+            Self::Symlink
+        } else {
+            Self::File
+        }
+    }
+}
+
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
 struct QIDStorage {
     kind: FileKind,
@@ -234,6 +253,10 @@ impl QIDMapper {
         fid: &FIDKind<AH, FH, DH, SH>,
     ) -> QID {
         self.qid_from_vec(fid.file_kind(), fid.identifier())
+    }
+
+    pub fn qid_from_value<T: ToIdentifier>(&self, kind: FileKind, fid: &T) -> QID {
+        self.qid_from_vec(kind, fid.to_identifier())
     }
 
     pub fn qid_from_id(&self, kind: FileKind, id: &[u8]) -> QID {
