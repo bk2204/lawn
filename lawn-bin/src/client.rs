@@ -11,10 +11,10 @@ use lawn_protocol::protocol;
 use lawn_protocol::protocol::{
     AuthenticateRequest, AuthenticateResponse, CapabilityResponse, ChannelID,
     ChannelMetadataNotification, ChannelMetadataNotificationKind, ChannelMetadataStatusKind,
-    CreateChannelRequest, CreateChannelResponse, DeleteChannelRequest,
-    DetachChannelSelectorRequest, Empty, MessageKind, PollChannelFlags, PollChannelRequest,
-    PollChannelResponse, ReadChannelRequest, ReadChannelResponse, VersionRequest,
-    WriteChannelRequest, WriteChannelResponse, ClipboardChannelOperation, ClipboardChannelTarget,
+    ClipboardChannelOperation, ClipboardChannelTarget, CreateChannelRequest, CreateChannelResponse,
+    DeleteChannelRequest, DetachChannelSelectorRequest, Empty, MessageKind, PollChannelFlags,
+    PollChannelRequest, PollChannelResponse, ReadChannelRequest, ReadChannelResponse,
+    VersionRequest, WriteChannelRequest, WriteChannelResponse,
 };
 use num_traits::FromPrimitive;
 use serde_cbor::Value;
@@ -164,10 +164,7 @@ impl Connection {
         }
     }
 
-    pub async fn run_clipboard<
-        I: AsyncReadExt + Unpin,
-        O: AsyncWriteExt + Unpin,
-    >(
+    pub async fn run_clipboard<I: AsyncReadExt + Unpin, O: AsyncWriteExt + Unpin>(
         &self,
         stdin: I,
         stdout: O,
@@ -178,21 +175,25 @@ impl Connection {
             .read(true)
             .write(true)
             .open("/dev/null")
-            .await.unwrap();
+            .await
+            .unwrap();
         let stderr = tokio::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open("/dev/null")
-            .await.unwrap();
+            .await
+            .unwrap();
         let id = self.create_clipboard_channel(op, target).await?;
         match op {
             ClipboardChannelOperation::Copy => {
                 let mut fd_status = [FDStatus::default(), FDStatus::closed(), FDStatus::closed()];
-                self.run_channel(stdin, devnull, stderr, id, &mut fd_status).await
+                self.run_channel(stdin, devnull, stderr, id, &mut fd_status)
+                    .await
             }
             ClipboardChannelOperation::Paste => {
                 let mut fd_status = [FDStatus::closed(), FDStatus::default(), FDStatus::closed()];
-                self.run_channel(devnull, stdout, stderr, id, &mut fd_status).await
+                self.run_channel(devnull, stdout, stderr, id, &mut fd_status)
+                    .await
             }
         }
     }
@@ -214,7 +215,8 @@ impl Connection {
             FDStatus::default(),
             FDStatus::default(),
         ];
-        self.run_channel(stdin, stdout, stderr, id, &mut fd_status).await
+        self.run_channel(stdin, stdout, stderr, id, &mut fd_status)
+            .await
     }
 
     async fn run_channel<
@@ -227,8 +229,8 @@ impl Connection {
         stdout: O,
         stderr: E,
         id: ChannelID,
-        fd_status: &mut [FDStatus]
-        )-> Result<i32, Error> {
+        fd_status: &mut [FDStatus],
+    ) -> Result<i32, Error> {
         let mut stdin = stdin;
         let mut stdout = stdout;
         let mut stderr = stderr;
@@ -695,7 +697,11 @@ impl Connection {
     }
 
     #[allow(clippy::mutable_key_type)]
-    async fn create_clipboard_channel(&self, op: ClipboardChannelOperation, target: Option<ClipboardChannelTarget>) -> Result<ChannelID, Error> {
+    async fn create_clipboard_channel(
+        &self,
+        op: ClipboardChannelOperation,
+        target: Option<ClipboardChannelTarget>,
+    ) -> Result<ChannelID, Error> {
         let handler = match self.handler.as_ref() {
             Some(handler) => handler,
             None => return Err(Error::new(ErrorKind::NotConnected)),
@@ -703,17 +709,29 @@ impl Connection {
         let mut meta = BTreeMap::new();
         let selectors = match op {
             ClipboardChannelOperation::Copy => {
-                meta.insert((b"operation" as &'static [u8]).into(), Value::Text("copy".into()));
+                meta.insert(
+                    (b"operation" as &'static [u8]).into(),
+                    Value::Text("copy".into()),
+                );
                 vec![0]
             }
             ClipboardChannelOperation::Paste => {
-                meta.insert((b"operation" as &'static [u8]).into(), Value::Text("paste".into()));
+                meta.insert(
+                    (b"operation" as &'static [u8]).into(),
+                    Value::Text("paste".into()),
+                );
                 vec![1]
             }
         };
         match target {
-            Some(ClipboardChannelTarget::Primary) => meta.insert((b"target" as &'static [u8]).into(), Value::Text("primary".into())),
-            Some(ClipboardChannelTarget::Clipboard) => meta.insert((b"target" as &'static [u8]).into(), Value::Text("clipboard".into())),
+            Some(ClipboardChannelTarget::Primary) => meta.insert(
+                (b"target" as &'static [u8]).into(),
+                Value::Text("primary".into()),
+            ),
+            Some(ClipboardChannelTarget::Clipboard) => meta.insert(
+                (b"target" as &'static [u8]).into(),
+                Value::Text("clipboard".into()),
+            ),
             None => None,
         };
         let req = CreateChannelRequest {

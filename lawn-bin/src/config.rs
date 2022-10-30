@@ -53,10 +53,17 @@ pub enum ClipboardBackend {
 
 impl ClipboardBackend {
     pub fn supports_target(&self, target: ClipboardChannelTarget) -> bool {
-        matches!((self, target), (Self::XClip, _) | (Self::XSel, _) | (Self::MacOS, ClipboardChannelTarget::Clipboard))
+        matches!(
+            (self, target),
+            (Self::XClip, _) | (Self::XSel, _) | (Self::MacOS, ClipboardChannelTarget::Clipboard)
+        )
     }
 
-    pub fn command(&self, target: ClipboardChannelTarget, op: ClipboardChannelOperation) -> Vec<Bytes> {
+    pub fn command(
+        &self,
+        target: ClipboardChannelTarget,
+        op: ClipboardChannelOperation,
+    ) -> Vec<Bytes> {
         let mut v: Vec<&'static [u8]> = Vec::new();
         match self {
             Self::XClip => {
@@ -251,7 +258,13 @@ impl Config {
             if let Some(val) = g.clipboard_enabled {
                 return Ok(val);
             }
-            match g.config_file.v0.clipboard.as_ref().map(|x| x.if_value.clone()) {
+            match g
+                .config_file
+                .v0
+                .clipboard
+                .as_ref()
+                .map(|x| x.if_value.clone())
+            {
                 Some(v) => v,
                 None => Value::Bool(false),
             }
@@ -269,7 +282,13 @@ impl Config {
             if let Some(val) = g.clipboard_backend {
                 return Ok(Some(val));
             }
-            match g.config_file.v0.clipboard.as_ref().and_then(|x| x.backend.clone()) {
+            match g
+                .config_file
+                .v0
+                .clipboard
+                .as_ref()
+                .and_then(|x| x.backend.clone())
+            {
                 Some(Value::String(ref s)) => {
                     if let Some(backend) = Self::clipboard_command_from_str(s) {
                         return Ok(Some(backend));
@@ -610,15 +629,30 @@ impl<'a, 'b, 'c> ConfigValue<'a, 'b, 'c> {
     }
 }
 
-pub fn command_from_shell(shell: &Bytes, context: &TemplateContext<'_, '_>) -> tokio::process::Command {
+pub fn command_from_shell(
+    shell: &Bytes,
+    context: &TemplateContext<'_, '_>,
+) -> tokio::process::Command {
     let mut shell: BytesMut = shell.as_ref().into();
     shell.extend_from_slice(b" \"$@\"");
-    command_from_args(&[(b"sh" as &'static [u8]).into(), (b"-c" as &'static [u8]).into(), shell.into()], context)
+    command_from_args(
+        &[
+            (b"sh" as &'static [u8]).into(),
+            (b"-c" as &'static [u8]).into(),
+            shell.into(),
+        ],
+        context,
+    )
 }
 
-
-pub fn command_from_args(args: &[Bytes], context: &TemplateContext<'_, '_>) -> tokio::process::Command {
-    let args: Vec<OsString> = args.iter().map(|x| OsString::from_vec(x.to_vec())).collect();
+pub fn command_from_args(
+    args: &[Bytes],
+    context: &TemplateContext<'_, '_>,
+) -> tokio::process::Command {
+    let args: Vec<OsString> = args
+        .iter()
+        .map(|x| OsString::from_vec(x.to_vec()))
+        .collect();
     let mut cmd = tokio::process::Command::new(&args[0]);
     if args.len() > 1 {
         cmd.args(&args[1..]);

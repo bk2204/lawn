@@ -1,4 +1,4 @@
-use crate::channel::{ChannelManager, ServerCommandChannel, ServerClipboardChannel};
+use crate::channel::{ChannelManager, ServerClipboardChannel, ServerCommandChannel};
 use crate::config;
 use crate::config::{Config, Logger};
 use crate::encoding::{escape, path};
@@ -59,7 +59,10 @@ pub struct Server {
 
 impl Server {
     pub fn new(config: Arc<Config>) -> Self {
-        Self { config, destroyer: Mutex::new(None) }
+        Self {
+            config,
+            destroyer: Mutex::new(None),
+        }
     }
 
     pub fn run(&self) -> Result<(), Error> {
@@ -168,7 +171,12 @@ impl Server {
         self.runtime_async(socket_path, fdwr, rx).await
     }
 
-    async fn runtime_async(&self, socket_path: &Path, fdwr: Option<File>, rx: sync::oneshot::Receiver<()>) -> Result<(), Error> {
+    async fn runtime_async(
+        &self,
+        socket_path: &Path,
+        fdwr: Option<File>,
+        rx: sync::oneshot::Receiver<()>,
+    ) -> Result<(), Error> {
         let mut rx = rx;
         let logger = self.config.logger();
         logger.trace("server: runtime started, installing SIGTERM handler");
@@ -186,8 +194,7 @@ impl Server {
         let mut interval = time::interval(Duration::from_secs(1));
         let mut counter = 0u64;
         type JobInfo = (sync::mpsc::Sender<()>, task::JoinHandle<u64>);
-        let storage: sync::Mutex<HashMap<u64, JobInfo>> =
-            sync::Mutex::new(HashMap::new());
+        let storage: sync::Mutex<HashMap<u64, JobInfo>> = sync::Mutex::new(HashMap::new());
         if let Some(fdwr) = fdwr {
             logger.trace("server: writing pipe");
             let mut fdwr = fdwr;
@@ -779,9 +786,14 @@ impl Server {
             Ok(false) => {
                 trace!(logger, "server: {}: clipboard disabled", id);
                 return Err(ResponseCode::NotFound.into());
-            },
+            }
             Err(e) => {
-                trace!(logger, "server: {}: clipboard error checking if enabled: {}", id, e);
+                trace!(
+                    logger,
+                    "server: {}: clipboard error checking if enabled: {}",
+                    id,
+                    e
+                );
                 return Err(ResponseCode::NotFound.into());
             }
         }
@@ -790,15 +802,20 @@ impl Server {
             Ok(None) => {
                 trace!(logger, "server: {}: clipboard: no backend found", id);
                 return Err(ResponseCode::NotFound.into());
-            },
+            }
             Err(e) => {
-                trace!(logger, "server: {}: clipboard error getting backend: {}", id, e);
+                trace!(
+                    logger,
+                    "server: {}: clipboard error getting backend: {}",
+                    id,
+                    e
+                );
                 return Err(ResponseCode::NotFound.into());
             }
         };
         if !backend.supports_target(target) {
-                trace!(logger, "server: {}: clipboard: unsupported target", id);
-                return Err(ResponseCode::NotFound.into());
+            trace!(logger, "server: {}: clipboard: unsupported target", id);
+            return Err(ResponseCode::NotFound.into());
         }
         let args = backend.command(target, op);
         let ctx = config.template_context(None, None);

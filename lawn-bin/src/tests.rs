@@ -71,17 +71,21 @@ impl TestInstance {
         let mut server = dir.path().to_owned();
         server.push("server");
         fs::create_dir(&server).unwrap();
-        let paths = &["home/.local/run/lawn", "path", "run/user", "runtime/lawn", "client", "server"];
+        let paths = &[
+            "home/.local/run/lawn",
+            "path",
+            "run/user",
+            "runtime/lawn",
+            "client",
+            "server",
+        ];
         for p in paths {
             let mut to_create: PathBuf = dir.path().into();
             to_create.push(p);
             fs::create_dir_all(&to_create).unwrap();
         }
         let config_file = Self::write_config_file(&server);
-        Self {
-            dir,
-            config_file,
-        }
+        Self { dir, config_file }
     }
 
     fn write_config_file(dir: &Path) -> PathBuf {
@@ -101,22 +105,26 @@ v0:
             if: true
             command: '!f() {{ printf \"$@\"; }};f'
 "
-        ).unwrap();
+        )
+        .unwrap();
         dest
     }
 
     pub fn config(&self) -> Arc<Config> {
         let env = FakeEnvironment::new(self.dir.path());
         let iterenv = env.clone();
-        let cfg = Arc::new(Config::new(
-            move |s| env.env(s),
-            move || iterenv.iter(),
-            false,
-            5,
-            Box::new(io::Cursor::new(Vec::new())),
-            Box::new(io::stderr()),
-            Some(&self.config_file),
-        ).unwrap());
+        let cfg = Arc::new(
+            Config::new(
+                move |s| env.env(s),
+                move || iterenv.iter(),
+                false,
+                5,
+                Box::new(io::Cursor::new(Vec::new())),
+                Box::new(io::stderr()),
+                Some(&self.config_file),
+            )
+            .unwrap(),
+        );
         cfg.set_detach(false);
         cfg
     }
@@ -127,7 +135,10 @@ v0:
 }
 
 fn runtime() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap()
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
 }
 
 #[test]
@@ -143,5 +154,6 @@ fn starts_server() {
         });
         s.run_async().await.unwrap();
         h.await
-    }).unwrap();
+    })
+    .unwrap();
 }

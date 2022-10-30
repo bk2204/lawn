@@ -6,7 +6,7 @@ use crate::trace;
 use crate::unix;
 use bytes::Bytes;
 use lawn_protocol::protocol;
-use lawn_protocol::protocol::{ChannelID, ErrorBody, ResponseCode, ClipboardChannelOperation};
+use lawn_protocol::protocol::{ChannelID, ClipboardChannelOperation, ErrorBody, ResponseCode};
 use std::collections::HashMap;
 use std::os::raw::c_int;
 use std::os::unix::io::{AsRawFd, FromRawFd};
@@ -552,7 +552,9 @@ impl ServerClipboardChannel {
 
     fn file_from_command<T: AsRawFd>(io: Option<&T>) -> Option<Arc<sync::Mutex<File>>> {
         let io = io?;
-        Some(Arc::new(sync::Mutex::new(unsafe { File::from_raw_fd(io.as_raw_fd()) })))
+        Some(Arc::new(sync::Mutex::new(unsafe {
+            File::from_raw_fd(io.as_raw_fd())
+        })))
     }
 }
 

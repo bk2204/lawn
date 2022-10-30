@@ -11,7 +11,7 @@ use crate::encoding::{escape, osstr, path};
 use bytes::Bytes;
 use clap::{App, Arg, ArgMatches};
 use lawn_protocol::config::Logger;
-use lawn_protocol::protocol::{ClipboardChannelTarget, ClipboardChannelOperation};
+use lawn_protocol::protocol::{ClipboardChannelOperation, ClipboardChannelTarget};
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
@@ -388,13 +388,23 @@ fn dispatch_clip(
     let op = match (m.is_present("copy"), m.is_present("paste")) {
         (true, false) => ClipboardChannelOperation::Copy,
         (false, true) => ClipboardChannelOperation::Paste,
-        _ => return Err(Error::new_with_message(ErrorKind::IncompatibleArguments, "exactly one of -i or -o is required")),
+        _ => {
+            return Err(Error::new_with_message(
+                ErrorKind::IncompatibleArguments,
+                "exactly one of -i or -o is required",
+            ))
+        }
     };
     let target = match (m.is_present("primary"), m.is_present("clipboard")) {
         (true, false) => Some(ClipboardChannelTarget::Primary),
         (false, true) => Some(ClipboardChannelTarget::Clipboard),
         (false, false) => None,
-        _ => return Err(Error::new_with_message(ErrorKind::IncompatibleArguments, "at most one of -p and -b is permitted")),
+        _ => {
+            return Err(Error::new_with_message(
+                ErrorKind::IncompatibleArguments,
+                "at most one of -p and -b is permitted",
+            ))
+        }
     };
     let logger = config.logger();
     logger.trace("Starting runtime");
@@ -413,12 +423,8 @@ fn dispatch_clip(
         let conn = client.connect_to_socket(socket, false).await?;
         let _ = conn.negotiate_default_version().await;
         let _ = conn.auth_external().await;
-        conn.run_clipboard(
-            tokio::io::stdin(),
-            tokio::io::stdout(),
-            op, target,
-        )
-        .await
+        conn.run_clipboard(tokio::io::stdin(), tokio::io::stdout(), op, target)
+            .await
     })?;
     std::process::exit(res);
 }
@@ -478,12 +484,13 @@ fn dispatch(verbosity: &mut i32) -> Result<(), Error> {
         .arg(Arg::with_name("no-detach").long("no-detach"))
         .subcommand(App::new("server"))
         .subcommand(App::new("query").subcommand(App::new("test-connection")))
-        .subcommand(App::new("clip")
-                    .arg(Arg::with_name("copy").long("copy").short("i"))
-                    .arg(Arg::with_name("paste").long("paste").short("o"))
-                    .arg(Arg::with_name("primary").long("primary").short("p"))
-                    .arg(Arg::with_name("clipboard").long("clipboard").short("b"))
-                    )
+        .subcommand(
+            App::new("clip")
+                .arg(Arg::with_name("copy").long("copy").short("i"))
+                .arg(Arg::with_name("paste").long("paste").short("o"))
+                .arg(Arg::with_name("primary").long("primary").short("p"))
+                .arg(Arg::with_name("clipboard").long("clipboard").short("b")),
+        )
         .subcommand(
             App::new("proxy")
                 .arg(Arg::with_name("ssh").long("ssh"))
