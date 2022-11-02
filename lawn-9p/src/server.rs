@@ -699,6 +699,10 @@ pub struct DirEntry {
     pub offset: u64,
     pub kind: u8,
     pub name: Vec<u8>,
+    pub extension: Option<Vec<u8>>,
+    pub file_type: LinuxFileType,
+    pub size: u64,
+    pub metadata: fs::Metadata,
 }
 
 impl DirEntry {

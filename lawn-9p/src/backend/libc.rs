@@ -14,9 +14,10 @@ use std::ffi::{CString, OsStr, OsString};
 use std::fs;
 use std::fs::File;
 use std::io;
+use std::iter::Peekable;
 use std::mem::MaybeUninit;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::os::unix::fs::{DirEntryExt, FileExt, FileTypeExt, MetadataExt};
+use std::os::unix::fs::{FileExt, FileTypeExt, MetadataExt};
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -371,7 +372,8 @@ pub struct LibcBackend<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + 
     max_size: u32,
     auth: A,
     fid: HashMap<FID, FIDKind<AH>>,
-    dir_offsets: HashMap<FID, HashMap<(u64, ProtocolVersion), Option<Arc<Mutex<fs::ReadDir>>>>>,
+    dir_offsets:
+        HashMap<FID, HashMap<(u64, ProtocolVersion), Option<Arc<Mutex<Peekable<fs::ReadDir>>>>>>,
     qidmapper: QIDMapper,
     root: RwLock<Option<Vec<u8>>>,
     logger: Arc<dyn Logger + Send + Sync>,
@@ -712,6 +714,59 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
         }
     }
 
+    fn readdir_entry_size(&self, entry: &DirEntry, ver: ProtocolVersion) -> usize {
+        match ver {
+            ProtocolVersion::Original => PlainStat::FIXED_SIZE + entry.name.len(),
+            ProtocolVersion::Unix => {
+                UnixStat::FIXED_SIZE
+                    + entry.name.len()
+                    + entry
+                        .extension
+                        .as_ref()
+                        .map(|e| e.len())
+                        .unwrap_or_default()
+            }
+            ProtocolVersion::Linux => entry.len(),
+        }
+    }
+
+    fn fill_direntry(&self, path: &Path, name: &[u8], offset: u64) -> Result<DirEntry> {
+        let metadata = fs::symlink_metadata(&path)?;
+        let ft = metadata.file_type();
+        let extension = if ft.is_symlink() {
+            fs::read_link(&path)
+                .map(|p| p.into_os_string().into_vec())
+                .ok()
+        } else if ft.is_char_device() {
+            Some(
+                format!("c {} {}", unsafe { libc::major(metadata.rdev()) }, unsafe {
+                    libc::minor(metadata.rdev())
+                })
+                .into_bytes(),
+            )
+        } else if ft.is_block_device() {
+            Some(
+                format!("b {} {}", unsafe { libc::major(metadata.rdev()) }, unsafe {
+                    libc::minor(metadata.rdev())
+                })
+                .into_bytes(),
+            )
+        } else {
+            None
+        };
+        Ok(DirEntry {
+            // TODO: map to proper type.
+            qid: self.qid_from_dev_ino(FileKind::File, metadata.dev(), metadata.ino()),
+            kind: 0,
+            offset: offset + 1,
+            name: name.to_vec(),
+            extension,
+            file_type: LinuxFileType::from_unix(metadata.mode()),
+            size: metadata.size(),
+            metadata,
+        })
+    }
+
     fn do_readdir(
         &self,
         fid: FID,
@@ -725,12 +780,11 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
             Some(idi) => idi.id_info().ok_or(Error::EOPNOTSUPP)?,
             None => return Err(Error::EBADF),
         };
-        let dev = idi.dev();
         let dg = self.dir_offsets.guard();
         let idg;
         let new;
         let iter = if offset == 0 {
-            new = Arc::new(Mutex::new(fs::read_dir(idi.full_path())?));
+            new = Arc::new(Mutex::new(fs::read_dir(idi.full_path())?.peekable()));
             &new
         } else {
             match self.dir_offsets.get(&fid, &dg) {
@@ -750,36 +804,89 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
         let mut mu = iter.lock().unwrap();
         let riter = mu.by_ref();
         let mut res = Vec::new();
-        for entry in riter {
-            let entry = entry?;
-            // TODO: map to proper type.
-            let qid = self.qid_from_dev_ino(FileKind::File, dev, entry.ino());
-            let de = DirEntry {
-                qid,
-                kind: 0,
-                offset: offset + 1,
-                name: entry.file_name().into_vec(),
-            };
-            let len = match kind {
-                ProtocolVersion::Original => PlainStat::FIXED_SIZE + entry.file_name().len(),
-                ProtocolVersion::Unix => UnixStat::FIXED_SIZE + entry.file_name().len(),
-                ProtocolVersion::Linux => de.len(),
-            };
-            if msg_size + len > max_size {
-                let offmap = match self.dir_offsets.try_insert(fid, HashMap::default(), &dg) {
-                    Ok(map) => map,
-                    Err(e) => e.current,
+        let mut last_entry = None;
+        loop {
+            let len = if let Some(de) = last_entry.take() {
+                let _ = riter.next();
+                let len = self.readdir_entry_size(&de, kind);
+                trace!(
+                    self.logger,
+                    "9P readdir; existing entry {}; {} bytes for {:?}",
+                    (&*de.name).as_log_str(),
+                    len,
+                    kind
+                );
+                res.push(de);
+                len
+            } else {
+                let entry = riter.next();
+                let entry = match entry {
+                    Some(entry) => entry,
+                    None => break,
                 };
-                let og = offmap.guard();
-                offmap.insert((offset, kind), Some(iter.clone()), &og);
-                return Ok(res);
-            }
-            res.push(de);
+                let entry = entry?;
+                trace!(
+                    self.logger,
+                    "9P readdir; reading entry {}",
+                    entry.file_name().as_bytes().as_log_str()
+                );
+                let mut path = idi.full_path().to_owned();
+                path.push(entry.file_name());
+                let de = self.fill_direntry(&path, entry.file_name().as_bytes(), offset)?;
+                let len = self.readdir_entry_size(&de, kind);
+                trace!(
+                    self.logger,
+                    "9P readdir; entry: {} bytes for {:?}",
+                    len,
+                    kind
+                );
+                res.push(de);
+                len
+            };
             offset += match kind {
                 ProtocolVersion::Linux => 1,
                 _ => len as u64,
             };
             msg_size += len;
+            trace!(
+                self.logger,
+                "9P readdir; offset is now {}; msg size is {}",
+                offset,
+                msg_size
+            );
+            if let Some(Ok(entry)) = riter.peek() {
+                trace!(
+                    self.logger,
+                    "9P readdir; peeking entry {}",
+                    entry.file_name().as_bytes().as_log_str()
+                );
+                let mut path = idi.full_path().to_owned();
+                path.push(entry.file_name());
+                let de = self.fill_direntry(&path, entry.file_name().as_bytes(), offset)?;
+                let len = self.readdir_entry_size(&de, kind);
+                trace!(
+                    self.logger,
+                    "9P readdir; entry: {} bytes for {:?}",
+                    len,
+                    kind
+                );
+                last_entry = Some(de);
+                if msg_size + len > max_size {
+                    trace!(
+                        self.logger,
+                        "9P readdir; entry too large ({} > {})",
+                        msg_size + len,
+                        max_size
+                    );
+                    let offmap = match self.dir_offsets.try_insert(fid, HashMap::default(), &dg) {
+                        Ok(map) => map,
+                        Err(e) => e.current,
+                    };
+                    let og = offmap.guard();
+                    offmap.insert((offset, kind), Some(iter.clone()), &og);
+                    return Ok(res);
+                }
+            }
         }
         let offmap = match self.dir_offsets.try_insert(fid, HashMap::default(), &dg) {
             Ok(map) => map,
@@ -1098,10 +1205,10 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
                 for entry in entries {
                     let mut path: PathBuf = path.into();
                     path.push(OsStr::from_bytes(&entry.name));
-                    let fsmeta = fs::symlink_metadata(&path)?;
+                    let fsmeta = &entry.metadata;
                     match meta.protocol {
                         ProtocolVersion::Original => {
-                            let mut st = PlainStat::from_metadata(&fsmeta).ok_or(Error::EIO)?;
+                            let mut st = PlainStat::from_metadata(fsmeta).ok_or(Error::EIO)?;
                             st.qid = entry.qid;
                             st.qid.0[0] = (st.mode >> 24) as u8;
                             st.size += entry.name.len() as u16;
@@ -1111,11 +1218,12 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
                             size += st.len();
                         }
                         ProtocolVersion::Unix | ProtocolVersion::Linux => {
-                            let mut st = UnixStat::from_metadata(&fsmeta).ok_or(Error::EIO)?;
+                            let mut st = UnixStat::from_metadata(fsmeta).ok_or(Error::EIO)?;
                             st.qid = entry.qid;
                             st.qid.0[0] = (st.mode >> 24) as u8;
                             st.size += entry.name.len() as u16;
                             st.name = entry.name;
+                            st.extension = entry.extension.unwrap_or_default();
                             let st = st.to_bytes().ok_or(Error::EIO)?;
                             data[size..size + st.len()].copy_from_slice(&st);
                             size += st.len();
@@ -1160,12 +1268,12 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
             }
         }
     }
-    fn remove(&self, _meta: &Metadata, fid: FID) -> Result<()> {
+    fn remove(&self, meta: &Metadata, fid: FID) -> Result<()> {
         trace!(self.logger, "9P remove: fid {}", fid);
         let g = self.fid.guard();
         match self.fid.get(&fid, &g) {
             Some(fk) => {
-                self.fid.remove(&fid, &g);
+                let _ = self.clunk(meta, fid);
                 let full_path = match fk.id_info().map(|idi| idi.full_path()) {
                     Some(p) => p,
                     _ => return Err(Error::EOPNOTSUPP),
@@ -1942,6 +2050,8 @@ mod tests {
     };
     use lawn_constants::logger::{LogFormat, LogLevel};
     use lawn_constants::Error;
+    use std::collections::HashSet;
+    use std::convert::TryInto;
     use std::ffi::OsStr;
     use std::fs;
     use std::fs::File;
@@ -2322,6 +2432,151 @@ mod tests {
                 verify_file(&mut inst, fid(n), format!("dir/{:08x}", n).as_bytes());
                 inst.server.clunk(&inst.next_meta(), fid(n)).unwrap();
             }
+        }
+    }
+
+    fn read_directory_names(inst: &mut TestInstance, f: FID) -> HashSet<Vec<u8>> {
+        let mut actual = HashSet::new();
+        let mut buffer = [0u8; 512];
+        match inst.version {
+            ProtocolVersion::Original => {
+                let mut offset = 0;
+                loop {
+                    let read = inst
+                        .server
+                        .read(&inst.next_meta(), f, offset, &mut buffer)
+                        .unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    offset += read as u64;
+                    let buf = &buffer[0..read as usize];
+                    let mut bufoff = 0;
+                    while bufoff != buf.len() {
+                        let len = u16::from_le_bytes(buf[bufoff..bufoff + 2].try_into().unwrap());
+                        let st =
+                            PlainStat::from_bytes(len, &buf[bufoff..bufoff + (len as usize) + 2])
+                                .unwrap();
+                        actual.insert(st.name);
+                        bufoff += 2 + len as usize;
+                    }
+                }
+            }
+            ProtocolVersion::Unix => {
+                let mut offset = 0;
+                loop {
+                    let read = inst
+                        .server
+                        .read(&inst.next_meta(), f, offset, &mut buffer)
+                        .unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    offset += read as u64;
+                    let buf = &buffer[0..read as usize];
+                    let mut bufoff = 0;
+                    while bufoff != buf.len() {
+                        let len = u16::from_le_bytes(buf[bufoff..bufoff + 2].try_into().unwrap());
+                        let st =
+                            UnixStat::from_bytes(len, &buf[bufoff..bufoff + (len as usize) + 2])
+                                .unwrap();
+                        actual.insert(st.name);
+                        bufoff += 2 + len as usize;
+                    }
+                }
+            }
+            ProtocolVersion::Linux => {
+                let mut offset = 0;
+                loop {
+                    let entries = inst
+                        .server
+                        .readdir(&inst.next_meta(), f, offset, buffer.len() as u32)
+                        .unwrap();
+                    if entries.is_empty() {
+                        break;
+                    }
+                    offset = entries[entries.len() - 1].offset;
+                    for entry in entries {
+                        actual.insert(entry.name);
+                    }
+                }
+            }
+        }
+        actual
+    }
+
+    #[test]
+    fn readdir_remove() {
+        for ver in [
+            ProtocolVersion::Original,
+            ProtocolVersion::Unix,
+            ProtocolVersion::Linux,
+        ] {
+            let mut inst = instance(ver);
+            create_fixtures(&mut inst);
+            // We explicitly check that we don't rely on sequential FIDs.  That is the logical way
+            // to implement this on the client side, but the server cannot rely on that.  Thus, we
+            // verify that we don't try to do things like allocate sufficient memory to hold all
+            // valid FIDs in an array (which we don't).
+            let seq = (0..=u32::MAX).map(minialzette);
+            let mut set = HashSet::new();
+            for n in seq.take(100) {
+                inst.server
+                    .walk(&inst.next_meta(), fid(0), fid(n), &[b"dir"])
+                    .unwrap();
+                verify_dir(&mut inst, fid(n), Some(b"dir"));
+                let path = format!("{:08x}", n).as_bytes().to_vec();
+                inst.server
+                    .create(
+                        &inst.next_meta(),
+                        fid(n),
+                        &path,
+                        FileType::from_bits(0o660).unwrap(),
+                        SimpleOpenMode::O_RDWR,
+                        None,
+                    )
+                    .unwrap();
+                set.insert(path);
+            }
+            set.insert(b"file".to_vec());
+            let f = fid(minialzette(1000));
+            inst.server
+                .walk(&inst.next_meta(), fid(0), f, &[b"dir"])
+                .unwrap();
+            match ver {
+                ProtocolVersion::Original | ProtocolVersion::Unix => {
+                    inst.server
+                        .open(&inst.next_meta(), f, SimpleOpenMode::O_READ)
+                        .unwrap();
+                }
+                ProtocolVersion::Linux => {
+                    inst.server
+                        .lopen(&inst.next_meta(), f, LinuxOpenMode::O_RDONLY)
+                        .unwrap();
+                }
+            }
+            let actual = read_directory_names(&mut inst, f);
+            assert_eq!(actual, set);
+            let seq = (0..=u32::MAX).map(minialzette);
+            for n in seq.take(100) {
+                // We run a stat to verify that the FID is still valid.
+                if ver == ProtocolVersion::Linux {
+                    let st = inst
+                        .server
+                        .getattr(&inst.next_meta(), fid(n), LinuxStatValidity::BASIC)
+                        .unwrap();
+                    assert_eq!(st.length, 0);
+                } else {
+                    let st = inst.server.stat(&inst.next_meta(), fid(n)).unwrap();
+                    assert_eq!(st.name(), format!("{:08x}", n).as_bytes());
+                }
+                verify_file(&mut inst, fid(n), format!("dir/{:08x}", n).as_bytes());
+                inst.server.remove(&inst.next_meta(), fid(n)).unwrap();
+            }
+            let actual = read_directory_names(&mut inst, f);
+            let mut expected = HashSet::new();
+            expected.insert(b"file".to_vec());
+            assert_eq!(actual, expected);
         }
     }
 
