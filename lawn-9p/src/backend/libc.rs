@@ -459,10 +459,12 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
         let idi = f.id_info().ok_or(Error::EOPNOTSUPP)?;
         let (file, full_path): (Option<RawFd>, _) =
             (idi.file().map(|f| f.as_raw_fd()), idi.full_path_bytes());
-        let fname = if let Some(file) = file {
-            self.file_name(&file)
+        let (fname, flags) = if let Some(file) = file {
+            // The kernel will not like it if we try to open /dev/fd with O_DIRECTORY in this case
+            // because it's not really a directory.
+            (self.file_name(&file), flags & !libc::O_DIRECTORY)
         } else {
-            full_path.to_vec()
+            (full_path.to_vec(), flags)
         };
         self.open_file(&fname, flags, mode.unwrap_or(0), Some(full_path))
     }
@@ -2810,6 +2812,41 @@ mod tests {
         verify_file(&mut inst, fid(3), b"dir/file");
         inst.server.remove(&inst.next_meta(), fid(3)).unwrap();
         verify_closed(&mut inst, fid(3));
+    }
+
+    #[test]
+    fn clone_as_directory() {
+        let mut inst = instance(ProtocolVersion::Linux);
+        create_fixtures(&mut inst);
+        inst.server
+            .walk(&inst.next_meta(), fid(0), fid(1), &[b"dir"])
+            .unwrap();
+        // This mode is what the Linux kernel passes us as of 6.0, so let's make sure we handle it
+        // gracefully.
+        inst.server
+            .lopen(
+                &inst.next_meta(),
+                fid(1),
+                LinuxOpenMode::from_bits(0x18800).unwrap(),
+            )
+            .unwrap();
+        verify_dir(&mut inst, fid(1), Some(b"dir"));
+        inst.server
+            .walk(&inst.next_meta(), fid(1), fid(2), &[])
+            .unwrap();
+        inst.server
+            .lopen(
+                &inst.next_meta(),
+                fid(2),
+                LinuxOpenMode::from_bits(0x18800).unwrap(),
+            )
+            .unwrap();
+        verify_dir(&mut inst, fid(2), Some(b"dir"));
+        inst.server.clunk(&inst.next_meta(), fid(1)).unwrap();
+        verify_closed(&mut inst, fid(1));
+        verify_dir(&mut inst, fid(2), Some(b"dir"));
+        inst.server.clunk(&inst.next_meta(), fid(2)).unwrap();
+        verify_closed(&mut inst, fid(2));
     }
 
     #[test]
