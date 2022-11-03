@@ -433,12 +433,27 @@ impl<
                 Ok(s.into_inner())
             }
             (ProtocolTag::Tgetattr, ProtocolVersion::Linux, _) => {
-                let st = backend.getattr(
-                    &meta,
+                let (fid, validity) = (
                     d.read_fid()?,
                     LinuxStatValidity::from_bits(d.read_u64()?).ok_or(Error::EINVAL)?,
-                )?;
+                );
+                trace!(
+                    logger,
+                    "9P: message {:?} {:?} fid {} validity {:?}",
+                    msg,
+                    meta.protocol,
+                    fid,
+                    validity,
+                );
+                let st = backend.getattr(&meta, fid, validity)?;
                 let (v, validity) = st.to_bytes();
+                trace!(
+                    logger,
+                    "9P: message {:?} {:?} returned validity {:?}",
+                    msg,
+                    meta.protocol,
+                    validity,
+                );
                 s.write_u64(validity.bits());
                 s.write_data(&v);
                 Ok(s.into_inner())

@@ -406,6 +406,11 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
     ) -> Result<(PathBuf, RawFd)> {
         let mut full_path = PathBuf::from(OsString::from_vec(full_path.into()));
         for _ in 0..40 {
+            trace!(
+                self.logger,
+                "9P open: resolving path to {}",
+                full_path.display()
+            );
             let c = CString::new(full_path.as_os_str().as_bytes()).map_err(|_| Error::EINVAL)?;
             match with_error(|| unsafe { libc::open(c.as_ptr(), flags | libc::O_NOFOLLOW, mode) }) {
                 Ok(fd) => return Ok((full_path, fd)),
@@ -435,7 +440,14 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
         mode: u32,
         saved_path: Option<&[u8]>,
     ) -> Result<FIDKind<AH>> {
+        trace!(self.logger, "9P open: opening {}", full_path.as_log_str());
         let (full_path, fd) = self.maybe_open_symlink(full_path, flags, mode)?;
+        trace!(
+            self.logger,
+            "9P open: opened {}, fd {}",
+            full_path.display(),
+            fd
+        );
         let f = unsafe { File::from_raw_fd(fd) };
         let metadata = f.metadata()?;
         let full_path = match saved_path {
@@ -1012,6 +1024,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
     }
 
     fn clunk(&self, _meta: &Metadata, fid: FID) -> Result<()> {
+        trace!(self.logger, "9P clunk: fid {}", fid);
         let g = self.fid.guard();
         let dg = self.dir_offsets.guard();
         self.fid.remove(&fid, &g);
@@ -1032,6 +1045,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
     }
 
     fn open(&self, _meta: &Metadata, fid: FID, mode: SimpleOpenMode) -> Result<(QID, u32)> {
+        trace!(self.logger, "9P open: fid {} mode {:?}", fid, mode);
         let mode = match mode.to_unix() {
             Some(mode) => mode,
             None => return Err(Error::EINVAL),
@@ -1843,7 +1857,8 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
         let dest = fs::read_link(idi.full_path())?.into_os_string().into_vec();
         Ok(dest)
     }
-    fn getattr(&self, _meta: &Metadata, fid: FID, _mask: LinuxStatValidity) -> Result<LinuxStat> {
+    fn getattr(&self, _meta: &Metadata, fid: FID, mask: LinuxStatValidity) -> Result<LinuxStat> {
+        trace!(self.logger, "9P getattr: fid {} mask {:?}", fid, mask);
         let g = self.fid.guard();
         let idi = match self.fid.get(&fid, &g) {
             Some(idi) => idi.id_info().ok_or(Error::EOPNOTSUPP)?,
