@@ -352,7 +352,7 @@ struct WalkState<'a> {
     next_full_path: PathBuf,
     dir: Option<Arc<File>>,
     file: Option<Arc<File>>,
-    count: usize,
+    last: bool,
     dev: u64,
     ino: u64,
 }
@@ -647,6 +647,24 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
 
     fn walk_one_non_parent(&self, dest: PathBuf, st: &'_ mut WalkState<'_>) -> Result<QID> {
         st.full_path = dest.clone();
+        // If this is the last component, we don't need to try to open it since we're not walking a
+        // directory.
+        if st.last {
+            let metadata = fs::symlink_metadata(&dest)?;
+            let ft = if metadata.is_file() {
+                FileKind::File
+            } else if metadata.is_dir() {
+                FileKind::Dir
+            } else {
+                FileKind::Special
+            };
+            st.kind = ft;
+            st.next_full_path = st.full_path.clone();
+            st.file = None;
+            st.dev = metadata.dev();
+            st.ino = metadata.ino();
+            return Ok(self.qid_from_dev_ino(ft, metadata.dev(), metadata.ino()));
+        }
         let c = CString::new(dest.as_os_str().as_bytes()).map_err(|_| Error::EINVAL)?;
         match with_error(|| unsafe { libc::open(c.as_ptr(), libc::O_RDONLY | libc::O_NOFOLLOW, 0) })
         {
@@ -1710,13 +1728,14 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
             kind: FileKind::File,
             next_full_path: full_path.clone(),
             full_path,
-            count: 0,
+            last: false,
             dev,
             ino,
         };
         let mut result = Vec::new();
         for (i, component) in name.iter().enumerate() {
-            st.count = i;
+            let last = i == name.len() - 1;
+            st.last = last;
             st.component = component;
             trace!(
                 self.logger,
@@ -1728,7 +1747,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
                 (0, Err(e)) => return Err(e),
                 (_, Err(_)) => break,
             }
-            if i != name.len() - 1 {
+            if !last {
                 st.full_path = st.next_full_path.clone();
                 st.dir = st.file.clone();
                 st.file = None;
