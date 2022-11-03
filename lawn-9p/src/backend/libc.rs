@@ -1216,6 +1216,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
         let qid = self
             .qidmapper
             .qid_from_value(FileKind::from_metadata(&md), &file);
+        self.fid.insert(fid, file, &g);
         Ok((qid, 0))
     }
     fn read(&self, meta: &Metadata, fid: FID, offset: u64, data: &mut [u8]) -> Result<u32> {
@@ -2807,6 +2808,18 @@ mod tests {
             6
         );
         verify_dir(&mut inst, fid(4), Some(b""));
+    }
+
+    #[test]
+    fn create_linux() {
+        let mut inst = instance(ProtocolVersion::Linux);
+        create_fixtures(&mut inst);
+        inst.server
+            .walk(&inst.next_meta(), fid(0), fid(1), &[b"dir"])
+            .unwrap();
+        verify_dir(&mut inst, fid(1), Some(b"dir"));
+        inst.server.lcreate(&inst.next_meta(), fid(1), b"foo", 0, 0o600, u32::MAX).unwrap();
+        verify_file(&mut inst, fid(1), b"dir/foo");
     }
 
     #[test]
