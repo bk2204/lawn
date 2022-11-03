@@ -2045,8 +2045,17 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
         newdirfid: FID,
         newname: &[u8],
     ) -> Result<()> {
+        trace!(
+            self.logger,
+            "9P renameat: {}/{} -> {}/{}",
+            olddirfid,
+            oldname.as_log_str(),
+            newdirfid,
+            newname.as_log_str()
+        );
         self.assert_valid_path_component(oldname, false)?;
         self.assert_valid_path_component(newname, false)?;
+        trace!(self.logger, "9P renameat: verifying IDs");
         let g = self.fid.guard();
         let oldidi = match self.fid.get(&olddirfid, &g) {
             Some(idi) => idi.id_info().ok_or(Error::ENOTDIR)?,
@@ -2056,18 +2065,19 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
             Some(idi) => idi.id_info().ok_or(Error::ENOTDIR)?,
             None => return Err(Error::EBADF),
         };
-        let olddir = oldidi.file().ok_or(Error::ENOTDIR)?;
-        let newdir = newidi.file().ok_or(Error::ENOTDIR)?;
-        let coldname = CString::new(oldname.to_vec()).map_err(|_| Error::EINVAL)?;
-        let cnewname = CString::new(newname.to_vec()).map_err(|_| Error::EINVAL)?;
-        with_error(|| unsafe {
-            libc::renameat(
-                olddir.as_raw_fd(),
-                coldname.as_ptr(),
-                newdir.as_raw_fd(),
-                cnewname.as_ptr(),
-            )
-        })?;
+        let mut oldpath = oldidi.full_path().to_owned();
+        let mut newpath = newidi.full_path().to_owned();
+        trace!(
+            self.logger,
+            "9P renameat: verified fid {}: {}; fid {}: {}",
+            olddirfid,
+            oldpath.display(),
+            newdirfid,
+            newpath.display()
+        );
+        oldpath.push(OsStr::from_bytes(oldname));
+        newpath.push(OsStr::from_bytes(newname));
+        fs::rename(oldpath, newpath)?;
         Ok(())
     }
     fn unlinkat(&self, _meta: &Metadata, _dirfd: FID, _name: &[u8], _flags: u32) -> Result<()> {
@@ -2818,7 +2828,9 @@ mod tests {
             .walk(&inst.next_meta(), fid(0), fid(1), &[b"dir"])
             .unwrap();
         verify_dir(&mut inst, fid(1), Some(b"dir"));
-        inst.server.lcreate(&inst.next_meta(), fid(1), b"foo", 0, 0o600, u32::MAX).unwrap();
+        inst.server
+            .lcreate(&inst.next_meta(), fid(1), b"foo", 0, 0o600, u32::MAX)
+            .unwrap();
         verify_file(&mut inst, fid(1), b"dir/foo");
     }
 
@@ -3069,44 +3081,61 @@ mod tests {
 
     #[test]
     fn rename_linux() {
-        let mut inst = instance(ProtocolVersion::Linux);
-        create_fixtures(&mut inst);
-        inst.server
-            .walk(&inst.next_meta(), fid(0), fid(1), &[b"dir"])
-            .unwrap();
-        inst.server
-            .walk(&inst.next_meta(), fid(0), fid(2), &[b"dir", b"file"])
-            .unwrap();
-        inst.server
-            .rename(&inst.next_meta(), fid(2), fid(1), b"foo")
-            .unwrap();
-        verify_file(&mut inst, fid(2), b"dir/foo");
-        inst.server
-            .mkdir(&inst.next_meta(), fid(0), b"other-dir", 0o770, u32::MAX)
-            .unwrap();
-        inst.server
-            .walk(&inst.next_meta(), fid(0), fid(3), &[b"other-dir"])
-            .unwrap();
-        verify_dir(&mut inst, fid(3), Some(b"other-dir"));
-        inst.server
-            .mkdir(&inst.next_meta(), fid(3), b"nested-dir", 0o770, u32::MAX)
-            .unwrap();
-        inst.server
-            .walk(&inst.next_meta(), fid(3), fid(4), &[b"nested-dir"])
-            .unwrap();
-        verify_dir(&mut inst, fid(4), Some(b"other-dir/nested-dir"));
-        inst.server
-            .rename(&inst.next_meta(), fid(2), fid(4), b"baz")
-            .unwrap();
-        verify_file(&mut inst, fid(2), b"other-dir/nested-dir/baz");
-        inst.server.clunk(&inst.next_meta(), fid(1)).unwrap();
-        verify_closed(&mut inst, fid(1));
-        inst.server.clunk(&inst.next_meta(), fid(2)).unwrap();
-        verify_closed(&mut inst, fid(2));
-        inst.server.clunk(&inst.next_meta(), fid(3)).unwrap();
-        verify_closed(&mut inst, fid(3));
-        inst.server.clunk(&inst.next_meta(), fid(4)).unwrap();
-        verify_closed(&mut inst, fid(4));
+        for use_renameat in [true, false] {
+            let mut inst = instance(ProtocolVersion::Linux);
+            create_fixtures(&mut inst);
+            inst.server
+                .walk(&inst.next_meta(), fid(0), fid(1), &[b"dir"])
+                .unwrap();
+            inst.server
+                .walk(&inst.next_meta(), fid(0), fid(2), &[b"dir", b"file"])
+                .unwrap();
+            inst.server
+                .rename(&inst.next_meta(), fid(2), fid(1), b"foo")
+                .unwrap();
+            verify_file(&mut inst, fid(2), b"dir/foo");
+            inst.server
+                .mkdir(&inst.next_meta(), fid(0), b"other-dir", 0o770, u32::MAX)
+                .unwrap();
+            inst.server
+                .walk(&inst.next_meta(), fid(0), fid(3), &[b"other-dir"])
+                .unwrap();
+            verify_dir(&mut inst, fid(3), Some(b"other-dir"));
+            inst.server
+                .mkdir(&inst.next_meta(), fid(3), b"nested-dir", 0o770, u32::MAX)
+                .unwrap();
+            inst.server
+                .walk(&inst.next_meta(), fid(3), fid(4), &[b"nested-dir"])
+                .unwrap();
+            verify_dir(&mut inst, fid(4), Some(b"other-dir/nested-dir"));
+            if use_renameat {
+                inst.server
+                    .renameat(&inst.next_meta(), fid(1), b"foo", fid(4), b"baz")
+                    .unwrap();
+                inst.server
+                    .walk(
+                        &inst.next_meta(),
+                        fid(0),
+                        fid(5),
+                        &[b"other-dir", b"nested-dir", b"baz"],
+                    )
+                    .unwrap();
+                verify_file(&mut inst, fid(5), b"other-dir/nested-dir/baz");
+            } else {
+                inst.server
+                    .rename(&inst.next_meta(), fid(2), fid(4), b"baz")
+                    .unwrap();
+                verify_file(&mut inst, fid(2), b"other-dir/nested-dir/baz");
+            }
+            inst.server.clunk(&inst.next_meta(), fid(1)).unwrap();
+            verify_closed(&mut inst, fid(1));
+            inst.server.clunk(&inst.next_meta(), fid(2)).unwrap();
+            verify_closed(&mut inst, fid(2));
+            inst.server.clunk(&inst.next_meta(), fid(3)).unwrap();
+            verify_closed(&mut inst, fid(3));
+            inst.server.clunk(&inst.next_meta(), fid(4)).unwrap();
+            verify_closed(&mut inst, fid(4));
+        }
     }
 
     #[test]
