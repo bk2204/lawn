@@ -421,6 +421,7 @@ pub struct PollChannelRequest {
     pub id: ChannelID,
     pub selectors: Vec<u32>,
     pub milliseconds: Option<u32>,
+    pub wanted: Option<Vec<u64>>,
 }
 
 #[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]

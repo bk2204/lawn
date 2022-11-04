@@ -108,6 +108,7 @@ impl ChannelManager {
 fn poll(
     logger: Arc<Logger>,
     selectors: Vec<u32>,
+    flags: Option<Vec<u64>>,
     fds: Vec<RawFd>,
     id: ChannelID,
     duration: Duration,
@@ -139,10 +140,52 @@ fn poll(
             duration
         );
         let mut pfd = Vec::with_capacity(selectors.len());
-        for fd in fds {
+        let flags = match flags {
+            Some(flags) if flags.len() == selectors.len() => {
+                let r: Result<Vec<_>, _> = flags.iter().map(|f| {
+                    let flags = protocol::PollChannelFlags::from_bits(*f).ok_or(protocol::Error {
+                        code: ResponseCode::InvalidParameters,
+                        body: None,
+                    })?;
+                    let mut result = 0;
+                    if flags.contains(protocol::PollChannelFlags::Input) {
+                        result |= libc::POLLIN;
+                    }
+                    if flags.contains(protocol::PollChannelFlags::Output) {
+                        result |= libc::POLLOUT;
+                    }
+                    if flags.contains(protocol::PollChannelFlags::Hangup) {
+                        result |= libc::POLLHUP;
+                    }
+                    Ok(result)
+                }).collect();
+                r
+            }
+            None => {
+                Ok((0..(selectors.len())).map(|_| libc::POLLIN | libc::POLLOUT | libc::POLLHUP).collect())
+            }
+            _ => {
+                Err(protocol::Error {
+                    code: ResponseCode::InvalidParameters,
+                    body: None,
+                })
+            }
+        };
+        let flags = match flags {
+            Ok(flags) => flags,
+            Err(_) => {
+                ch.send(Err(protocol::Error {
+                    code: ResponseCode::InvalidParameters,
+                    body: None,
+                }))
+                .unwrap();
+                return;
+            }
+        };
+        for (fd, events) in fds.iter().zip(flags.iter()) {
             pfd.push(libc::pollfd {
-                fd,
-                events: libc::POLLIN | libc::POLLOUT | libc::POLLHUP,
+                fd: *fd,
+                events: *events,
                 revents: 0,
             });
         }
@@ -209,6 +252,7 @@ pub trait Channel {
     fn poll(
         &self,
         selectors: Vec<u32>,
+        flags: Option<Vec<u64>>,
         delay: Duration,
         ch: oneshot::Sender<Result<Vec<protocol::PollChannelFlags>, protocol::Error>>,
     );
@@ -324,10 +368,11 @@ impl Channel for ServerCommandChannel {
     fn poll(
         &self,
         selectors: Vec<u32>,
+        flags: Option<Vec<u64>>,
         duration: Duration,
         ch: oneshot::Sender<Result<Vec<protocol::PollChannelFlags>, protocol::Error>>,
     ) {
-        self.ch.poll(selectors, duration, ch)
+        self.ch.poll(selectors, flags, duration, ch)
     }
 
     fn ping(&self) -> Result<(), protocol::Error> {
@@ -425,6 +470,7 @@ impl Channel for ServerGenericCommandChannel {
     fn poll(
         &self,
         selectors: Vec<u32>,
+        flags: Option<Vec<u64>>,
         duration: Duration,
         ch: oneshot::Sender<Result<Vec<protocol::PollChannelFlags>, protocol::Error>>,
     ) {
@@ -450,7 +496,7 @@ impl Channel for ServerGenericCommandChannel {
             })
             .collect();
         match fds {
-            Ok(fds) => poll(logger, selectors, fds, id, duration, ch),
+            Ok(fds) => poll(logger, selectors, flags, fds, id, duration, ch),
             Err(e) => {
                 let _ = ch.send(Err(e));
             }
@@ -592,10 +638,11 @@ impl Channel for ServerClipboardChannel {
     fn poll(
         &self,
         selectors: Vec<u32>,
+        flags: Option<Vec<u64>>,
         duration: Duration,
         ch: oneshot::Sender<Result<Vec<protocol::PollChannelFlags>, protocol::Error>>,
     ) {
-        self.ch.poll(selectors, duration, ch)
+        self.ch.poll(selectors, flags, duration, ch)
     }
 
     fn ping(&self) -> Result<(), protocol::Error> {
@@ -850,6 +897,7 @@ impl Channel for Server9PChannel {
     fn poll(
         &self,
         selectors: Vec<u32>,
+        flags: Option<Vec<u64>>,
         duration: Duration,
         ch: oneshot::Sender<Result<Vec<protocol::PollChannelFlags>, protocol::Error>>,
     ) {
@@ -887,7 +935,7 @@ impl Channel for Server9PChannel {
             };
             fds.push(fd);
         }
-        poll(self.logger.clone(), selectors, fds, id, duration, ch);
+        poll(self.logger.clone(), selectors, flags, fds, id, duration, ch);
     }
 
     fn ping(&self) -> Result<(), protocol::Error> {

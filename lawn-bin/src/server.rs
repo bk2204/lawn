@@ -618,7 +618,8 @@ impl Server {
                 let duration = Duration::from_millis(m.milliseconds.unwrap_or(0) as u64);
                 let (tx, rx) = sync::oneshot::channel();
                 let selectors = m.selectors.clone();
-                tokio::task::spawn_blocking(move || ch.poll(selectors, duration, tx));
+                let flags = m.wanted.clone();
+                tokio::task::spawn_blocking(move || ch.poll(selectors, flags, duration, tx));
                 let rxresp = match rx.await {
                     Ok(resp) => resp?,
                     Err(_) => return Err(ResponseCode::InternalError.into()),
