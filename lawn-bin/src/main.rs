@@ -79,20 +79,20 @@ fn prune_socket(p: &Path, logger: Arc<config::Logger>) {
 fn find_server_socket(socket: Option<&OsStr>, config: Arc<config::Config>) -> Option<UnixStream> {
     let logger = config.logger();
     if let Some(socket) = socket {
-        trace!(logger, "trying specified socket {}", escape(osstr(socket)));
+        debug!(logger, "trying specified socket {}", escape(osstr(socket)));
         return match UnixStream::connect(&socket) {
             Ok(sock) => Some(sock),
             Err(_) => None,
         };
     }
     if let Some(path) = std::env::var_os("SSH_AUTH_SOCK") {
-        trace!(logger, "trying SSH socket {}", escape(osstr(&*path)));
+        debug!(logger, "trying SSH socket {}", escape(osstr(&*path)));
         match UnixStream::connect(path) {
             Ok(sock) => {
                 let logger = logger.clone();
                 let config = config.clone();
                 let res = task::block_on_async(async move {
-                    trace!(logger, "SSH socket: performing client probe");
+                    debug!(logger, "SSH socket: performing client probe");
                     match ssh_proxy::Proxy::client_probe(config.clone(), sock).await {
                         Ok(sock) => {
                             let config = config.clone();
@@ -109,7 +109,7 @@ fn find_server_socket(socket: Option<&OsStr>, config: Arc<config::Config>) -> Op
                             Ok(sb)
                         }
                         Err(e) => {
-                            trace!(logger, "failed to connect to SSH socket");
+                            debug!(logger, "failed to connect to SSH socket");
                             Err(e)
                         }
                     }
@@ -119,7 +119,7 @@ fn find_server_socket(socket: Option<&OsStr>, config: Arc<config::Config>) -> Op
                 }
             }
             Err(e) => {
-                trace!(logger, "SSH socket: failed to connect: {}", e);
+                debug!(logger, "SSH socket: failed to connect: {}", e);
             }
         }
     }
@@ -136,7 +136,7 @@ fn find_server_socket(socket: Option<&OsStr>, config: Arc<config::Config>) -> Op
         trace!(logger, "trying socket {}", escape(path(&*p)));
         match UnixStream::connect(&p) {
             Ok(sock) => {
-                trace!(
+                debug!(
                     logger,
                     "successfully connected to socket {}",
                     escape(path(&*p))
@@ -156,7 +156,7 @@ fn find_server_socket(socket: Option<&OsStr>, config: Arc<config::Config>) -> Op
                     }
                 }
                 None => {
-                    trace!(
+                    debug!(
                         logger,
                         "failed to connect to socket {}: {}",
                         escape(path(&*p)),
@@ -176,7 +176,7 @@ fn autospawn_server(config: Arc<config::Config>) -> Result<(), Error> {
     let logger = config.logger();
     match config.is_root() {
         Ok(true) => {
-            trace!(logger, "autospawning server");
+            debug!(logger, "autospawning server");
             let server = server::Server::new(config);
             if let Err(e) = server.run_forked() {
                 error!(logger, "failed to autospawn server: {}", e);
@@ -186,11 +186,11 @@ fn autospawn_server(config: Arc<config::Config>) -> Result<(), Error> {
             }
         }
         Ok(false) => {
-            trace!(logger, "not root, not autospawning server");
+            debug!(logger, "not root, not autospawning server");
             Err(Error::new(ErrorKind::NotRootMachine))
         }
         Err(e) => {
-            error!(
+            debug!(
                 logger,
                 "unable to determine whether we are the root instance: {}", e
             );
