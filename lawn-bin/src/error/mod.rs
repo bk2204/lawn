@@ -53,10 +53,22 @@ impl Error {
 // TODO: fix
 impl Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.message {
-            Some(msg) => write!(f, "{:?}: {}", self.kind, msg),
-            None => write!(f, "{:?}", self.kind),
-        }?;
+        let handled = match self.kind {
+            ErrorKind::NotRootMachine => {
+                write!(
+                    f,
+                    "no server found and autospawn is disabled because we are not the root machine"
+                )?;
+                true
+            }
+            _ => false,
+        };
+        match (handled, &self.message) {
+            (true, Some(msg)) => write!(f, "{}", msg)?,
+            (false, Some(msg)) => write!(f, "{:?}: {}", self.kind, msg)?,
+            (true, None) => (),
+            (false, None) => write!(f, "{:?}", self.kind)?,
+        };
         if let Some(e) = &self.cause {
             write!(f, ": {}", e)?;
         }
