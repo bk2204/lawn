@@ -363,15 +363,6 @@ impl Config {
             logger.trace(&format!("runtime_dir: found, using {:?}", buf));
             v.push(buf);
         }
-        let uid = unsafe { libc::getuid() };
-        let path = format!("/run/user/{}", uid);
-        logger.trace(&format!("runtime_dir: looking for {}", path));
-        if fs::metadata(&path).is_ok() {
-            let mut buf: PathBuf = path.into();
-            buf.push("lawn");
-            logger.trace(&format!("runtime_dir: found, using {:?}", buf));
-            v.push(buf);
-        }
         logger.trace("runtime_dir: looking for HOME");
         if let Some(dir) = env("HOME") {
             let mut buf: PathBuf = dir.into();
@@ -872,8 +863,10 @@ mod tests {
         let stderr = std::io::Cursor::new(Vec::new());
         let mut env = env;
         env.insert("PATH".into(), std::env::var_os("PATH").unwrap());
+        env.insert("XDG_RUNTIME_DIR".into(), "/tmp".into());
+        let env2 = env.clone();
         let cfg = Config::new(
-            |_| None,
+            |var| env2.get(&OsString::from(var)).map(|x| x.clone()),
             || env.iter().map(|(a, b)| (a.clone(), b.clone())),
             false,
             3,
