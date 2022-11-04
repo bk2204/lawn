@@ -202,6 +202,10 @@ mod tests {
                 "Single quoting? %(sq:cenv:TEXT)",
                 "Single quoting? 'This '\\'' text has a '\\''\\'\\'''\\'' lot of weird characters'",
             ),
+            (
+                "printf \"%%s/.local/share/remote-files\" \"$HOME\"",
+                "printf \"%s/.local/share/remote-files\" \"$HOME\"",
+            ),
         ];
         for (input, output) in &cases {
             let t = Template::new(input.as_bytes());
