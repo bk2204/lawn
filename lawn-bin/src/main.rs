@@ -20,6 +20,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use tokio::runtime::Handle;
 
 mod channel;
 mod client;
@@ -76,7 +77,7 @@ fn prune_socket(p: &Path, logger: Arc<config::Logger>) {
     let _ = std::fs::remove_file(p);
 }
 
-fn find_server_socket(socket: Option<&OsStr>, config: Arc<config::Config>) -> Option<UnixStream> {
+fn find_server_socket(handle: &Handle, socket: Option<&OsStr>, config: Arc<config::Config>) -> Option<UnixStream> {
     let logger = config.logger();
     if let Some(socket) = socket {
         debug!(logger, "trying specified socket {}", escape(osstr(socket)));
@@ -89,31 +90,33 @@ fn find_server_socket(socket: Option<&OsStr>, config: Arc<config::Config>) -> Op
         debug!(logger, "trying SSH socket {}", escape(osstr(&*path)));
         match UnixStream::connect(path) {
             Ok(sock) => {
-                let logger = logger.clone();
-                let config = config.clone();
-                let res = task::block_on_async(async move {
-                    debug!(logger, "SSH socket: performing client probe");
-                    match ssh_proxy::Proxy::client_probe(config.clone(), sock).await {
-                        Ok(sock) => {
-                            let config = config.clone();
-                            let (sa, sb) = tokio::net::UnixStream::pair().unwrap();
-                            tokio::spawn(async {
-                                let p = ssh_proxy::Proxy::new(
-                                    config,
-                                    None,
-                                    sa,
-                                    tokio::net::UnixStream::from_std(sock).unwrap(),
-                                );
-                                let _ = p.run_client().await;
-                            });
-                            Ok(sb)
-                        }
-                        Err(e) => {
-                            debug!(logger, "failed to connect to SSH socket");
-                            Err(e)
-                        }
-                    }
+                let log = logger.clone();
+                let cfg = config.clone();
+                let res = handle.block_on(async move {
+                    debug!(log, "SSH socket: performing client probe");
+                    ssh_proxy::Proxy::client_probe(cfg.clone(), sock).await
                 });
+                let res = match res {
+                    Ok(sock) => {
+                        let config = config.clone();
+                        let _eg = handle.enter();
+                        let (sa, sb) = tokio::net::UnixStream::pair().unwrap();
+                        tokio::spawn(async {
+                            let p = ssh_proxy::Proxy::new(
+                                config,
+                                None,
+                                sa,
+                                tokio::net::UnixStream::from_std(sock).unwrap(),
+                            );
+                            let _ = p.run_client().await;
+                        });
+                        Ok(sb)
+                    }
+                    Err(e) => {
+                        debug!(logger, "failed to connect to SSH socket");
+                        Err(e)
+                    }
+                };
                 if let Ok(sock) = res {
                     return Some(sock.into_std().unwrap());
                 }
@@ -215,14 +218,15 @@ fn find_vacant_socket(config: Arc<config::Config>, kind: &str) -> Result<PathBuf
 }
 
 fn find_or_autostart_server(
+    handle: &Handle,
     socket: Option<&OsStr>,
     config: Arc<config::Config>,
 ) -> Result<UnixStream, Error> {
-    if let Some(socket) = find_server_socket(socket, config.clone()) {
+    if let Some(socket) = find_server_socket(handle, socket, config.clone()) {
         return Ok(socket);
     }
     autospawn_server(config.clone())?;
-    match find_server_socket(socket, config) {
+    match find_server_socket(handle, socket, config) {
         Some(s) => Ok(s),
         None => Err(Error::new(ErrorKind::SocketConnectionFailure)),
     }
@@ -247,8 +251,8 @@ fn dispatch_query_test_connection(
     let logger = config.logger();
     logger.trace("Starting runtime");
     let runtime = runtime();
+    let socket = find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
     runtime.block_on(async {
-        let socket = find_or_autostart_server(main.value_of_os("socket"), config.clone())?;
         let client = client::Client::new(config);
         match socket.peer_addr() {
             Ok(addr) => match addr.as_pathname() {
@@ -343,8 +347,8 @@ fn dispatch_proxy(
     let logger = config.logger();
     logger.trace("Starting runtime");
     let runtime = runtime();
+    let socket = find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
     let res: Result<i32, Error> = runtime.block_on(async move {
-        let socket = find_or_autostart_server(main.value_of_os("socket"), config.clone())?;
         let addr = socket.peer_addr().unwrap();
         let ours = addr.as_pathname().unwrap();
         let multiplex = find_vacant_socket(config.clone(), "ssh")?;
@@ -399,8 +403,8 @@ fn dispatch_mount(
     let logger = config.logger();
     logger.trace("Starting runtime");
     let runtime = runtime();
+    let socket = find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
     let res: Result<i32, Error> = runtime.block_on(async move {
-        let socket = find_or_autostart_server(main.value_of_os("socket"), config.clone())?;
         let target_9p = m.value_of_os("9p").unwrap();
         let addr = socket.peer_addr().unwrap();
         let ours = addr.as_pathname().unwrap();
@@ -496,8 +500,8 @@ fn dispatch_clip(
     let logger = config.logger();
     logger.trace("Starting runtime");
     let runtime = runtime();
+    let socket = find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
     let res = runtime.block_on(async move {
-        let socket = find_or_autostart_server(main.value_of_os("socket"), config.clone())?;
         let client = client::Client::new(config);
         match socket
             .peer_addr()
@@ -528,8 +532,8 @@ fn dispatch_run(
     let logger = config.logger();
     logger.trace("Starting runtime");
     let runtime = runtime();
+    let socket = find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
     let res = runtime.block_on(async move {
-        let socket = find_or_autostart_server(main.value_of_os("socket"), config.clone())?;
         let client = client::Client::new(config);
         match socket
             .peer_addr()
