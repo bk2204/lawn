@@ -331,7 +331,9 @@ impl From<Error> for io::Error {
             Error::EKEYREVOKED => io::Error::from_raw_os_error(libc::EKEYREVOKED),
             #[cfg(target_os = "linux")]
             Error::EKEYREJECTED => io::Error::from_raw_os_error(libc::EKEYREJECTED),
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             Error::EOWNERDEAD => io::Error::from_raw_os_error(libc::EOWNERDEAD),
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             Error::ENOTRECOVERABLE => io::Error::from_raw_os_error(libc::ENOTRECOVERABLE),
             #[cfg(target_os = "linux")]
             Error::ERFKILL => io::Error::from_raw_os_error(libc::ERFKILL),
@@ -521,7 +523,10 @@ impl From<io::Error> for Error {
             Some(libc::EKEYREVOKED) => Self::EKEYREVOKED,
             #[cfg(target_os = "linux")]
             Some(libc::EKEYREJECTED) => Self::EKEYREJECTED,
+            // These are present on neither NetBSD nor macOS.
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             Some(libc::EOWNERDEAD) => Self::EOWNERDEAD,
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             Some(libc::ENOTRECOVERABLE) => Self::ENOTRECOVERABLE,
             #[cfg(target_os = "linux")]
             Some(libc::ERFKILL) => Self::ERFKILL,
