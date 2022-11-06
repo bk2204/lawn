@@ -2089,9 +2089,9 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
 
 #[cfg(test)]
 mod tests {
-    use super::{IDInfo, LibcBackend, MaybeIDInfo};
+    use super::{LibcBackend, MaybeIDInfo};
     use crate::auth::{AuthenticationInfo, Authenticator};
-    use crate::backend::{Backend, FIDKind, ToIdentifier};
+    use crate::backend::{Backend, ToIdentifier};
     use crate::server::{
         FileType, LinuxFileType, LinuxOpenMode, LinuxStatValidity, Metadata, PlainStat,
         ProtocolVersion, SimpleOpenMode, Tag, UnixStat, FID,
@@ -2105,7 +2105,7 @@ mod tests {
     use std::fs::File;
     use std::fs::FileType as StdFileType;
     use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    use std::os::unix::fs::MetadataExt;
     use std::os::unix::io::AsRawFd;
     use std::path::Path;
     use std::sync::Arc;
@@ -2141,7 +2141,7 @@ mod tests {
     impl Authenticator for Auther {
         type SessionHandle = AutherHandle;
 
-        fn create(&self, uname: &[u8], aname: &[u8], nuname: Option<u32>) -> Self::SessionHandle {
+        fn create(&self, _uname: &[u8], _aname: &[u8], nuname: Option<u32>) -> Self::SessionHandle {
             Self::SessionHandle {
                 user: self.user.clone(),
                 dir: self.dir.clone(),
@@ -2176,11 +2176,11 @@ mod tests {
         fn format(&self) -> LogFormat {
             LogFormat::Text
         }
-        fn fatal(&self, msg: &str) {}
-        fn error(&self, msg: &str) {}
-        fn message(&self, msg: &str) {}
-        fn info(&self, msg: &str) {}
-        fn debug(&self, msg: &str) {}
+        fn fatal(&self, _msg: &str) {}
+        fn error(&self, _msg: &str) {}
+        fn message(&self, _msg: &str) {}
+        fn info(&self, _msg: &str) {}
+        fn debug(&self, _msg: &str) {}
         fn trace(&self, msg: &str) {
             eprintln!("{}", msg);
         }
@@ -2385,7 +2385,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        inst.server.clunk(&inst.next_meta(), fid(1));
+        inst.server.clunk(&inst.next_meta(), fid(1)).unwrap();
         verify_closed(inst, fid(1));
         inst.server
             .walk(&inst.next_meta(), fid(0), fid(2), &[b"dir"])
@@ -2421,13 +2421,13 @@ mod tests {
             .unwrap() as usize;
         assert_eq!(&body[2..], &actual[0..size]);
         verify_file(inst, fid(2), b"dir/file");
-        inst.server.clunk(&inst.next_meta(), fid(2));
+        inst.server.clunk(&inst.next_meta(), fid(2)).unwrap();
         verify_closed(inst, fid(2));
     }
 
     #[test]
     fn is_within() {
-        let mut inst = instance(ProtocolVersion::Original);
+        let inst = instance(ProtocolVersion::Original);
         assert!(inst.server.is_within(b"/tmp/foo", b"/tmp"));
         assert!(!inst.server.is_within(b"/dev/null", b"/tmp"));
         assert!(!inst.server.is_within(b"/tmp", b"/tmp/foo"));
@@ -2698,8 +2698,7 @@ mod tests {
     fn chmod_linux() {
         let mut inst = instance(ProtocolVersion::Unix);
         create_fixtures(&mut inst);
-        let qids = inst
-            .server
+        inst.server
             .walk(&inst.next_meta(), fid(0), fid(1), &[b"dir", b"file"])
             .unwrap();
         inst.server
@@ -2941,7 +2940,7 @@ mod tests {
         inst.server
             .write(&inst.next_meta(), fid(1), 0, message)
             .unwrap();
-        inst.server.clunk(&inst.next_meta(), fid(1));
+        inst.server.clunk(&inst.next_meta(), fid(1)).unwrap();
         inst.server
             .walk(&inst.next_meta(), fid(0), fid(1), &[b"dir", b"symlink"])
             .unwrap();
@@ -2971,7 +2970,7 @@ mod tests {
         inst.server
             .symlink(&inst.next_meta(), fid(1), b"symlink", b"file", 0)
             .unwrap();
-        inst.server.clunk(&inst.next_meta(), fid(1));
+        inst.server.clunk(&inst.next_meta(), fid(1)).unwrap();
         inst.server
             .walk(&inst.next_meta(), fid(0), fid(1), &[b"dir", b"symlink"])
             .unwrap();
@@ -2990,7 +2989,7 @@ mod tests {
         inst.server
             .write(&inst.next_meta(), fid(1), 0, message)
             .unwrap();
-        inst.server.clunk(&inst.next_meta(), fid(1));
+        inst.server.clunk(&inst.next_meta(), fid(1)).unwrap();
         inst.server
             .walk(&inst.next_meta(), fid(0), fid(1), &[b"dir", b"symlink"])
             .unwrap();
@@ -3158,7 +3157,7 @@ mod tests {
                     None,
                 )
                 .unwrap();
-            inst.server.clunk(&inst.next_meta(), fid(1));
+            inst.server.clunk(&inst.next_meta(), fid(1)).unwrap();
             verify_closed(&mut inst, fid(1));
             inst.server
                 .walk(&inst.next_meta(), fid(0), fid(2), &[b"dir"])
@@ -3194,7 +3193,7 @@ mod tests {
                 .unwrap() as usize;
             assert_eq!(&body[2..], &actual[0..size]);
             verify_file(&mut inst, fid(2), b"dir/file");
-            inst.server.clunk(&inst.next_meta(), fid(2));
+            inst.server.clunk(&inst.next_meta(), fid(2)).unwrap();
             verify_closed(&mut inst, fid(2));
             inst.server
                 .walk(&inst.next_meta(), fid(0), fid(3), &[b"dir"])
@@ -3210,7 +3209,7 @@ mod tests {
             assert_eq!(st.name(), b"dir");
             assert_eq!(st.mode().unwrap() & type_bits, FileType::DMDIR);
             assert_eq!(st.mode().unwrap() & setid_bits, FileType::empty());
-            inst.server.clunk(&inst.next_meta(), fid(3));
+            inst.server.clunk(&inst.next_meta(), fid(3)).unwrap();
             verify_closed(&mut inst, fid(3));
             inst.server
                 .walk(&inst.next_meta(), fid(0), fid(4), &[b"dir", b"file"])
@@ -3220,7 +3219,7 @@ mod tests {
             assert_eq!(st.name(), b"file");
             assert_eq!(st.mode().unwrap() & type_bits, FileType::empty());
             assert_eq!(st.mode().unwrap() & setid_bits, FileType::empty());
-            inst.server.clunk(&inst.next_meta(), fid(4));
+            inst.server.clunk(&inst.next_meta(), fid(4)).unwrap();
             verify_closed(&mut inst, fid(4));
         }
     }
@@ -3236,7 +3235,7 @@ mod tests {
         inst.server
             .mkdir(&inst.next_meta(), fid(1), b"dir", 0o770, u32::MAX)
             .unwrap();
-        inst.server.clunk(&inst.next_meta(), fid(1));
+        inst.server.clunk(&inst.next_meta(), fid(1)).unwrap();
         verify_closed(&mut inst, fid(1));
         inst.server
             .walk(&inst.next_meta(), fid(0), fid(2), &[b"dir"])
@@ -3272,7 +3271,7 @@ mod tests {
             .unwrap() as usize;
         assert_eq!(&body[2..], &actual[0..size]);
         verify_file(&mut inst, fid(2), b"dir/file");
-        inst.server.clunk(&inst.next_meta(), fid(2));
+        inst.server.clunk(&inst.next_meta(), fid(2)).unwrap();
         verify_closed(&mut inst, fid(2));
     }
 }
