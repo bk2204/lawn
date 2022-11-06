@@ -1047,7 +1047,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
                 location.as_log_str(),
                 fid
             );
-            *self.root.write().unwrap() = Some(info.location().to_vec());
+            *self.root.write().unwrap() = Some(location.to_vec());
             file
         };
         trace!(self.logger, "9P attach: mapping fid");
@@ -2130,7 +2130,7 @@ mod tests {
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::io::AsRawFd;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::sync::Mutex;
     use tempfile::TempDir;
@@ -2211,8 +2211,10 @@ mod tests {
 
     type Server = LibcBackend<Auther, AutherHandle>;
 
+    #[allow(dead_code)]
     struct TestInstance {
         dir: TempDir,
+        root: PathBuf,
         version: ProtocolVersion,
         server: Server,
         tag: Mutex<u16>,
@@ -2232,6 +2234,7 @@ mod tests {
 
     fn instance(version: ProtocolVersion) -> TestInstance {
         let dir = TempDir::new().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
         TestInstance {
             version,
             server: Server::new(
@@ -2243,6 +2246,7 @@ mod tests {
                 1024 * 1024,
             ),
             dir,
+            root,
             tag: Mutex::new(0),
         }
     }
@@ -2311,7 +2315,7 @@ mod tests {
         let g = inst.server.fid.guard();
         let entry = inst.server.fid.get(&fid, &g);
         if let Some(idi) = entry.and_then(|e| e.id_info()) {
-            let mut full_path = inst.dir.path().to_owned();
+            let mut full_path = inst.root.clone();
             full_path.push(OsStr::from_bytes(path.unwrap_or_default()));
             assert_ne!(
                 idi.full_path().file_name().map(|n| n.as_bytes()),
@@ -2326,12 +2330,12 @@ mod tests {
             match path {
                 Some(path) => {
                     if path.is_empty() {
-                        assert_eq!(full_path, inst.dir.path(), "path is root");
+                        assert_eq!(full_path, inst.root, "path is root");
                     } else {
                         assert_eq!(idi.full_path(), full_path, "path is correct");
                     }
                 }
-                None => assert_eq!(full_path, inst.dir.path(), "path is root"),
+                None => assert_eq!(full_path, inst.root, "path is root"),
             }
             verify_file_is_path(&inst, idi.file(), &full_path, |f| f.is_dir());
         } else {
@@ -2343,7 +2347,7 @@ mod tests {
         let g = inst.server.fid.guard();
         let entry = inst.server.fid.get(&fid, &g);
         if let Some(idi) = entry.and_then(|e| e.id_info()) {
-            let mut full_path = inst.dir.path().to_owned();
+            let mut full_path = inst.root.clone();
             full_path.push(OsStr::from_bytes(path));
             assert_ne!(
                 idi.full_path().file_name().map(|n| n.as_bytes()),
@@ -2366,7 +2370,7 @@ mod tests {
         let g = inst.server.fid.guard();
         let entry = inst.server.fid.get(&fid, &g);
         if let Some(idi) = entry.and_then(|e| e.id_info()) {
-            let mut full_path = inst.dir.path().to_owned();
+            let mut full_path = inst.root.clone();
             full_path.push(OsStr::from_bytes(path));
             assert_ne!(
                 idi.full_path().file_name().map(|n| n.as_bytes()),
