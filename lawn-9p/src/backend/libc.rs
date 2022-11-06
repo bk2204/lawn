@@ -204,6 +204,29 @@ trait IDInfo {
     fn file_kind(&self) -> Result<FileKind>;
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[allow(clippy::unnecessary_cast)]
+fn major_minor(dev: u64) -> (u32, u32) {
+    (
+        unsafe { libc::major(dev as libc::dev_t) } as u32,
+        unsafe { libc::minor(dev as libc::dev_t) } as u32,
+    )
+}
+
+#[cfg(target_os = "freebsd")]
+fn major_minor(dev: u64) -> (u32, u32) {
+    let major = ((dev >> 32) & 0xffffff00) | ((dev >> 8) & 0xff);
+    let minor = ((dev >> 24) & 0xff00) | (dev & 0xffff00ff);
+    (major as u32, minor as u32)
+}
+
+#[cfg(target_os = "netbsd")]
+fn major_minor(dev: u64) -> (u32, u32) {
+    let major = (dev & 0x000fff00) >> 8;
+    let minor = ((dev & 0xfff00000) >> 12) | (dev & 0xff);
+    (major as u32, minor as u32)
+}
+
 // These constants are arbitrary but are designed to not share byte patterns to help in debugging.
 // These fields are not otherwise used and so any dummy value is fine.
 const MAGIC_KIND: u16 = 0xfeff;
@@ -237,15 +260,11 @@ impl FromMetadata for UnixStat {
     fn from_metadata(meta: &fs::Metadata) -> Option<Self> {
         let ft = meta.file_type();
         let extension = if ft.is_block_device() {
-            format!("b {} {}", unsafe { libc::major(meta.rdev()) }, unsafe {
-                libc::minor(meta.rdev())
-            })
-            .into_bytes()
+            let (maj, min) = major_minor(meta.rdev());
+            format!("b {} {}", maj, min).into_bytes()
         } else if ft.is_char_device() {
-            format!("c {} {}", unsafe { libc::major(meta.rdev()) }, unsafe {
-                libc::minor(meta.rdev())
-            })
-            .into_bytes()
+            let (maj, min) = major_minor(meta.rdev());
+            format!("c {} {}", maj, min).into_bytes()
         } else {
             Vec::new()
         };
@@ -779,19 +798,11 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
                 .map(|p| p.into_os_string().into_vec())
                 .ok()
         } else if ft.is_char_device() {
-            Some(
-                format!("c {} {}", unsafe { libc::major(metadata.rdev()) }, unsafe {
-                    libc::minor(metadata.rdev())
-                })
-                .into_bytes(),
-            )
+            let (maj, min) = major_minor(metadata.rdev());
+            Some(format!("c {} {}", maj, min).into_bytes())
         } else if ft.is_block_device() {
-            Some(
-                format!("b {} {}", unsafe { libc::major(metadata.rdev()) }, unsafe {
-                    libc::minor(metadata.rdev())
-                })
-                .into_bytes(),
-            )
+            let (maj, min) = major_minor(metadata.rdev());
+            Some(format!("b {} {}", maj, min).into_bytes())
         } else {
             None
         };
