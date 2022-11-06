@@ -1147,7 +1147,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
         ) {
             (FileType::DMDIR, None) => {
                 trace!(self.logger, "9P create: directory: {}", full_path.display());
-                with_error(|| unsafe { libc::mkdir(cpath.as_ptr(), mode) })?;
+                with_error(|| unsafe { libc::mkdir(cpath.as_ptr(), mode as libc::mode_t) })?;
                 trace!(
                     self.logger,
                     "9P create: directory creation OK, statting directory"
@@ -1196,12 +1196,14 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
                 return Ok((qid, 0));
             }
             (FileType::DMDEVICE, Some(kind)) => self.parse_major_minor(kind)?,
-            (FileType::DMSOCKET, None) => (libc::S_IFSOCK, 0),
-            (FileType::DMNAMEDPIPE, None) => (libc::S_IFIFO, 0),
+            (FileType::DMSOCKET, None) => (libc::S_IFSOCK as u32, 0),
+            (FileType::DMNAMEDPIPE, None) => (libc::S_IFIFO as u32, 0),
             _ => return Err(Error::EINVAL),
         };
         trace!(self.logger, "9P create: mknod: {}", full_path.display());
-        with_error(|| unsafe { libc::mknod(cpath.as_ptr(), mmode, mdev) })?;
+        with_error(|| unsafe {
+            libc::mknod(cpath.as_ptr(), mmode as libc::mode_t, mdev as libc::dev_t)
+        })?;
         let md = fs::symlink_metadata(&full_path)?;
         let file = FIDKind::Closed(FileID {
             dev: md.dev(),
@@ -1588,23 +1590,23 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
                         ac.add(
                             Box::new(move || {
                                 match file {
-                                    Some(ref f) => {
-                                        with_error(|| unsafe { libc::fchmod(f.as_raw_fd(), mode) })?
-                                    }
-                                    None => {
-                                        with_error(|| unsafe { libc::chmod(c.as_ptr(), mode) })?
-                                    }
+                                    Some(ref f) => with_error(|| unsafe {
+                                        libc::fchmod(f.as_raw_fd(), mode as libc::mode_t)
+                                    })?,
+                                    None => with_error(|| unsafe {
+                                        libc::chmod(c.as_ptr(), mode as libc::mode_t)
+                                    })?,
                                 };
                                 Ok(())
                             }),
                             Some(Box::new(move || {
                                 match rfile {
                                     Some(ref f) => with_error(|| unsafe {
-                                        libc::fchmod(f.as_raw_fd(), oldmode)
+                                        libc::fchmod(f.as_raw_fd(), oldmode as libc::mode_t)
                                     })?,
-                                    None => {
-                                        with_error(|| unsafe { libc::chmod(c2.as_ptr(), oldmode) })?
-                                    }
+                                    None => with_error(|| unsafe {
+                                        libc::chmod(c2.as_ptr(), oldmode as libc::mode_t)
+                                    })?,
                                 };
                                 Ok(())
                             })),
@@ -1952,7 +1954,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
         let cpath =
             CString::new(full_path.as_os_str().as_bytes().to_vec()).map_err(|_| Error::EINVAL)?;
         if let Some(mode) = mode {
-            with_error(|| unsafe { libc::chmod(cpath.as_ptr(), mode & 0o7777) })?;
+            with_error(|| unsafe { libc::chmod(cpath.as_ptr(), (mode & 0o7777) as libc::mode_t) })?;
         }
         if uid.is_some() || gid.is_some() {
             with_error(|| unsafe {
@@ -2054,7 +2056,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
         let mode = mode & 0o7777;
         let cname =
             CString::new(Vec::from(full_path.as_os_str().as_bytes())).map_err(|_| Error::EINVAL)?;
-        with_error(|| unsafe { libc::mkdir(cname.as_ptr(), mode) })?;
+        with_error(|| unsafe { libc::mkdir(cname.as_ptr(), mode as libc::mode_t) })?;
         let meta = fs::symlink_metadata(&full_path)?;
         Ok(self.qid_from_dev_ino(FileKind::Dir, meta.dev(), meta.ino()))
     }

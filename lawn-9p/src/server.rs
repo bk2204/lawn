@@ -1040,7 +1040,7 @@ impl FileType {
 
     #[cfg(feature = "unix")]
     pub fn from_unix(mode: u32) -> Self {
-        let kind = match mode & libc::S_IFMT {
+        let kind = match (mode as libc::mode_t) & libc::S_IFMT {
             libc::S_IFSOCK => Self::DMSOCKET,
             libc::S_IFLNK => Self::DMSYMLINK,
             libc::S_IFBLK | libc::S_IFCHR => Self::DMDEVICE,
@@ -1084,7 +1084,7 @@ impl LinuxFileType {
 
     #[cfg(feature = "unix")]
     pub fn from_unix(mode: u32) -> Self {
-        let kind = match mode & libc::S_IFMT {
+        let kind = match (mode as libc::mode_t) & libc::S_IFMT {
             libc::S_IFSOCK => Self::S_IFSOCK,
             libc::S_IFLNK => Self::S_IFLNK,
             libc::S_IFBLK => Self::S_IFBLK,
