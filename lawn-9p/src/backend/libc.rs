@@ -2629,6 +2629,94 @@ mod tests {
     }
 
     #[test]
+    fn truncate_64bit() {
+        // This test assumes sparse files exist.
+        for ver in &[
+            ProtocolVersion::Original,
+            ProtocolVersion::Unix,
+            ProtocolVersion::Linux,
+        ] {
+            const SIZE: u64 = 4_294_967_296;
+            let mut inst = instance(ProtocolVersion::Original);
+            create_fixtures(&mut inst);
+
+            let qids = inst
+                .server
+                .walk(&inst.next_meta(), fid(0), fid(1), &[b"dir", b"file"])
+                .unwrap();
+            // Only the size is changed.
+            match ver {
+                ProtocolVersion::Original => {
+                    let ps = PlainStat {
+                        size: u16::MAX,
+                        kind: u16::MAX,
+                        dev: u32::MAX,
+                        qid: qids[1],
+                        mode: u32::MAX,
+                        atime: u32::MAX,
+                        mtime: u32::MAX,
+                        length: SIZE,
+                        name: Default::default(),
+                        uid: Default::default(),
+                        gid: Default::default(),
+                        muid: Default::default(),
+                    };
+                    inst.server.wstat(&inst.next_meta(), fid(1), &ps).unwrap();
+                    let st = inst.server.stat(&inst.next_meta(), fid(1)).unwrap();
+                    assert_eq!(st.length(), 0x1_0000_0000);
+                }
+                ProtocolVersion::Unix => {
+                    let ps = UnixStat {
+                        size: u16::MAX,
+                        kind: u16::MAX,
+                        dev: u32::MAX,
+                        qid: qids[1],
+                        mode: u32::MAX,
+                        atime: u32::MAX,
+                        mtime: u32::MAX,
+                        length: SIZE,
+                        name: Default::default(),
+                        uid: Default::default(),
+                        gid: Default::default(),
+                        muid: Default::default(),
+                        extension: Default::default(),
+                        nuid: u32::MAX,
+                        ngid: u32::MAX,
+                        nmuid: u32::MAX,
+                    };
+                    inst.server.wstat(&inst.next_meta(), fid(1), &ps).unwrap();
+                    let st = inst.server.stat(&inst.next_meta(), fid(1)).unwrap();
+                    assert_eq!(st.length(), 0x1_0000_0000);
+                }
+                ProtocolVersion::Linux => {
+                    inst.server
+                        .setattr(
+                            &inst.next_meta(),
+                            fid(1),
+                            None,
+                            None,
+                            None,
+                            Some(SIZE),
+                            None,
+                            None,
+                            false,
+                            false,
+                        )
+                        .unwrap();
+                    let st = inst
+                        .server
+                        .getattr(&inst.next_meta(), fid(1), LinuxStatValidity::BASIC)
+                        .unwrap();
+                    assert_eq!(st.length, 0x1_0000_0000);
+                }
+            }
+            verify_file(&mut inst, fid(1), b"dir/file");
+            inst.server.clunk(&inst.next_meta(), fid(1)).unwrap();
+            verify_closed(&mut inst, fid(1));
+        }
+    }
+
+    #[test]
     fn chmod_orig() {
         let mut inst = instance(ProtocolVersion::Original);
         create_fixtures(&mut inst);
