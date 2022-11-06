@@ -2650,6 +2650,8 @@ mod tests {
         }
     }
 
+    // NetBSD fails this test with ENOSPC, suggesting that it might not support sparse files.
+    #[cfg(not(target_os = "netbsd"))]
     #[test]
     fn truncate_64bit() {
         // This test assumes sparse files exist.
