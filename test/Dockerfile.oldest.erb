@@ -1,0 +1,11 @@
+FROM rust:latest
+
+ARG VERSION=1.48.0
+
+<%= erb 'test/include/apt.erb' -%>
+
+<%= erb 'test/include/rustup.erb' -%>
+
+RUN rustup default $(rustup toolchain list | grep default | cut -d' ' -f1 | sed -e "s/^[^-]*-/$VERSION-/")
+
+<%= erb 'test/include/main.erb' -%>

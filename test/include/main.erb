@@ -1,0 +1,7 @@
+WORKDIR /usr/src/lawn
+
+COPY . /usr/src/lawn/
+
+RUN rm -fr target/
+
+ENV RUST_BACKTRACE=1

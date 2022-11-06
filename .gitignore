@@ -1,1 +1,13 @@
 target/
+*.bak
+*.bk
+*.1
+*.1.gz
+*.html
+*.md
+test/Dockerfile.*
+!test/Dockerfile.*.erb
+Vagrantfile
+.vagrant
+Dockerfile
+TODO
