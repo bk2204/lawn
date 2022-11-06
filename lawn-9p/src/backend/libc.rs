@@ -599,6 +599,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
     }
 
     #[allow(clippy::unnecessary_cast)]
+    #[allow(unused_unsafe)]
     fn parse_major_minor(&self, s: &[u8]) -> Result<(u32, libc::dev_t)> {
         let mut items = s.split(|b| *b == b' ');
         let mmode = match items.next() {
@@ -620,7 +621,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
             (Ok(maj), Ok(min)) => (maj, min),
             _ => return Err(Error::EINVAL),
         };
-        Ok((mmode as u32, libc::makedev(maj, min)))
+        Ok((mmode as u32, unsafe { libc::makedev(maj, min) }))
     }
 
     fn system_time_to_timespec(&self, t: Option<SystemTime>, set: bool) -> libc::timespec {
