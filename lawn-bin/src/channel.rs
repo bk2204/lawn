@@ -142,34 +142,36 @@ fn poll(
         let mut pfd = Vec::with_capacity(selectors.len());
         let flags = match flags {
             Some(flags) if flags.len() == selectors.len() => {
-                let r: Result<Vec<_>, _> = flags.iter().map(|f| {
-                    let flags = protocol::PollChannelFlags::from_bits(*f).ok_or(protocol::Error {
-                        code: ResponseCode::InvalidParameters,
-                        body: None,
-                    })?;
-                    let mut result = 0;
-                    if flags.contains(protocol::PollChannelFlags::Input) {
-                        result |= libc::POLLIN;
-                    }
-                    if flags.contains(protocol::PollChannelFlags::Output) {
-                        result |= libc::POLLOUT;
-                    }
-                    if flags.contains(protocol::PollChannelFlags::Hangup) {
-                        result |= libc::POLLHUP;
-                    }
-                    Ok(result)
-                }).collect();
+                let r: Result<Vec<_>, _> = flags
+                    .iter()
+                    .map(|f| {
+                        let flags =
+                            protocol::PollChannelFlags::from_bits(*f).ok_or(protocol::Error {
+                                code: ResponseCode::InvalidParameters,
+                                body: None,
+                            })?;
+                        let mut result = 0;
+                        if flags.contains(protocol::PollChannelFlags::Input) {
+                            result |= libc::POLLIN;
+                        }
+                        if flags.contains(protocol::PollChannelFlags::Output) {
+                            result |= libc::POLLOUT;
+                        }
+                        if flags.contains(protocol::PollChannelFlags::Hangup) {
+                            result |= libc::POLLHUP;
+                        }
+                        Ok(result)
+                    })
+                    .collect();
                 r
             }
-            None => {
-                Ok((0..(selectors.len())).map(|_| libc::POLLIN | libc::POLLOUT | libc::POLLHUP).collect())
-            }
-            _ => {
-                Err(protocol::Error {
-                    code: ResponseCode::InvalidParameters,
-                    body: None,
-                })
-            }
+            None => Ok((0..(selectors.len()))
+                .map(|_| libc::POLLIN | libc::POLLOUT | libc::POLLHUP)
+                .collect()),
+            _ => Err(protocol::Error {
+                code: ResponseCode::InvalidParameters,
+                body: None,
+            }),
         };
         let flags = match flags {
             Ok(flags) => flags,
@@ -674,9 +676,9 @@ pub struct Server9PSessionHandle {
 impl ToIdentifier for Server9PSessionHandle {
     fn to_identifier(&self) -> Vec<u8> {
         let mut v = Vec::new();
-        v.extend((self.target.len() as u64).to_le_bytes());
-        v.extend((self.location.len() as u64).to_le_bytes());
-        v.extend((self.user.len() as u64).to_le_bytes());
+        v.extend(&(self.target.len() as u64).to_le_bytes());
+        v.extend(&(self.location.len() as u64).to_le_bytes());
+        v.extend(&(self.user.len() as u64).to_le_bytes());
         v.extend(&self.target);
         v.extend(&self.location);
         v.extend(&self.user);

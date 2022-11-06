@@ -379,7 +379,7 @@ pub struct LibcBackend<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + 
     logger: Arc<dyn Logger + Send + Sync>,
 }
 
-impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Sync>
+impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Sync + 'static>
     LibcBackend<A, AH>
 {
     pub fn new(
@@ -930,7 +930,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
     }
 }
 
-impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Sync> Backend
+impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Sync + 'static> Backend
     for LibcBackend<A, AH>
 {
     fn version(&self, _meta: &Metadata, max_size: u32, version: &[u8]) -> Result<(u32, Vec<u8>)> {
@@ -1376,7 +1376,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
                 );
                 let root = self.root.read().unwrap();
                 pst.name = if let Some(ref p) = *root {
-                    if p == full_path.as_os_str().as_bytes() {
+                    if p.as_slice() == full_path.as_os_str().as_bytes() {
                         vec![b'/']
                     } else {
                         full_path.file_name().unwrap().as_bytes().to_vec()
@@ -1430,7 +1430,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
                 ust.qid = self.qid_from_dev_ino(ftk, fsmeta.dev(), fsmeta.ino());
                 let root = self.root.read().unwrap();
                 ust.name = if let Some(ref p) = *root {
-                    if p == full_path.as_os_str().as_bytes() {
+                    if p.as_slice() == full_path.as_os_str().as_bytes() {
                         vec![b'/']
                     } else {
                         full_path.file_name().unwrap().as_bytes().to_vec()
@@ -1597,7 +1597,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
                         ac.add(
                             Box::new(move || {
                                 match file {
-                                    Some(ref f) => Self::ftruncate(f, len)?,
+                                    Some(ref f) => Self::ftruncate(&f.as_raw_fd(), len)?,
                                     None => Self::truncate(full_path.as_os_str().as_bytes(), len)?,
                                 };
                                 Ok(())
@@ -1944,7 +1944,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
         }
         if let Some(size) = size {
             match file {
-                Some(f) => Self::ftruncate(&f, size)?,
+                Some(f) => Self::ftruncate(&f.as_raw_fd(), size)?,
                 None => Self::truncate(full_path.as_os_str().as_bytes(), size)?,
             };
         }
@@ -2435,12 +2435,12 @@ mod tests {
 
     #[test]
     fn handles_arbitrary_fids() {
-        for ver in [
+        for ver in &[
             ProtocolVersion::Original,
             ProtocolVersion::Unix,
             ProtocolVersion::Linux,
         ] {
-            let mut inst = instance(ver);
+            let mut inst = instance(*ver);
             create_fixtures(&mut inst);
             // We explicitly check that we don't rely on sequential FIDs.  That is the logical way
             // to implement this on the client side, but the server cannot rely on that.  Thus, we
@@ -2466,7 +2466,7 @@ mod tests {
             let seq = (0..=u32::MAX).map(minialzette);
             for n in seq.take(100) {
                 // We run a stat to verify that the FID is still valid.
-                if ver == ProtocolVersion::Linux {
+                if *ver == ProtocolVersion::Linux {
                     let st = inst
                         .server
                         .getattr(&inst.next_meta(), fid(n), LinuxStatValidity::BASIC)
@@ -2554,12 +2554,12 @@ mod tests {
 
     #[test]
     fn readdir_remove() {
-        for ver in [
+        for ver in &[
             ProtocolVersion::Original,
             ProtocolVersion::Unix,
             ProtocolVersion::Linux,
         ] {
-            let mut inst = instance(ver);
+            let mut inst = instance(*ver);
             create_fixtures(&mut inst);
             // We explicitly check that we don't rely on sequential FIDs.  That is the logical way
             // to implement this on the client side, but the server cannot rely on that.  Thus, we
@@ -2607,7 +2607,7 @@ mod tests {
             let seq = (0..=u32::MAX).map(minialzette);
             for n in seq.take(100) {
                 // We run a stat to verify that the FID is still valid.
-                if ver == ProtocolVersion::Linux {
+                if *ver == ProtocolVersion::Linux {
                     let st = inst
                         .server
                         .getattr(&inst.next_meta(), fid(n), LinuxStatValidity::BASIC)
@@ -2727,12 +2727,12 @@ mod tests {
 
     #[test]
     fn escape() {
-        for ver in [
+        for ver in &[
             ProtocolVersion::Original,
             ProtocolVersion::Unix,
             ProtocolVersion::Linux,
         ] {
-            let mut inst = instance(ver);
+            let mut inst = instance(*ver);
             create_fixtures(&mut inst);
             inst.server
                 .walk(&inst.next_meta(), fid(0), fid(1), &[b"dir"])
@@ -3081,7 +3081,7 @@ mod tests {
 
     #[test]
     fn rename_linux() {
-        for use_renameat in [true, false] {
+        for use_renameat in &[true, false] {
             let mut inst = instance(ProtocolVersion::Linux);
             create_fixtures(&mut inst);
             inst.server
@@ -3108,7 +3108,7 @@ mod tests {
                 .walk(&inst.next_meta(), fid(3), fid(4), &[b"nested-dir"])
                 .unwrap();
             verify_dir(&mut inst, fid(4), Some(b"other-dir/nested-dir"));
-            if use_renameat {
+            if *use_renameat {
                 inst.server
                     .renameat(&inst.next_meta(), fid(1), b"foo", fid(4), b"baz")
                     .unwrap();
@@ -3140,8 +3140,8 @@ mod tests {
 
     #[test]
     fn files_and_directories_std() {
-        for ver in [ProtocolVersion::Original, ProtocolVersion::Unix] {
-            let mut inst = instance(ver);
+        for ver in &[ProtocolVersion::Original, ProtocolVersion::Unix] {
+            let mut inst = instance(*ver);
             attach(&mut inst);
             verify_dir(&mut inst, fid(0), None);
             inst.server

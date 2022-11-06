@@ -1206,23 +1206,23 @@ impl Serializer {
     }
 
     fn write_u8(&mut self, data: u8) {
-        self.data.extend([data]);
+        self.data.extend(&[data]);
     }
 
     fn write_u16(&mut self, data: u16) {
-        self.data.extend(data.to_le_bytes());
+        self.data.extend(&data.to_le_bytes());
     }
 
     fn write_u32(&mut self, data: u32) {
-        self.data.extend(data.to_le_bytes());
+        self.data.extend(&data.to_le_bytes());
     }
 
     fn write_u64(&mut self, data: u64) {
-        self.data.extend(data.to_le_bytes());
+        self.data.extend(&data.to_le_bytes());
     }
 
     fn write_qid(&mut self, data: QID) {
-        self.data.extend(data.0);
+        self.data.extend(&data.0);
     }
 
     fn write_string(&mut self, data: &[u8]) -> Result<(), Error> {
@@ -1230,7 +1230,7 @@ impl Serializer {
             return Err(Error::ENOMEM);
         }
         self.write_u16(data.len() as u16);
-        self.data.extend(data);
+        self.data.extend(data.iter());
         Ok(())
     }
 

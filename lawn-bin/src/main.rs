@@ -77,7 +77,11 @@ fn prune_socket(p: &Path, logger: Arc<config::Logger>) {
     let _ = std::fs::remove_file(p);
 }
 
-fn find_server_socket(handle: &Handle, socket: Option<&OsStr>, config: Arc<config::Config>) -> Option<UnixStream> {
+fn find_server_socket(
+    handle: &Handle,
+    socket: Option<&OsStr>,
+    config: Arc<config::Config>,
+) -> Option<UnixStream> {
     let logger = config.logger();
     if let Some(socket) = socket {
         debug!(logger, "trying specified socket {}", escape(osstr(socket)));
@@ -251,7 +255,8 @@ fn dispatch_query_test_connection(
     let logger = config.logger();
     logger.trace("Starting runtime");
     let runtime = runtime();
-    let socket = find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
+    let socket =
+        find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
     runtime.block_on(async {
         let client = client::Client::new(config);
         match socket.peer_addr() {
@@ -347,7 +352,8 @@ fn dispatch_proxy(
     let logger = config.logger();
     logger.trace("Starting runtime");
     let runtime = runtime();
-    let socket = find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
+    let socket =
+        find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
     let res: Result<i32, Error> = runtime.block_on(async move {
         let addr = socket.peer_addr().unwrap();
         let ours = addr.as_pathname().unwrap();
@@ -403,7 +409,8 @@ fn dispatch_mount(
     let logger = config.logger();
     logger.trace("Starting runtime");
     let runtime = runtime();
-    let socket = find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
+    let socket =
+        find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
     let res: Result<i32, Error> = runtime.block_on(async move {
         let target_9p = m.value_of_os("9p").unwrap();
         let addr = socket.peer_addr().unwrap();
@@ -500,7 +507,8 @@ fn dispatch_clip(
     let logger = config.logger();
     logger.trace("Starting runtime");
     let runtime = runtime();
-    let socket = find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
+    let socket =
+        find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
     let res = runtime.block_on(async move {
         let client = client::Client::new(config);
         match socket
@@ -532,7 +540,8 @@ fn dispatch_run(
     let logger = config.logger();
     logger.trace("Starting runtime");
     let runtime = runtime();
-    let socket = find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
+    let socket =
+        find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
     let res = runtime.block_on(async move {
         let client = client::Client::new(config);
         match socket
