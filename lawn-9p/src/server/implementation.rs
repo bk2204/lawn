@@ -711,7 +711,7 @@ impl<
                 trace!(
                     self.logger,
                     "9P: unknown message {:02x} size {:08x} tag {:02x}{:02x}",
-                    buf[4] as u8,
+                    buf[4],
                     size,
                     tag.0[0],
                     tag.0[1]

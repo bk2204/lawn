@@ -494,6 +494,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
     }
 
     #[cfg(target_os = "linux")]
+    #[allow(clippy::unnecessary_cast)]
     fn fstatat_dev_ino<F: AsRawFd>(&self, f: &F, path: &[u8], follow: bool) -> Result<(u64, u64)> {
         let mut st = MaybeUninit::uninit();
         if path.is_empty() {
@@ -510,6 +511,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
     }
 
     #[cfg(not(target_os = "linux"))]
+    #[allow(clippy::unnecessary_cast)]
     fn fstatat_dev_ino<F: AsRawFd>(&self, f: &F, path: &[u8], follow: bool) -> Result<(u64, u64)> {
         let mut st = MaybeUninit::uninit();
         if path.is_empty() {
@@ -526,18 +528,21 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
     }
 
     #[cfg(target_os = "linux")]
+    #[allow(clippy::unnecessary_cast)]
     fn ftruncate<F: AsRawFd>(f: &F, size: u64) -> Result<()> {
         with_error(|| unsafe { libc::ftruncate64(f.as_raw_fd(), size as i64) })?;
         Ok(())
     }
 
     #[cfg(not(target_os = "linux"))]
+    #[allow(clippy::unnecessary_cast)]
     fn ftruncate<F: AsRawFd>(f: &F, size: u64) -> Result<()> {
         with_error(|| unsafe { libc::ftruncate(f.as_raw_fd(), size as i64) })?;
         Ok(())
     }
 
     #[cfg(target_os = "linux")]
+    #[allow(clippy::unnecessary_cast)]
     fn truncate(full_path: &[u8], size: u64) -> Result<()> {
         let c = CString::new(full_path.to_vec()).map_err(|_| Error::EINVAL)?;
         with_error(|| unsafe { libc::truncate64(c.as_ptr(), size as i64) })?;
@@ -545,12 +550,14 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
     }
 
     #[cfg(not(target_os = "linux"))]
+    #[allow(clippy::unnecessary_cast)]
     fn truncate(full_path: &[u8], size: u64) -> Result<()> {
         let c = CString::new(full_path.to_vec()).map_err(|_| Error::EINVAL)?;
         with_error(|| unsafe { libc::truncate(c.as_ptr(), size as i64) })?;
         Ok(())
     }
 
+    #[allow(clippy::unnecessary_cast)]
     fn lstat_dev_ino(&self, path: &[u8]) -> Result<(u64, u64)> {
         let os = Path::new(OsStr::from_bytes(path));
         let st = fs::symlink_metadata(os)?;
@@ -572,6 +579,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
         }
     }
 
+    #[allow(clippy::unnecessary_cast)]
     fn parse_major_minor(&self, s: &[u8]) -> Result<(u32, libc::dev_t)> {
         let mut items = s.split(|b| *b == b' ');
         let mmode = match items.next() {
@@ -1081,6 +1089,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
         trace!(self.logger, "9P lopen: opening file");
         self.do_open(fid, mode)
     }
+    #[allow(clippy::unnecessary_cast)]
     fn create(
         &self,
         _meta: &Metadata,
