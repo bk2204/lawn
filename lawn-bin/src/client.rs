@@ -38,7 +38,7 @@ pub struct FDStatus {
 impl FDStatus {
     /// Returns true if read_command_fd should be called again when draining this stream.
     fn needs_final_read(&self) -> bool {
-        self.open
+        self.open && self.last
     }
 
     /// Returns true if read_command_fd should be called again when draining this stream.
@@ -584,7 +584,7 @@ impl Connection {
                     }
                     _ = interval.tick() => {
                         trace!(logger, "channel {}: {}: nothing to read", id, selector);
-                        return st.clone();
+                        return FDStatus{open: st.open, last: false, data: st.data.clone()};
                     }
                 }
             }
