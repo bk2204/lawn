@@ -490,12 +490,12 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
         let idi = f.id_info().ok_or(Error::EOPNOTSUPP)?;
         let (file, full_path): (Option<RawFd>, _) =
             (idi.file().map(|f| f.as_raw_fd()), idi.full_path_bytes());
-        let (fname, flags) = if let Some(file) = file {
+        let has_multi_fd = cfg!(not(target_os = "freebsd"));
+        let (fname, flags) = match (file, has_multi_fd) {
             // The kernel will not like it if we try to open /dev/fd with O_DIRECTORY in this case
             // because it's not really a directory.
-            (self.file_name(&file), flags & !libc::O_DIRECTORY)
-        } else {
-            (full_path.to_vec(), flags)
+            (Some(file), true) => (self.file_name(&file), flags & !libc::O_DIRECTORY),
+            _ => (full_path.to_vec(), flags),
         };
         self.open_file(&fname, flags, mode.unwrap_or(0), Some(full_path))
     }
