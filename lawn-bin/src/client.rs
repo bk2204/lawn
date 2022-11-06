@@ -36,6 +36,16 @@ pub struct FDStatus {
 }
 
 impl FDStatus {
+    /// Returns true if read_command_fd should be called again when draining this stream.
+    fn needs_final_read(&self) -> bool {
+        self.open
+    }
+
+    /// Returns true if read_command_fd should be called again when draining this stream.
+    fn needs_final_write(&self) -> bool {
+        self.open
+    }
+
     /// Returns true if read_command_fd should be called again.
     fn needs_read(&self) -> bool {
         self.open && self.last
@@ -297,13 +307,13 @@ impl Connection {
                         fd_status[2] = self.write_command_fd(id, 2, &fd_status[2], &mut stderr).await;
                     }
 
-                    while fd_status[0].needs_read() {
+                    while fd_status[0].needs_final_read() {
                         fd_status[0] = self.read_command_fd(id, 0, &fd_status[0], &mut stdin).await;
                     }
-                    while fd_status[1].needs_write() {
+                    while fd_status[1].needs_final_write() {
                         fd_status[1] = self.write_command_fd(id, 1, &fd_status[1], &mut stdout).await;
                     }
-                    while fd_status.len() > 2 && fd_status[2].needs_write() {
+                    while fd_status.len() > 2 && fd_status[2].needs_final_write() {
                         fd_status[2] = self.write_command_fd(id, 2, &fd_status[2], &mut stderr).await;
                     }
                     let _ = self.delete_channel(id).await;
@@ -429,8 +439,8 @@ impl Connection {
         }
         let read_data;
         let data: &[u8] = match &st.data {
-            Some(data) => data,
-            None => {
+            Some(data) if !data.is_empty() => data,
+            Some(_) | None => {
                 trace!(
                     logger,
                     "channel {}: {}: about to read from channel",
@@ -491,6 +501,14 @@ impl Connection {
                 }
             }
         };
+        if data.is_empty() {
+            self.detach_channel_selector(id, selector).await;
+            return FDStatus {
+                open: false,
+                last: false,
+                data: None,
+            };
+        }
         trace!(
             logger,
             "channel {}: {}: about to write {} bytes to fd",
