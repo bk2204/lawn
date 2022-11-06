@@ -433,7 +433,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
             let c = CString::new(full_path.as_os_str().as_bytes()).map_err(|_| Error::EINVAL)?;
             match with_error(|| unsafe { libc::open(c.as_ptr(), flags | libc::O_NOFOLLOW, mode) }) {
                 Ok(fd) => return Ok((full_path, fd)),
-                Err(Error::ELOOP) => {
+                Err(Error::ELOOP) | Err(Error::EMLINK) => {
                     let dest = fs::read_link(&full_path)?;
                     let mut full_dest = full_path.clone();
                     full_dest = full_dest.parent().unwrap().into();
@@ -714,7 +714,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
                 st.ino = metadata.ino();
                 Ok(self.qid_from_dev_ino(ft, metadata.dev(), metadata.ino()))
             }
-            Err(Error::ELOOP) => {
+            Err(Error::ELOOP) | Err(Error::EMLINK) => {
                 // This is a symlink.  We will read the value and replace our location
                 // with a new path.  This may point outside of the root, but if that's the
                 // case, we will verify that the path is valid in the next iteration, if any.
