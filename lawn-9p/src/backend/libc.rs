@@ -485,7 +485,8 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
         target_os = "linux",
         target_os = "freebsd",
         target_os = "netbsd",
-        target_os = "openbsd"
+        target_os = "openbsd",
+        target_os = "macos"
     ))]
     fn file_name<F: AsRawFd>(&self, f: &F) -> Vec<u8> {
         let s = format!("/dev/fd/{}", f.as_raw_fd());
