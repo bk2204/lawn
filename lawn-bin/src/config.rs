@@ -904,7 +904,7 @@ mod tests {
     #[test]
     fn is_root_with_values() {
         let cfg = config_with_values(BTreeMap::new(), |c| {
-            c.v0.root = Some(Value::String("!/bin/true".into()))
+            c.v0.root = Some(Value::String("!command true".into()))
         });
         assert_eq!(cfg.is_root().unwrap(), true);
 
@@ -912,7 +912,7 @@ mod tests {
         assert_eq!(cfg.is_root().unwrap(), true);
 
         let cfg = config_with_values(BTreeMap::new(), |c| {
-            c.v0.root = Some(Value::String("!/bin/false".into()))
+            c.v0.root = Some(Value::String("!command false".into()))
         });
         assert_eq!(cfg.is_root().unwrap(), false);
 
