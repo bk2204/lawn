@@ -532,6 +532,8 @@ impl From<io::Error> for Error {
             Some(libc::ENOTSUP) => Self::EOPNOTSUPP,
             #[cfg(target_os = "linux")]
             Some(libc::EDEADLOCK) => Self::EDEADLK,
+            #[cfg(target_os = "netbsd")]
+            Some(libc::EFTYPE) => Self::ELOOP,
             Some(_) | None => Self::EINVAL,
         }
     }
