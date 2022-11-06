@@ -1,0 +1,79 @@
+= FAQ
+
+== Raison D'Être
+
+Why can't I just use X11 forwarding to run a GUI on my machine?::
+  You definitely can.
+  However, if you're using an editor, such as Neovim, that operates by using a client-server architecture with stdio, then you can send a lot less data over the connection if you're using the client-server architecture rather than running a GUI.
+  This can be important if your remote system is not necessarily close to you on the Internet.
++
+In addition, if you're using a Mac, then X11 forwarding requires an X server, which you might not want to install, and it will always require some software on the remote system (such as `xauth`), which you might not want to install on the server.
+
+Why can't I just use OSC 52 to do copy and paste?::
+  Again, you can.
+  However, that effectively lets every machine you work on operate on your clipboard, and maybe that's not what you want.
+  With Lawn, if you don't forward the socket, then there's no way for the remote side to operate on your clipboard.
+
+== Using Lawn
+
+Can I mix and match versions?::
+  Yes!
+  The protocol is explicitly designed to support a version, plus capabilities and extensions.
+  If you need to use an older version on one side, then everything should degrade gracefully.
+
+Do I need separate binaries for the local and remote machines?::
+  Nope.
+  One binary provides all of the functionality, both client and server.
+
+== Terminology
+
+What are the local, remote, and root machines?::
+  The local machine, also known as the root machine, is the machine on which the main Lawn server and the commands spawned run.
+  This is typically a user's laptop or desktop.
++
+A remote machine is any other machine which connects back to the local machine.
+Typically one accesses the remote machine by connecting to it with SSH.
+
+What is 9P and what variants does Lawn support?::
+  9P is the Plan 9 file system protocol.
+  It is a generic way to access files over a socket or pipe.
+  9P is used for sharing files between a host and guest when using QEMU's virtio-9p functionality, and it can be easily implemented with FUSE.
++
+There are three protocol versions supported: https://ericvh.github.io/9p-rfc/rfc9p2000.html[the original 9P2000], https://ericvh.github.io/9p-rfc/rfc9p2000.u.html[the Unix variant 9P2000.u], and https://github.com/chaos/diod/blob/master/protocol.md[the Linux variant 9P2000.L].
+Lawn supports all of these, but the Linux variant is the best tested and most recommended, regardless of the operating system in use.
+That's because in general, it's the most featureful and easiest to correctly implement on a Unix system.
+
+== Compatibility
+
+Can I use a Neovim GUI with Lawn?::
+  Yes, this is possible.
+  The link:example-use-cases.adoc[example use case documentation] covers how to do that with neovim-gtk.
+  This is likely possible with other variants as well.
+
+Can I use Emacs with Lawn?::
+  It doesn't appear so.
+  Emacs has a client-server architecture but it appears that the client sends the names of files to be edited to the server, which then opens them.
+  This is a problem because the server is the GUI component and must run on the local machine, so when the client sends a request to open files, the server won't have access to them.
++
+If you have different information that shows that this can be done, please let us know.
+
+
+== Internals and Future Plans
+
+What does the protocol look like?::
+  The protocol is outlined in the comments of `lawn-protocol/src/protocol/mod.rs`.
+  Each request has three little-endian 32-bit words (size, ID, and message type), plus an optional CBOR blob.
+  Each response has three little-endian 32-bit words (size, ID, and response code), also with an optional CBOR blob.
+  We plan to document this in the documentation.
++
+Note also that in many places, the protocol can be extended.
+For example, we permit custom authentication mechanisms and channel types provided those are in the form `extension@hostname.com`, just like in the SSH protocol.
+
+What features are planned?::
+  There are a bunch of planned features which aren't yet implemented.
+  Included in that are TTY support for command and credential storage using the system credential store.
+  We also plan to implement a small Lisp-like language that can be used instead of shell in the configuration file.
+
+Why does Lawn use Linux error codes internally?::
+  Lawn implements the 9P2000.L variant of the 9P protocol, which uses Linux errno values.
+  Because Lawn runs across operating systems and environments, it makes sense to use a standard set of errno values so that functionality works across systems, and since we already have to use the Linux error codes, it makes sense to use them everywhere.

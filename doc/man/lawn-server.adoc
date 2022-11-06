@@ -1,0 +1,16 @@
+= lawn-server(1)
+
+== Name
+
+lawn server - spawn a local server
+
+== Synopsis
+
+'lawn server'
+
+== Description
+
+`lawn server` spawns a local server.
+It takes no options.
+
+Normally, a server is autospawned when necessary and this command is not normally used.

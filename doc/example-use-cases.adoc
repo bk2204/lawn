@@ -1,0 +1,70 @@
+= Examples of Usage
+
+== Copying and Pasting from macOS
+
+If you're logging in from macOS, you may want to be able to copy and paste from the macOS clipboard without needing X forwarding.
+Here's how to do that:
+
+. Add a stanza like the following to your configuration file:
++
+[source,yaml]
+----
+v0:
+  clipboard:
+    if: true
+    backend: default
+----
+. Pipe data to `lawn clip -i` to copy data to the clipboard and `lawn clip -o` to paste it.
+
+Note that this will likely be implemented using native functionality in the future.
+
+== Using neovim-gtk Remotely
+
+There are a variety of GUIs for Neovim.
+For our purposes, we need one which allows us to control the command we use to invoke Neovim, and https://github.com/Lyude/neovim-gtk[neovim-gtk] is just such a GUI, although others are possible.
+
+In this example, we'll set up configuration both for a regular remote machine and a GitHub Codespace, just to demonstrate how both work.
+Here's how to do that:
+
+. Add a stanza like the following to your configuration file:
++
+[source,yaml]
+----
+v0:
+  commands:
+    gvi:
+      if: true
+      command: '!f() { REMOTE_HOST=%(sq:cenv:HOSTNAME) CODESPACE_NAME=%(sq:cenv:CODESPACE_NAME) CWD=%(sq:cenv:PWD) nvim-gtk --nvim-bin-path "$HOME/bin/ssh-nvim" "$@" </dev/null; };f'
+----
++
+This assumes that the environment variable `HOSTNAME` is correct on the remote system for non-Codespace machines and that `CODESPACE_NAME` is correct for Codespaces.
+. Add the following into `$HOME/bin/ssh-nvim` on the local system:
++
+[source,shell]
+----
+#!/bin/sh
+
+if [ -n "$CODESPACE_NAME" ]
+then
+    exec gh cs ssh -c "$CODESPACE_NAME" -- "cd \"$CWD\" && env -u TERM nvim $(git rev-parse --sq-quote "$@")"
+fi
+
+if [ "$REMOTE_HOST" = "$(hostname)" ] || [ "$REMOTE_HOST" = "$(hostname -f)" ]
+then
+    cd "$CWD"
+    exec nvim "$@"
+fi
+
+exec ssh "$REMOTE_HOST" "cd \"$CWD\" && env -u TERM nvim $(git rev-parse --sq-quote "$@")"
+----
++
+This script performs the operation of invoking nvim in the proper way.
+That would be via the Codespace if one is in use, locally if we're running on the same machine, and otherwise via SSH.
+Because Neovim requires only standard input and output for the backend, this should just work by connecting over SSH.
+. Install the GUI shim onto the remote machine:
++
+[source,shell]
+----
+$ cd ~/.vim/plugin && curl -LO https://raw.githubusercontent.com/Lyude/neovim-gtk/main/runtime/plugin/nvim_gui_shim.vim
+----
+. On the remote system, invoke `lawn run gvi file-to-edit.txt`.

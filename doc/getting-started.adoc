@@ -1,0 +1,204 @@
+= Getting Started Guide
+
+Lawn (**L**ocal Sp**awn**) is a service to allow you to run select programs on your local machine from a remote machine.
+This can be useful to spawn a graphical editor, copy and paste to and from the clipboard, read a credential helper, or anything else you like.
+
+== Building and Installation
+
+The easiest way to build Lawn is by using the Cargo package manager.
+After cloning the repository and installing Rust and Cargo from your OS, run the following command:
+
+[source,shell]
+----
+$ cargo install --path lawn-bin --locked --root ~
+----
+
+That will install the binary in your `~/bin` directory.
+You can specify `--root ~/.local` if you want it in your `~/.local/bin` directory, or elsewhere if you prefer that.
+
+[[tldr]]
+== An Extremely Brief Introduction
+
+This section covers what you need to do to get started in as few words as possible.
+If you're not busy and want a more gentle introduction, please skip to the next section.
+
+Create the file `~/.config/lawn/config.yaml` with the following contents on both your local and remote system:
+
+[source,yaml]
+----
+v0:
+  socket:
+    autoprune: true
+  clipboard:
+    if: true
+    backend: default
+  commands:
+    browser:
+      if: true
+      command: "!$BROWSER"
+  9p:
+    default:
+      if: true
+      location: '!printf "%%s/.local/share/remote-files" "$HOME"'
+----
+
+Then, on the local system, run `mkdir -p ~/.local/share/remote-files`, and on the remote system, run `mkdir -p ~/mnt/lawn`.
+
+You can then log into the remote system using `lawn proxy` with `ssh -A` and start running commands:
+
+[source,shell]
+----
+# Log into the remote machine while proxying Lawn data over the SSH agent connection.
+user@local:~ $ lawn proxy -- ssh -A user@remote
+# Open something in the browser.
+user@remote:~ $ lawn run -- browser https://www.google.com
+# Copy something to the clipboard.
+user@remote:~ $ echo 'Hello, world!' | lawn clip -i
+# Paste something from the clipboard.
+user@remote:~ $ lawn clip -o
+Hello, world!
+# Mount the 9P mount default on ~/mnt/lawn.
+user@remote:~ $ lawn mount --fd default -- sudo mount -t 9p -o trans=fd,rfdno=0,wfdno=1,uname=bmc default ~/mnt/lawn &
+# Create a file that will be persisted to ~/.local/share/remote-files/hello on the local machine.
+user@remote:~ $ echo 'Hello, world!' > ~/mnt/lawn/hello
+----
+
+== Gentle Introduction
+
+To get started, create a local configuration file at `~/.config/lawn/config.yaml` with something like this:
+
+[source,yaml]
+----
+v0:
+  socket:
+    autoprune: true
+----
+
+This is a simple, straightforward configuration file that directs Lawn to automatically remove unused sockets.
+
+Note that currently Lawn automatically detects which machine is the local machine and which is remote, but a configuration is currently required on both machines.
+A future version will likely remove the requirement for a configuration file on the remote machine.
+
+In this section, we'll run all of our commands on the local machine, which is fine.
+Lawn is designed to run commands just as gracefully on your local machine as on a remote machine, so you can always invoke the `lawn` binary in scripts without having to think about it.
+
+Then, decide what you'd like to run on your local machine and add an entry in the `commands` section.
+For example, if you'd like to automatically set up a command to run your local browser, you could make your configuration file look like this:
+
+[source,yaml]
+----
+v0:
+  socket:
+    autoprune: true
+  commands:
+    browser:
+      if: true
+      command: "!$BROWSER"
+----
+
+You can then run `lawn run -- browser https://www.google.com` and open Google in your browser.
+Note that this requires having specified `BROWSER` in your shell configuration, but you could also specify a program here, such as `firefox` or `google-chrome` if you like that better.
+
+Note that you need the `if` command, which tells Lawn when to allow this program to be run.
+For now, we've specified the boolean `true`, which says it can always be run by a remote machine, but we can also use other syntaxes to decide to restrict it more specifically.
+
+Now that we can run some commands, let's also add support for copying and pasting from the clipboard.
+Go ahead and modify your file so that it looks like this:
+
+[source,yaml]
+----
+v0:
+  socket:
+    autoprune: true
+  clipboard:
+    if: true
+    backend: default
+  commands:
+    browser:
+      if: true
+      command: "!$BROWSER"
+----
+
+This adds the `clipboard` stanza.
+Note that we also have an `if` condition here, and we've specified the backend as `default`, which asks Lawn to choose automatically between `xsel`, `xclip`, and `macos` (the commands `pbcopy` and `pbpaste`).
+Since we'd like our configuration to work on any OS, `default` is the sensible choice here.
+
+Now, we can run commands like the following:
+
+[source,shell]
+----
+$ printf 'Hello, world!\n' | lawn clip -i
+$ lawn clip -o
+Hello, world!
+----
+
+We use `-i` for input (copying) and `-o` for output (pasting).
+If you're using X11, you can also specify `-b` for the `CLIPBOARD` selection (which is the default) or `-p` for the `PRIMARY` selection.
+
+Let's also consider one final thing we might want to set up: a file system mount.
+Perhaps we'd like to save our shell history across machines.
+We can do this using the 9P protocol, which was originally developed for the operating system Plan 9.
+
+First, let's create a space for our files on the local machine with `mkdir -p ~/.local/share/remote-files`.
+Then, we can create a place to mount our data with `mkdir -p ~/mnt/lawn`.
+Finally, we can make our configuration file look like this:
+
+[source,yaml]
+----
+v0:
+  socket:
+    autoprune: true
+  clipboard:
+    if: true
+    backend: default
+  commands:
+    browser:
+      if: true
+      command: "!$BROWSER"
+  9p:
+    default:
+      if: true
+      location: '!printf "%%s/.local/share/remote-files" "$HOME"'
+----
+
+Here, we've specified another `if` condition, and we've also provided a shell command to find the local location of our mount point (`default`).
+Lawn expands certain arguments with percent-sign, so we double the percent sign, and we use `printf` here because Lawn doesn't strip trailing newlines.
+That's because newlines are valid in Unix filenames, even if it's not a good idea to use them.
+
+Fortunately, the Linux kernel comes with built-in support for the 9P protocol.
+We can mount our remote on the local system with the following slightly complex command:
+
+[source,shell]
+----
+$ nohup lawn mount --fd default -- sudo mount -t 9p -o trans=fd,rfdno=0,wfdno=1 default ~/mnt/lawn &
+----
+
+Lawn knows how to offer a Unix socket, but the Linux 9P implementation doesn't support that, so we ask to mount by running a command with the standard input and standard output attached to the `default` mount (`--fd default`).
+Since the mount process will block until we unmount it, we run it in the background.
+
+We can now access `~/mnt/lawn` as if it were `~/.local/share/remote-files`.
+
+Now that we've run these commands successfully on our local machine, we can also run them on a remote machine if we prefer.
+There are two ways to do this.
+One is to mount the lawn socket over the remote connection.
+By default, Lawn uses `$XDG_RUNTIME_DIR/lawn/server-0.sock` (usually `/run/user/ID/lawn/server-0.sock`) or a location in `$HOME/.local`.
+You can see the location with `lawn query test-connection`.
+
+However, usually an easier solution is to forward the data over the SSH agent socket with `lawn proxy`.
+It takes an argument, which is a program to run, and replaces the environment variable corresponding to the SSH agent socket with one that understands the Lawn extensions.
+Lawn will automatically look for a suitable SSH agent socket if one is present.
+
+As an example, we can run `lawn proxy -- ssh -A user@remote`.
+Note the use of the `-A` option, which is required to forward the agent socket we've just created.
+
+Now, on the remote side, we can run Lawn commands just like before
+For example, we can run this:
+
+[source,shell]
+----
+$ lawn clip -o
+Hello, world!
+----
+
+And look!
+It works just as before.

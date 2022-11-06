@@ -1,0 +1,93 @@
+---
+# This is a sample configuration file that has all of the possible entries
+# documented in an easy-to-understand format.
+#
+# Configuration files live in ~/.config/lawn/config.yaml (or under
+# $XDG_CONFIG_HOME/lawn/config,yaml if that environment variable is set).
+#
+# Many configuration options take an expression.  The main form of expression
+# is a shell command executed with `sh`, which is indicated by a leading "!". A
+# boolean expression of this form runs the command and is true if the
+# expression exits 0 (successfully) and false otherwise.  "!true" and "!false"
+# are treated specially and not passed to the shell, and can also be written as
+# the simple YAML values true and false.
+#
+# For string values, either a simple string can be used, or a shell expression
+# which prints up to 1 KiB of text matching one of the valid values, possibly
+# with one or more trailing newlines.
+#
+# When a shell command takes arguments, the string provided has ` "$@"` appended
+# to it and then the arguments are provided.  This is the way that Git works and
+# is compatible with the approach that must be used with the EDITOR and VISUAL
+# environment variables.
+#
+# Shell commands are also templatized to allow passing in data.  These are
+# documented in doc/template.adoc, but as a basic overview, some of the most
+# common options are as follows:
+#
+# %%: percent sign
+# %(senv:PATH): a server environment variable (here, PATH)
+# %(cenv:PATH): a client environment variable (here, PATH)
+# %(sq:cenv:PATH): a single-quoted value suitable for the shell (in this case,
+#                  the client's PATH)
+
+v0:
+  # This determines if the machine is the local machine (true) or remote machine
+  # (false).  If this is the local machine, we will try to autospawn a daemon if
+  # one isn't present.
+  #
+  # This argument takes a boolean shell expression with no arguments.  The
+  # default, which is subject to change without notice, looks to see if we think
+  # the system has a GUI and isn't being accessed over SSH.
+  root: '![ -n "$DISPLAY"]'
+  socket:
+    # This determines if stale sockets are to be removed.  When running a
+    # command, we attempt to connect to all found sockets and remove those where
+    # the connection fails.
+    autoprune: true
+  # The clipboard controls
+  clipboard:
+    # A boolean expression determining whether to allow operations on the clipboard.
+    if: true
+    # A string expression specifying the backend to use.  Literal strings of
+    # "xclip", "xsel", and "macos" may be specified to use the binaries
+    # "xclip", "xsel", or "pbcopy" and "pbpaste" respectively.  A literal
+    # string of "default" says to use the default algorithm, which determines
+    # which binaries are present to select one of the above options.
+    #
+    # A string shell expression is also allowed, which must specify one of the
+    # values specified above.
+    backend: default
+  # A list of commands.
+  #
+  # The name of each command is the argument to the "run" subcommand.
+  commands:
+    # A simple command to print some text.
+    printf:
+      # A boolean expression determining whether to run this command.
+      if: "!/bin/true"
+      # A shell expression specifying the command to run.
+      command: '!f() { printf "$@"; };f'
+    # A simple command to print some text.
+    echo:
+      # A boolean expression determining whether to run this command.
+      if: true
+      # A shell expression specifying the command to run.
+      command: '!f() { echo "$@"; };f'
+  # A list of 9P mount point names.
+  #
+  # The name of each mount point is an argument to the "mount" subcommand.
+  9p:
+    # An example mount point called "default".  This name has no special meaning.
+    default:
+      # A boolean expression determining whether to permit the mounting of this mount point.
+      if: true
+      # A string shell expression specifying the location to use for mounting on the local side.
+      location: /tmp
+    # An example mount point called "dotfiles".
+    dotfiles:
+      # A boolean expression determining whether to permit the mounting of this mount point.
+      if: true
+      # A string shell expression specifying the location to use for mounting on the local side.
+      location: '!printf "%%s/.local/share/remote-files" "$HOME"'
+

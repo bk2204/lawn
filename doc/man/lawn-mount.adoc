@@ -1,0 +1,47 @@
+= lawn-mount(1)
+
+== Name
+
+lawn mount - provide access to a 9P file share
+
+== Synopsis
+
+'lawn mount' (--fd | --socket) <share>  -- <command> [<arg>…]
+
+== Description
+
+`lawn mount` provides access to the 9P file share specified by `<share>`, which is listed in the configuration file, to the specified command.
+This access can either via standard input and standard output or via a Unix socket.
+
+The protocol used may be the original 9P2000, the Unix variant 9P2000.u, or the Linux variant 9P2000.L, and is negotiated over the protocol connection itself.
+No authentication is required except the socket or pipes and any username and resource name (`uname` and `aname` fields) are accepted.
+
+== Options
+
+`--fd`::
+  Provide access to the 9P protocol via the standard input and output of the specified command.
+  The file descriptors are destroyed when the command exits.
+
+`--socket`::
+  Create a Unix socket to provide access and expose it to the command via the environment variable `P9P_SOCKET`.
+  The socket is destroyed when the command exits.
+
+== Examples
+
+Assume we have the following configuration file:
+
+[source,yaml]
+----
+v0:
+  9p:
+    temp:
+      if: true
+      location: /tmp
+    home:
+      if: true
+      command: '!printf "%s" "$HOME"'
+----
+
+Running `lawn mount --socket temp -- sh -c '9pfuse "unix!$P9P_SOCKET" ~/mnt/foo; sleep 2d'` will mount the `temp` file share, which is located on the root machine at `/tmp`, to this machine at `~/mnt/foo`.
+
+Running `lawn mount --fd home -- sudo mount -t 9p -o trans=fd,rdfno=0,wfdno=1 home ~/mnt/home` on Linux will mount the `home` file share, which is located on the root machine at `$HOME`, to this machine at `~/mnt/home`.

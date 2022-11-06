@@ -1,0 +1,38 @@
+= Lawn
+
+Lawn (local spawn) is a program to allow spawning programs on your local computer from a trusted remote system, like a remote development environment.
+This has several applications:
+
+* Spawning a graphical editor on your local machine to edit files remotely without the hassle and overhead of X11 forwarding
+* Copying to and pasting from your local machine's clipboard via the remote system
+* Accessing credentials through a credential helper
+
+In addition, Lawn provides functionality for mounting a portion of your local file system on the remote machine.  This can be useful for preserving your shell history, work in progress, or whatever else you'd like.
+
+This is implemented by forwarding a Unix socket from the local machine to the remote machine, which can then make requests back over the socket.
+In addition, Lawn can proxy its connection over the SSH agent socket for ease of use, although this can result in reduced performance.
+
+== Getting Started
+
+Take a look at link:doc/getting-started.adoc[Getting Started guide] to learn how to get set up.
+
+== Security and Portability
+
+Note that while Lawn has some access control built in, it is only designed for trusted machines.
+If you expose the socket on an untrusted machine, you may very well end up with a security problem.
+Please don't do that.
+
+Lawn should run on any Unix system with Rust 1.48.0 or newer.
+If it doesn't work on your Unix system, let us know, and we'll try to get it fixed.
+
+Note that this tool is currently highly Unix specific and makes copious use of Unix sockets, Unix error codes, and the Unix-based Rust extensions.
+It almost certainly will not even compile on Windows, although you should be able to use it just fine on the Windows Subsystem for Linux.
+However, the `lawn-constants` and `lawn-9p` crates (without the `unix` feature) are designed to be cross-platform and available so that they can be used as a basis for other projects.
+
+== Documentation
+
+* link:doc/getting-started.adoc[Getting Started Guide]
+* link:doc/examples/configuration.yaml[Example Configuration File]
+* link:doc/man[Manual Pages]
+* link:doc/example-use-cases.adoc[Example Use Cases]
+* link:doc/faq.adoc[FAQ]

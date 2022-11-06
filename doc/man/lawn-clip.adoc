@@ -1,0 +1,50 @@
+= lawn-clip(1)
+
+== Name
+
+lawn clip - interact with the clipboard
+
+== Synopsis
+
+'lawn clip' -i [(-p | -b)]
+'lawn clip' -o [(-p | -b)]
+
+== Description
+
+`lawn clip` either copies or pastes from the clipboard, depending on whether the `-i` or `-o` option is specified.
+It can operate on either the `PRIMARY` or `CLIPBOARD` selection if the local machine is running.
+
+The clipboard used is that of the root machine.
+
+== Options
+
+`-i`::
+  Input mode.
+  Read the standard input and copy that data to the clipboard.
+
+`-o`::
+  Output mode.
+  Read the data from the clipboard and paste that to standard output.
+
+`-p`::
+  Use the `PRIMARY` selection if the root machine is using X11.
+
+`-b`::
+  Use the `CLIPBOARD` selection if the root machine is using X11, or use the system clipboard otherwise (e.g., on macOS).
+  This is the default.
+
+== Examples
+
+Assume we have the following configuration file:
+
+[source,yaml]
+----
+v0:
+  clipboard:
+    if: true
+    backend: default
+----
+
+Running `printf "Hello, world!\n" | lawn clip -i` will copy the text "`Hello, world!`" followed by a newline to the clipboard.
+
+Running `lawn clip -ob` will print the contents of the clipboard (using the X11 `CLIPBOARD` if X11 is in use) to standard output.

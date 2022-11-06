@@ -1,0 +1,29 @@
+= lawn-proxy(1)
+
+== Name
+
+lawn proxy - run a command with a Lawn-enabled SSH agent
+
+== Synopsis
+
+'lawn proxy' -- <command> [<arg>…]
+
+== Description
+
+`lawn proxy` runs the given command with a substituted SSH agent socket in the environment variable `SSH_AUTH_SOCK`.
+This SSH agent understands Lawn extensions and, if forwarded to a remote machine with `ssh -A`, can be used to run lawn commands instead of needing to forward the actual Lawn socket to the remote machine.
+This is simpler and easier than performing Unix socket forwarding with OpenSSH, but is somewhat less efficient and more bandwidth intensive.
+
+Regular agent commands (that is, those commands that are not Lawn extensions) are passed to the agent in effect at the time `lawn proxy` was invoked.
+Consequently, normal commands like `ssh-add -l` and regular agent signing should work as normal.
+
+== Examples
+
+In the following session, `lawn proxy` is used to proxy the SSH socket to a remote machine and run a command on the local machine:
+
+[source,console]
+----
+user@local:~$ lawn proxy -- ssh -A user@remote
+user@remote:~$ lawn run -- printf 'Hello, world!\n'
+Hello, world!
+----

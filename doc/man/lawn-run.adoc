@@ -1,0 +1,39 @@
+= lawn-run(1)
+
+== Name
+
+lawn run - spawn commands on your local machine
+
+== Synopsis
+
+'lawn run' -- <command> [<arg>…]
+
+== Description
+
+`lawn run` spawns the command specified on the local machine.
+The name of the command must match one of the commands under the `commands` block in the configuration file.
+
+When run, the server runs the command specified under the `if` entry for that command, which is obligatory.
+If the command exits successfully, then the command specified under the `command` entry is executed with the arguments given on the command line.
+If the `if` command fails, the `command` entry is not executed.
+
+== Examples
+
+Assume we have the following configuration file:
+
+[source,yaml]
+----
+v0:
+  commands:
+    printf:
+      if: true
+      command: printf
+    browser:
+      if: '!command -v firefox'
+      command: '!f() { firefox --new-tab "$@"; };f'
+----
+
+Running `lawn run -- printf "%s\n" "Hello, world!"` will run `printf "%s\n" "Hello, world!"`, which will print `Hello, world!` and exit.
+
+Running `lawn run -- browser https://git-scm.com` will open that site in a new tab in Firefox on the local machine, if and only if Firefox is installed.
+If Firefox is not present, the command will fail.

@@ -1,0 +1,54 @@
+= lawn(1)
+
+== Name
+
+lawn - spawn commands on your local machine
+
+== Synopsis
+
+'lawn' [--no-detach] [-v|--verbose] [-q|--quiet]  <command>
+
+== Description
+
+Lawn, which stands for “**l**ocal sp**awn**”, is a tool designed to allow trusted remote environments to spawn programs or otherwise interact with the user's local machine.
+This can be used to spawn a graphical editor, interact with the clipboard, query secrets from the local secret store, or whatever else the user desires.
+
+Lawn uses a client-server architecture: the user's local machine runs a server, which is forwarded to the remote system either with a Unix socket or over the SSH agent protocol.
+If Lawn detects that the machine is the user's local machine and no server has been started, it will autospawn one in the background so that commands work on the local machine just like they do on the remote machine.
+
+== Options
+
+`--no-detach`::
+  When spawning a server, do not close the TTY before forking.
+  This is primarily useful for debugging.
+
+`-v`::
+`--verbose`::
+  Be more verbose.
+  This is the opposite of `--quiet`.
+
+`-q`::
+`--quiet`::
+  Be less verbose.
+  This is the opposite of `--verbose`.
+
+== Commands
+
+`lawn clip`::
+  Copy and paste from the clipboard.
+  See `lawn-clip(1)`.
+
+`lawn proxy`::
+  Run the specified command with an SSH agent that understands proxied lawn commands.
+  When used in conjunction with a command such as `ssh -A`, this allows Lawn to tunnel commands over the SSH agent socket instead of requiring that a Unix socket be forwarded.
+  This mode requires polling and is less efficient, but it is more convenient.
+  See `lawn-proxy(1)`.
+
+`lawn run`::
+  Run a command specified in the configuration file.
+  See `lawn-run(1)`.
+
+`lawn server`::
+  Spawn a server.
+  This command is usually not necessary, since one is spawned on demand.
+  See `lawn-server(1)`.
