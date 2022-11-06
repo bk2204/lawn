@@ -387,15 +387,15 @@ impl Stat for UnixStat {
     }
 
     fn name(&self) -> &[u8] {
-        &*self.name
+        &self.name
     }
 
     fn uid(&self) -> &[u8] {
-        &*self.uid
+        &self.uid
     }
 
     fn gid(&self) -> &[u8] {
-        &*self.gid
+        &self.gid
     }
 
     fn muid(&self) -> Option<&[u8]> {
@@ -444,11 +444,11 @@ impl Stat for UnixStat {
         s.write_u32(self.atime);
         s.write_u32(self.mtime);
         s.write_u64(self.length);
-        s.write_string(&*self.name).ok()?;
-        s.write_string(&*self.uid).ok()?;
-        s.write_string(&*self.gid).ok()?;
-        s.write_string(&*self.muid).ok()?;
-        s.write_string(&*self.extension).ok()?;
+        s.write_string(&self.name).ok()?;
+        s.write_string(&self.uid).ok()?;
+        s.write_string(&self.gid).ok()?;
+        s.write_string(&self.muid).ok()?;
+        s.write_string(&self.extension).ok()?;
         s.write_u32(self.nuid);
         s.write_u32(self.ngid);
         s.write_u32(self.nmuid);

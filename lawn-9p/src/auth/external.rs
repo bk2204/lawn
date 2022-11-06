@@ -47,9 +47,9 @@ impl Authenticator for ExternalAuthenticator {
     fn info<'a>(&self, handle: &'a Self::SessionHandle) -> Option<AuthenticationInfo<'a>> {
         Some(AuthenticationInfo::new(
             handle.id,
-            &*handle.user,
-            &*handle.dir,
-            &*handle.dir,
+            &handle.user,
+            &handle.dir,
+            &handle.dir,
         ))
     }
 }
