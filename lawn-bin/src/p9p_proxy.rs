@@ -1,6 +1,7 @@
 use crate::client::Connection;
 use crate::config::Config;
 use bytes::Bytes;
+use std::fmt;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,6 +13,17 @@ pub enum Error {
     IOError(io::Error),
     LawnError(crate::error::Error),
 }
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        match self {
+            Self::IOError(e) => write!(f, "{}", e),
+            Self::LawnError(e) => write!(f, "{}", e),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
 
 impl From<io::Error> for Error {
     fn from(e: io::Error) -> Error {
