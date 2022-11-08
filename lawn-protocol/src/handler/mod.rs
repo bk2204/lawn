@@ -20,7 +20,7 @@ use tokio::time;
 macro_rules! dump_packet {
     ($logger:expr, $arg:expr) => {{
         use crate::config::LogLevel;
-        if $logger.level() >= LogLevel::Dump {
+        if $logger.level() <= LogLevel::Dump {
             $logger.trace(&format!("packet: {}", hex::encode($arg)));
         }
     }};
