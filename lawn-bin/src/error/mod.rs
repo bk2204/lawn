@@ -1,3 +1,4 @@
+use crate::p9p_proxy;
 use lawn_protocol::handler;
 use std::fmt;
 use std::fmt::Display;
@@ -85,6 +86,15 @@ impl std::error::Error for Error {
     }
 }
 
+impl From<p9p_proxy::Error> for Error {
+    fn from(err: p9p_proxy::Error) -> Error {
+        match err {
+            p9p_proxy::Error::IOError(e) => Error::new_with_cause(ErrorKind::P9PProxyError, e),
+            p9p_proxy::Error::LawnError(e) => e,
+        }
+    }
+}
+
 impl From<handler::Error> for Error {
     fn from(err: handler::Error) -> Error {
         Error {
@@ -121,6 +131,7 @@ pub enum ErrorKind {
     NotRootMachine,
     InvalidConfigurationValue,
     ConfigurationSpawnError,
+    P9PProxyError,
 }
 
 impl From<ErrorKind> for i32 {
