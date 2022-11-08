@@ -9,6 +9,7 @@ extern crate libc;
 extern crate num_derive;
 extern crate tokio;
 
+use crate::client::Connection;
 use crate::encoding::{escape, osstr, path};
 use bytes::Bytes;
 use clap::{App, Arg, ArgMatches};
@@ -394,6 +395,11 @@ fn dispatch_proxy(
     std::process::exit(res?);
 }
 
+enum ProxyType {
+    Listener(p9p_proxy::ProxyListener),
+    ProxyFromBoundSocket(tokio::net::UnixListener),
+}
+
 fn dispatch_mount(
     config: Arc<config::Config>,
     main: &ArgMatches,
@@ -414,17 +420,10 @@ fn dispatch_mount(
     let res: Result<i32, Error> = runtime.block_on(async move {
         let target_9p = m.value_of_os("9p").unwrap();
         let addr = socket.peer_addr().unwrap();
-        let ours = addr.as_pathname().unwrap();
+        let ours = addr.as_pathname();
         let p9p_sock = find_vacant_socket(config.clone(), "9p")?;
         let p9p_sock_loc = p9p_sock.clone();
         trace!(logger, "using {} as 9P socket", escape(path(&*p9p_sock)));
-        let proxy = p9p_proxy::ProxyListener::new(
-            config,
-            p9p_sock.clone(),
-            ours.into(),
-            target_9p.as_bytes().to_vec().into(),
-        )
-        .map_err(|_| Error::new(ErrorKind::SocketConnectionFailure))?;
         let want_socket = if m.is_present("socket") {
             true
         } else if m.is_present("fd") {
@@ -433,11 +432,55 @@ fn dispatch_mount(
             error!(logger, "one of --socket or --fd is required");
             return Err(Error::new(ErrorKind::MissingArguments));
         };
+        let dest: Bytes = target_9p.as_bytes().to_vec().into();
+        let proxy = match ours {
+            Some(ours) => ProxyType::Listener(
+                p9p_proxy::ProxyListener::new(
+                    config.clone(),
+                    p9p_sock.clone(),
+                    ours.into(),
+                    dest.clone(),
+                )
+                .map_err(|_| Error::new(ErrorKind::SocketConnectionFailure))?,
+            ),
+            None => {
+                let psock = tokio::net::UnixListener::bind(&p9p_sock).map_err(|e| {
+                    Error::new_full(ErrorKind::SocketBindFailure, e, "unable to bind 9P socket")
+                })?;
+                ProxyType::ProxyFromBoundSocket(psock)
+            }
+        };
         let handle = tokio::spawn(async move {
-            if !want_socket {
-                let _ = proxy.run_server_once().await;
-            } else {
-                let _ = proxy.run_server().await;
+            match proxy {
+                ProxyType::Listener(proxy) => {
+                    if !want_socket {
+                        let _ = proxy.run_server_once().await;
+                    } else {
+                        let _ = proxy.run_server().await;
+                    }
+                }
+                ProxyType::ProxyFromBoundSocket(psock) => {
+                    let conn = Arc::new(Connection::new(
+                        config.clone(),
+                        None,
+                        tokio::net::UnixStream::from_std(socket).unwrap(),
+                        false,
+                    ));
+                    loop {
+                        if let Ok((req, _)) = psock.accept().await {
+                            let mut proxy = p9p_proxy::Proxy::new_from_connection(
+                                config.clone(),
+                                req,
+                                conn.clone(),
+                                dest.clone(),
+                            );
+                            let _ = proxy.run_server().await;
+                            if !want_socket {
+                                break;
+                            }
+                        }
+                    }
+                }
             }
         });
         let join = tokio::task::spawn_blocking(move || {

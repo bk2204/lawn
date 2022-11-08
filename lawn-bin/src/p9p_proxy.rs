@@ -96,7 +96,7 @@ impl ProxyListener {
 pub struct Proxy {
     p9p_rd: OwnedReadHalf,
     p9p_wr: OwnedWriteHalf,
-    conn: Connection,
+    conn: Arc<Connection>,
     target: Bytes,
 }
 
@@ -104,7 +104,22 @@ impl Proxy {
     pub fn new(config: Arc<Config>, p9p: UnixStream, ours: UnixStream, target: Bytes) -> Proxy {
         let (rd, wr) = p9p.into_split();
         Proxy {
-            conn: Connection::new(config, None, ours, false),
+            conn: Arc::new(Connection::new(config, None, ours, false)),
+            p9p_rd: rd,
+            p9p_wr: wr,
+            target,
+        }
+    }
+
+    pub fn new_from_connection(
+        _config: Arc<Config>,
+        p9p: UnixStream,
+        conn: Arc<Connection>,
+        target: Bytes,
+    ) -> Proxy {
+        let (rd, wr) = p9p.into_split();
+        Proxy {
+            conn,
             p9p_rd: rd,
             p9p_wr: wr,
             target,
