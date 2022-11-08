@@ -141,7 +141,7 @@ macro_rules! trace {
     ($logger:expr, $($args : tt) *) => {
         {
             use lawn_constants::logger::{Logger, LogLevel};
-            if $logger.level() >= LogLevel::Trace {
+            if $logger.level() <= LogLevel::Trace {
                 $logger.trace(&format!($($args)*));
             }
         }
@@ -153,7 +153,7 @@ macro_rules! debug {
     ($logger:expr, $($args : tt) *) => {
         {
             use lawn_constants::logger::{Logger, LogLevel};
-            if $logger.level() >= LogLevel::Debug {
+            if $logger.level() <= LogLevel::Debug {
                 $logger.debug(&format!($($args)*));
             }
         }
@@ -165,7 +165,7 @@ macro_rules! error {
     ($logger:expr, $($args : tt) *) => {
         {
             use lawn_constants::logger::{Logger, LogLevel};
-            if $logger.level() >= LogLevel::Error {
+            if $logger.level() <= LogLevel::Error {
                 $logger.error(&format!($($args)*));
             }
         }
@@ -177,7 +177,7 @@ macro_rules! info {
     ($logger:expr, $($args : tt) *) => {
         {
             use lawn_constants::logger::{Logger, LogLevel};
-            if $logger.level() >= LogLevel::Info {
+            if $logger.level() <= LogLevel::Info {
                 $logger.info(&format!($($args)*));
             }
         }
@@ -189,7 +189,7 @@ macro_rules! message {
     ($logger:expr, $($args : tt) *) => {
         {
             use lawn_constants::logger::{Logger, LogLevel};
-            if $logger.level() >= LogLevel::Normal {
+            if $logger.level() <= LogLevel::Normal {
                 $logger.message(&format!($($args)*));
             }
         }

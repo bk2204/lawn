@@ -851,6 +851,7 @@ pub struct Config9P {
 #[cfg(test)]
 mod tests {
     use super::{Config, ConfigFile};
+    use lawn_constants::logger::{LogFormat, LogLevel, Logger};
     use serde_yaml::Value;
     use std::collections::BTreeMap;
     use std::ffi::OsString;
@@ -923,5 +924,51 @@ mod tests {
             c.v0.root = Some("!cat /dev/null".into())
         });
         assert_eq!(cfg.is_root().unwrap(), true);
+    }
+
+    struct PanicLogger {
+        level: LogLevel,
+    }
+
+    impl Logger for PanicLogger {
+        fn level(&self) -> LogLevel {
+            self.level
+        }
+
+        fn format(&self) -> LogFormat {
+            LogFormat::Text
+        }
+
+        fn fatal(&self, _msg: &str) {
+            panic!("fatal");
+        }
+
+        fn error(&self, _msg: &str) {
+            panic!("error");
+        }
+
+        fn message(&self, _msg: &str) {
+            panic!("message");
+        }
+
+        fn info(&self, _msg: &str) {
+            panic!("info");
+        }
+
+        fn debug(&self, _msg: &str) {
+            panic!("debug");
+        }
+
+        fn trace(&self, _msg: &str) {
+            panic!("trace");
+        }
+    }
+
+    #[test]
+    fn skips_calls() {
+        let logger = PanicLogger {
+            level: LogLevel::Debug,
+        };
+        trace!(logger, "this should never be invoked");
     }
 }
