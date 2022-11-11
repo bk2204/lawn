@@ -151,7 +151,9 @@ impl IDInfo for FileID {
     }
 
     fn file_kind(&self) -> Result<FileKind> {
-        Ok(FileKind::from_metadata(&fs::metadata(&self.full_path)?))
+        Ok(FileKind::from_metadata(&fs::symlink_metadata(
+            &self.full_path,
+        )?))
     }
 }
 
@@ -2938,6 +2940,48 @@ mod tests {
             .lcreate(&inst.next_meta(), fid(1), b"foo", 0, 0o600, u32::MAX)
             .unwrap();
         verify_file(&mut inst, fid(1), b"dir/foo");
+    }
+
+    #[test]
+    fn remove_broken_symlink() {
+        for ver in &[ProtocolVersion::Unix, ProtocolVersion::Linux] {
+            let mut inst = instance(*ver);
+            create_fixtures(&mut inst);
+            inst.server
+                .walk(&inst.next_meta(), fid(0), fid(1), &[b"dir"])
+                .unwrap();
+            if *ver == ProtocolVersion::Unix {
+                inst.server
+                    .walk(&inst.next_meta(), fid(1), fid(2), &[])
+                    .unwrap();
+                inst.server
+                    .create(
+                        &inst.next_meta(),
+                        fid(2),
+                        b"symlink",
+                        FileType::DMSYMLINK | FileType::from_bits(0o777).unwrap(),
+                        SimpleOpenMode::O_READ,
+                        Some(b"/nonexistent"),
+                    )
+                    .unwrap();
+                verify_symlink(&mut inst, fid(2), b"dir/symlink", b"/nonexistent");
+            } else {
+                inst.server
+                    .symlink(
+                        &inst.next_meta(),
+                        fid(1),
+                        b"symlink",
+                        b"/nonexistent",
+                        u32::MAX,
+                    )
+                    .unwrap();
+                inst.server
+                    .walk(&inst.next_meta(), fid(1), fid(2), &[b"symlink"])
+                    .unwrap();
+                verify_symlink(&mut inst, fid(2), b"dir/symlink", b"/nonexistent");
+            }
+            inst.server.remove(&inst.next_meta(), fid(2)).unwrap();
+        }
     }
 
     #[test]
