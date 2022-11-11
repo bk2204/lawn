@@ -1806,11 +1806,6 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
         _gid: u32,
     ) -> Result<QID> {
         self.assert_valid_path_component(name, false)?;
-        let rg = self.root.read().unwrap();
-        let root = match *rg {
-            Some(ref r) => r,
-            None => return Err(Error::EINVAL),
-        };
         let g = self.fid.guard();
         let idi = match self.fid.get(&fid, &g) {
             Some(idi) => idi.id_info().ok_or(Error::EOPNOTSUPP)?,
@@ -1818,13 +1813,7 @@ impl<A: Authenticator<SessionHandle = AH>, AH: ToIdentifier + Clone + Send + Syn
         };
         let mut full_path = idi.full_path().to_owned();
         full_path.push(OsStr::from_bytes(name));
-        let target = if target.starts_with(b"/") {
-            let mut full_path = root.clone();
-            full_path.extend(target);
-            full_path
-        } else {
-            target.to_vec()
-        };
+        let target = target.to_vec();
         let ctarget = CString::new(target).map_err(|_| Error::EINVAL)?;
         let cname =
             CString::new(full_path.as_os_str().as_bytes().to_vec()).map_err(|_| Error::EINVAL)?;
