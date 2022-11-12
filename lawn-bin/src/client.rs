@@ -558,7 +558,7 @@ impl Connection {
             trace!(logger, "channel {}: closed selector {}", id, selector);
             return st.clone();
         }
-        let mut buf = [0; 4096];
+        let mut buf = [0; 65536];
         let data = match &st.data {
             Some(data) => data,
             None => {
@@ -675,7 +675,7 @@ impl Connection {
         let req = ReadChannelRequest {
             id,
             selector,
-            count: 4096,
+            count: 65536,
         };
         let resp: ReadChannelResponse = match handler
             .send_message(MessageKind::ReadChannel, &req, Some(false))
