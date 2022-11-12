@@ -374,9 +374,11 @@ impl Proxy {
         message: &SSHMessage,
         sock: &Mutex<UnixStream>,
     ) -> Result<(), Error> {
+        let mut buf = [0u8; 5];
+        buf[0..4].copy_from_slice(&message.len.to_be_bytes());
+        buf[4..5].copy_from_slice(&message.kind.to_be_bytes());
         let mut ssh = sock.lock().await;
-        ssh.write_all(&message.len.to_be_bytes()).await?;
-        ssh.write_all(&message.kind.to_be_bytes()).await?;
+        ssh.write_all(&buf).await?;
         ssh.write_all(&message.data).await?;
         Ok(())
     }
@@ -384,17 +386,15 @@ impl Proxy {
     async fn read_ssh_message(sock: &Mutex<UnixStream>) -> Result<SSHMessage, Error> {
         use tokio::io::AsyncReadExt;
         let mut ssh = sock.lock().await;
-        let mut buf = [0u8; 4];
+        let mut buf = [0u8; 5];
         ssh.read_exact(&mut buf).await?;
-        let len = u32::from_be_bytes(buf);
+        let len = u32::from_be_bytes(buf[0..4].try_into().unwrap());
         if !(1..((1 << 24) + 12)).contains(&len) {
             return Err(Error::InvalidSize);
         }
-        let mut kind = [0u8; 1];
-        ssh.read_exact(&mut kind).await?;
         let mut msg = SSHMessage {
             len,
-            kind: kind[0],
+            kind: buf[4],
             data: vec![0u8; (len - 1) as usize],
         };
         ssh.read_exact(&mut msg.data).await?;
@@ -429,18 +429,14 @@ impl Proxy {
     async fn read_message(sock: &Mutex<OwnedReadHalf>) -> Result<Message, Error> {
         use tokio::io::AsyncReadExt;
         let mut ours = sock.lock().await;
-        let mut buf = [0u8; 4];
+        let mut buf = [0u8; 12];
         ours.read_exact(&mut buf).await?;
-        let len = u32::from_le_bytes(buf);
+        let len = u32::from_le_bytes(buf[0..4].try_into().unwrap());
         if !(8..(1 << 24)).contains(&len) {
             return Err(Error::InvalidSize);
         }
-        let mut buf = [0u8; 4];
-        ours.read_exact(&mut buf).await?;
-        let id = u32::from_le_bytes(buf);
-        let mut buf = [0u8; 4];
-        ours.read_exact(&mut buf).await?;
-        let next = u32::from_le_bytes(buf);
+        let id = u32::from_le_bytes(buf[4..8].try_into().unwrap());
+        let next = u32::from_le_bytes(buf[8..12].try_into().unwrap());
         let mut data = vec![0u8; (len - 8) as usize];
         ours.read_exact(&mut data).await?;
         Ok(Message {
@@ -456,12 +452,11 @@ impl Proxy {
         msg: &Message,
         sock: &Mutex<OwnedWriteHalf>,
     ) -> Result<(), Error> {
+        let mut buf = [0u8; 12];
+        buf[0..4].copy_from_slice(&msg.len.to_le_bytes());
+        buf[4..8].copy_from_slice(&msg.id.to_le_bytes());
+        buf[8..12].copy_from_slice(&msg.next.to_le_bytes());
         let mut ours = sock.lock().await;
-        let buf = msg.len.to_le_bytes();
-        ours.write_all(&buf).await?;
-        let buf = msg.id.to_le_bytes();
-        ours.write_all(&buf).await?;
-        let buf = msg.next.to_le_bytes();
         ours.write_all(&buf).await?;
         ours.write_all(&msg.data).await?;
         Ok(())
