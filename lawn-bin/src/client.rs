@@ -195,12 +195,12 @@ impl Connection {
         let id = self.create_clipboard_channel(op, target).await?;
         match op {
             ClipboardChannelOperation::Copy => {
-                let mut fd_status = [FDStatus::default(), FDStatus::closed(), FDStatus::closed()];
+                let mut fd_status = [FDStatus::default(), FDStatus::closed()];
                 self.run_channel(stdin, devnull, stderr, id, &mut fd_status)
                     .await
             }
             ClipboardChannelOperation::Paste => {
-                let mut fd_status = [FDStatus::closed(), FDStatus::default(), FDStatus::closed()];
+                let mut fd_status = [FDStatus::closed(), FDStatus::default()];
                 self.run_channel(devnull, stdout, stderr, id, &mut fd_status)
                     .await
             }
