@@ -47,7 +47,7 @@ macro_rules! valid_message {
 
 macro_rules! assert_authenticated {
     ($handler:expr, $msg:expr) => {{
-        if !$handler.authenticated() {
+        if !$handler.authenticated().await {
             return Err(ResponseCode::NeedsAuthentication.into());
         }
     }};
@@ -494,7 +494,7 @@ impl Server {
                     }
                     Err(_) => Err(ResponseCode::ParametersNotSupported.into()),
                     Ok(requested) => {
-                        handler.set_capabilities(&requested);
+                        handler.set_capabilities(&requested).await;
                         Ok((false, None))
                     }
                 }
@@ -514,7 +514,7 @@ impl Server {
                 if m.last_id.is_some() || m.message.is_some() || m.method != b"EXTERNAL" as &[u8] {
                     return Err(ResponseCode::ParametersNotSupported.into());
                 }
-                handler.set_authenticated(true);
+                handler.set_authenticated(true).await;
                 let r = protocol::AuthenticateResponse {
                     method: m.method,
                     message: None,
@@ -529,19 +529,31 @@ impl Server {
                     "server: {}: create channel: {}: {}",
                     id,
                     escape(&m.kind),
-                    handler.has_capability(&protocol::Capability::ChannelCommand)
+                    handler
+                        .has_capability(&protocol::Capability::ChannelCommand)
+                        .await
                 ));
                 let kind: &[u8] = &m.kind;
                 let res = match kind {
-                    b"command" if handler.has_capability(&protocol::Capability::ChannelCommand) => {
+                    b"command"
+                        if handler
+                            .has_capability(&protocol::Capability::ChannelCommand)
+                            .await =>
+                    {
                         Self::create_command_channel(id, state.clone(), &m).await
                     }
                     b"clipboard"
-                        if handler.has_capability(&protocol::Capability::ChannelClipboard) =>
+                        if handler
+                            .has_capability(&protocol::Capability::ChannelClipboard)
+                            .await =>
                     {
                         Self::create_clipboard_channel(id, state.clone(), &m).await
                     }
-                    b"9p" if handler.has_capability(&protocol::Capability::Channel9P) => {
+                    b"9p"
+                        if handler
+                            .has_capability(&protocol::Capability::Channel9P)
+                            .await =>
+                    {
                         Self::create_9p_channel(id, state.clone(), &m).await
                     }
                     _ => return Err(ResponseCode::ParametersNotSupported.into()),

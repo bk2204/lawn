@@ -10,11 +10,11 @@ use std::fmt::Display;
 use std::io;
 use std::marker::Unpin;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::select;
 use tokio::sync::mpsc::{channel, Sender};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio::time;
 
 macro_rules! dump_packet {
@@ -73,12 +73,12 @@ pub struct ProtocolHandler<T: AsyncRead, U: AsyncWrite> {
     config: Arc<Config>,
     inp: tokio::sync::Mutex<Pin<Box<T>>>,
     outp: tokio::sync::Mutex<Pin<Box<U>>>,
-    requests: std::sync::Mutex<HashMap<u32, Sender<Result<protocol::Response, Error>>>>,
-    id: std::sync::Mutex<u32>,
+    requests: tokio::sync::Mutex<HashMap<u32, Sender<Result<protocol::Response, Error>>>>,
+    id: tokio::sync::Mutex<u32>,
     serializer: protocol::ProtocolSerializer,
-    closing: std::sync::RwLock<bool>,
-    capability: std::sync::RwLock<CapabilityData>,
-    authenticated: std::sync::RwLock<bool>,
+    closing: tokio::sync::RwLock<bool>,
+    capability: tokio::sync::RwLock<CapabilityData>,
+    authenticated: tokio::sync::RwLock<bool>,
     synchronous: bool,
 }
 
@@ -89,8 +89,8 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
             config,
             inp: Mutex::new(Pin::new(Box::new(inp))),
             outp: Mutex::new(Pin::new(Box::new(outp))),
-            requests: std::sync::Mutex::new(HashMap::new()),
-            id: std::sync::Mutex::new(id),
+            requests: tokio::sync::Mutex::new(HashMap::new()),
+            id: tokio::sync::Mutex::new(id),
             serializer: protocol::ProtocolSerializer::new(),
             closing: RwLock::new(false),
             capability: RwLock::new(CapabilityData {
@@ -102,34 +102,34 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
         }
     }
 
-    pub fn authenticated(&self) -> bool {
-        let g = self.authenticated.read().unwrap();
+    pub async fn authenticated(&self) -> bool {
+        let g = self.authenticated.read().await;
         *g
     }
 
-    pub fn set_authenticated(&self, value: bool) {
-        let mut g = self.authenticated.write().unwrap();
+    pub async fn set_authenticated(&self, value: bool) {
+        let mut g = self.authenticated.write().await;
         *g = value;
     }
 
     pub fn set_version(&self, version: u32, capabilities: &[protocol::Capability]) {
-        let mut g = self.capability.write().unwrap();
+        let mut g = self.capability.blocking_write();
         g.version = version;
         g.capabilities = capabilities.iter().cloned().collect();
     }
 
     pub fn version(&self) -> u32 {
-        let g = self.capability.read().unwrap();
+        let g = self.capability.blocking_read();
         g.version
     }
 
-    pub fn has_capability(&self, capa: &protocol::Capability) -> bool {
-        let g = self.capability.read().unwrap();
+    pub async fn has_capability(&self, capa: &protocol::Capability) -> bool {
+        let g = self.capability.read().await;
         g.capabilities.contains(capa)
     }
 
-    pub fn set_capabilities(&self, capa: &BTreeSet<protocol::Capability>) {
-        let mut g = self.capability.write().unwrap();
+    pub async fn set_capabilities(&self, capa: &BTreeSet<protocol::Capability>) {
+        let mut g = self.capability.write().await;
         g.capabilities = capa.iter().cloned().collect()
     }
 
@@ -139,7 +139,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
 
     pub async fn flush_requests(&self) {
         let reqs: HashMap<_, _> = {
-            let mut g = self.requests.lock().unwrap();
+            let mut g = self.requests.lock().await;
             g.drain().collect()
         };
         for (_, tx) in reqs {
@@ -149,7 +149,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
 
     pub async fn close(&self, send_alert: bool) {
         {
-            let mut g = self.closing.write().unwrap();
+            let mut g = self.closing.write().await;
             if *g {
                 return;
             }
@@ -220,7 +220,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
                     r.id, r.code
                 ));
                 let channel = {
-                    let mut g = self.requests.lock().unwrap();
+                    let mut g = self.requests.lock().await;
                     g.remove(&r.id)
                 };
                 if let Some(ch) = channel {
@@ -344,7 +344,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
         synchronous: Option<bool>,
     ) -> Result<Option<D>, Error> {
         let id = {
-            let mut g = self.id.lock().unwrap();
+            let mut g = self.id.lock().await;
             let v = *g;
             *g = self.config.next_id(v);
             v
@@ -378,7 +378,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
         synchronous: bool,
     ) -> Result<Option<D>, Error> {
         let id = {
-            let mut g = self.id.lock().unwrap();
+            let mut g = self.id.lock().await;
             let v = *g;
             *g = self.config.next_id(v);
             v
@@ -411,7 +411,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
     ) -> Result<Option<D>, Error> {
         let logger = self.config.logger();
         if !closing {
-            let g = self.closing.read().unwrap();
+            let g = self.closing.read().await;
             if *g {
                 return Err(Error::Aborted);
             }
@@ -426,7 +426,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
         let (sender, mut receiver) = channel(1);
         let max_messages = self.config.max_messages_in_flight();
         let reject = {
-            let mut g = self.requests.lock().unwrap();
+            let mut g = self.requests.lock().await;
             if g.len() >= max_messages as usize {
                 true
             } else {
