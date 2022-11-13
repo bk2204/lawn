@@ -851,6 +851,7 @@ impl Client {
         stream: std::os::unix::net::UnixStream,
         synchronous: bool,
     ) -> Result<Connection, Error> {
+        let _ = stream.set_nonblocking(true);
         match UnixStream::from_std(stream) {
             Ok(stream) => Ok(Connection::new(
                 self.config.clone(),

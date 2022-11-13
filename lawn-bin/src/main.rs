@@ -460,6 +460,7 @@ fn dispatch_mount(
                     }
                 }
                 ProxyType::ProxyFromBoundSocket(psock) => {
+                    let _ = socket.set_nonblocking(true);
                     let conn = Arc::new(Connection::new(
                         config.clone(),
                         None,
