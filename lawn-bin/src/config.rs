@@ -467,7 +467,8 @@ impl Logger {
             1 => LogLevel::Info,
             2 => LogLevel::Debug,
             3 => LogLevel::Trace,
-            _ => LogLevel::Trace,
+            4 => LogLevel::Dump,
+            _ => LogLevel::Dump,
         };
         Self {
             output: Mutex::new(output),
