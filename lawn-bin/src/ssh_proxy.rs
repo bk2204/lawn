@@ -11,10 +11,9 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::select;
-use tokio::sync::mpsc::Receiver;
 use tokio::sync::Mutex;
 
-#[derive(FromPrimitive, Eq, PartialEq)]
+#[derive(Copy, Clone, FromPrimitive, Eq, PartialEq)]
 enum MessageKind {
     Failure = 5,
     Success = 6,
@@ -149,28 +148,41 @@ impl Proxy {
     /// A proxy client is a service that runs on the client side of the connection and wraps
     /// messages into the SSH protocol for use on the other side.
     pub async fn run_client(&self) -> Result<(), Error> {
+        use tokio::io::AsyncReadExt;
         let mut interval = tokio::time::interval(Duration::from_millis(100));
+        let mut ours_read = self.ours_read.lock().await;
+        let logger = self.config.logger();
         loop {
+            let mut buf = [0u8; 65536];
             select! {
-                res = Self::read_message(&self.ours_read) => {
+                res = ours_read.read(&mut buf) => {
+                    trace!(logger, "proxy client: read: {:?}", res);
                     match res {
-                        Ok(msg) => {
-                            let _ = self.send_client_message(Some(&msg)).await;
-                        }
-                        Err(Error::IOError(e)) if e.kind() == io::ErrorKind::ConnectionReset => return Ok(()),
-                        Err(e) => return Err(e),
+                        Ok(n) => {
+                            let _ = self.send_client_message(Some(&buf[0..n])).await;
+                        },
+                        Err(e) if e.kind() == io::ErrorKind::ConnectionReset => return Ok(()),
+                        Err(e) => return Err(e.into()),
                     }
                 }
                 _ = interval.tick() => {
+                    trace!(logger, "proxy client: tick");
                     let _ = self.send_client_message(None).await;
                 }
             }
         }
     }
 
-    async fn send_client_message(&self, msg: Option<&Message>) -> Result<(), Error> {
-        let m = Self::wrap_message(MessageKind::Extension, msg);
-        Self::write_ssh_message(&m, &self.multiplex).await?;
+    async fn send_client_message(&self, msg: Option<&[u8]>) -> Result<(), Error> {
+        let logger = self.config.logger();
+        let buf = msg.unwrap_or(&[]);
+        trace!(
+            logger,
+            "proxy client: writing extension message with {} bytes of data",
+            buf.len()
+        );
+        self.write_ssh_message_of_type(MessageKind::Extension, buf, &self.multiplex)
+            .await?;
         let m = Self::read_ssh_message(&self.multiplex).await?;
         if m.kind == MessageKind::Success as u8 && !m.data.is_empty() {
             let mut sock = self.ours_write.lock().await;
@@ -185,20 +197,10 @@ impl Proxy {
     /// messages into the SSH protocol for use on the other side.  This will be implemented as an
     /// SSH agent.
     pub async fn run_server(&self) -> Result<(), Error> {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-        let ours = self.ours_read.clone();
-        tokio::spawn(async move {
-            loop {
-                let res = Self::read_message(&ours).await;
-                if let Ok(msg) = res {
-                    let _ = tx.send(msg).await;
-                }
-            }
-        });
         loop {
             let res = Self::read_ssh_message(&self.multiplex).await;
             match res {
-                Ok(msg) => self.process_server_ssh_message(&msg, &mut rx).await?,
+                Ok(msg) => self.process_server_ssh_message(&msg).await?,
                 Err(Error::IOError(e)) if e.kind() == io::ErrorKind::ConnectionReset => {
                     return Ok(())
                 }
@@ -207,17 +209,14 @@ impl Proxy {
         }
     }
 
-    async fn process_server_ssh_message(
-        &self,
-        message: &SSHMessage,
-        rx: &mut Receiver<Message>,
-    ) -> Result<(), Error> {
+    async fn process_server_ssh_message(&self, message: &SSHMessage) -> Result<(), Error> {
         let logger = self.config.logger();
         let ssh = self.ssh.clone();
         let ssh = match ssh.as_ref() {
             Some(ssh) => ssh,
             None => return Err(Error::NotConnected),
         };
+        let ours_read = self.ours_read.lock().await;
         trace!(logger, "proxy: parsing SSH message: {:02x}", message.kind);
         match MessageKind::from_u8(message.kind) {
             Some(MessageKind::Extension) => {
@@ -227,24 +226,28 @@ impl Proxy {
                     Some(Some(ours)) => {
                         trace!(
                             logger,
-                            "proxy: found extension message with data: size {:08x} id {:08x}",
-                            ours.len,
-                            ours.id
+                            "proxy: found extension message with data: size {:08x}",
+                            ours.len(),
                         );
-                        self.write_message(&ours, &self.ours_write).await?;
+                        let mut ours_write = self.ours_write.lock().await;
+                        ours_write.write_all(&ours).await?;
                         trace!(logger, "proxy: relayed message");
-                        match tokio::time::timeout(Duration::from_millis(20), rx.recv()).await {
+                        let mut buf = [0u8; 65536];
+                        match ours_read.try_read(&mut buf) {
                             // We have a message from the server to send.
-                            Ok(msg) => {
-                                let msg = msg.unwrap();
+                            Ok(n) => {
+                                let buf = &buf[0..n];
                                 trace!(
                                     logger,
-                                    "proxy: extension: sending response: size {:08x} id {:08x}",
-                                    msg.len,
-                                    msg.id
+                                    "proxy: extension: sending response: {:08x} bytes",
+                                    buf.len()
                                 );
-                                let m = Self::wrap_message(MessageKind::Success, Some(&msg));
-                                Self::write_ssh_message(&m, &self.multiplex).await?;
+                                self.write_ssh_message_of_type(
+                                    MessageKind::Success,
+                                    buf,
+                                    &self.multiplex,
+                                )
+                                .await?;
                             }
                             // No message from the server to send.
                             Err(_) => {
@@ -259,18 +262,22 @@ impl Proxy {
                     // see if there's any server data.
                     Some(None) => {
                         trace!(logger, "proxy: found extension message without data");
-                        match tokio::time::timeout(Duration::from_millis(5), rx.recv()).await {
+                        let mut buf = [0u8; 65536];
+                        match ours_read.try_read(&mut buf) {
                             // We have a message from the server to send.
-                            Ok(msg) => {
-                                let msg = msg.unwrap();
+                            Ok(n) => {
+                                let buf = &buf[0..n];
                                 trace!(
                                     logger,
-                                    "proxy: extension: sending response: size {:08x} id {:08x}",
-                                    msg.len,
-                                    msg.id
+                                    "proxy: extension: sending response: {:08x} bytes",
+                                    buf.len()
                                 );
-                                let m = Self::wrap_message(MessageKind::Success, Some(&msg));
-                                Self::write_ssh_message(&m, &self.multiplex).await?;
+                                self.write_ssh_message_of_type(
+                                    MessageKind::Success,
+                                    buf,
+                                    &self.multiplex,
+                                )
+                                .await?;
                             }
                             // No message from the server to send.
                             Err(_) => {
@@ -326,7 +333,7 @@ impl Proxy {
     ///
     /// Returns `Some(Some(mgs))` if the message is for our extension and contains data,
     /// `Some(None)` if it is for our extension and contains no data, and `None` otherwise.
-    fn parse_extension_message(&self, message: &SSHMessage) -> Option<Option<Message>> {
+    fn parse_extension_message(&self, message: &SSHMessage) -> Option<Option<Vec<u8>>> {
         let logger = self.config.logger();
         if message.kind == MessageKind::Extension as u8 {
             trace!(logger, "proxy: extension");
@@ -347,10 +354,7 @@ impl Proxy {
                 if message.data.len() == (4 + slen) as usize {
                     Some(None)
                 } else {
-                    match Self::parse_message(&message.data[(4 + slen) as usize..]) {
-                        Ok(msg) => Some(Some(msg)),
-                        Err(_) => None,
-                    }
+                    Some(Some(message.data[(4 + slen) as usize..].into()))
                 }
             } else {
                 None
@@ -367,6 +371,32 @@ impl Proxy {
     ) -> Result<(), Error> {
         let m = Self::read_ssh_message(src).await?;
         Self::write_ssh_message(&m, dest).await?;
+        Ok(())
+    }
+
+    async fn write_ssh_message_of_type(
+        &self,
+        kind: MessageKind,
+        message: &[u8],
+        sock: &Mutex<UnixStream>,
+    ) -> Result<(), Error> {
+        let mut buf = [0u8; 5 + 4 + Self::EXTENSION.len()];
+        let bkind = kind as u8;
+        buf[4..5].copy_from_slice(&bkind.to_be_bytes());
+        let bufused = match kind {
+            MessageKind::Extension => {
+                buf[5..9].copy_from_slice(&(Self::EXTENSION.len() as u32).to_be_bytes());
+                buf[9..9 + Self::EXTENSION.len()].copy_from_slice(Self::EXTENSION);
+                9 + Self::EXTENSION.len()
+            }
+            _ => 5,
+        };
+        let len = (bufused - 4 + message.len()) as u32;
+        buf[0..4].copy_from_slice(&len.to_be_bytes());
+        let buf = &buf[0..bufused];
+        let mut ssh = sock.lock().await;
+        ssh.write_all(buf).await?;
+        ssh.write_all(message).await?;
         Ok(())
     }
 
@@ -399,66 +429,5 @@ impl Proxy {
         };
         ssh.read_exact(&mut msg.data).await?;
         Ok(msg)
-    }
-
-    fn parse_message(data: &[u8]) -> Result<Message, Error> {
-        use std::io::Read;
-        let mut cursor = io::Cursor::new(data);
-        let mut buf = [0u8; 4];
-        cursor.read_exact(&mut buf)?;
-        let len = u32::from_le_bytes(buf);
-        if !(8..(1 << 24)).contains(&len) {
-            return Err(Error::InvalidSize);
-        }
-        let mut buf = [0u8; 4];
-        cursor.read_exact(&mut buf)?;
-        let id = u32::from_le_bytes(buf);
-        let mut buf = [0u8; 4];
-        cursor.read_exact(&mut buf)?;
-        let next = u32::from_le_bytes(buf);
-        let mut data = vec![0u8; (len - 8) as usize];
-        cursor.read_exact(&mut data)?;
-        Ok(Message {
-            len,
-            id,
-            next,
-            data,
-        })
-    }
-
-    async fn read_message(sock: &Mutex<OwnedReadHalf>) -> Result<Message, Error> {
-        use tokio::io::AsyncReadExt;
-        let mut ours = sock.lock().await;
-        let mut buf = [0u8; 12];
-        ours.read_exact(&mut buf).await?;
-        let len = u32::from_le_bytes(buf[0..4].try_into().unwrap());
-        if !(8..(1 << 24)).contains(&len) {
-            return Err(Error::InvalidSize);
-        }
-        let id = u32::from_le_bytes(buf[4..8].try_into().unwrap());
-        let next = u32::from_le_bytes(buf[8..12].try_into().unwrap());
-        let mut data = vec![0u8; (len - 8) as usize];
-        ours.read_exact(&mut data).await?;
-        Ok(Message {
-            len,
-            id,
-            next,
-            data,
-        })
-    }
-
-    async fn write_message(
-        &self,
-        msg: &Message,
-        sock: &Mutex<OwnedWriteHalf>,
-    ) -> Result<(), Error> {
-        let mut buf = [0u8; 12];
-        buf[0..4].copy_from_slice(&msg.len.to_le_bytes());
-        buf[4..8].copy_from_slice(&msg.id.to_le_bytes());
-        buf[8..12].copy_from_slice(&msg.next.to_le_bytes());
-        let mut ours = sock.lock().await;
-        ours.write_all(&buf).await?;
-        ours.write_all(&msg.data).await?;
-        Ok(())
     }
 }
