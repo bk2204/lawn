@@ -1,0 +1,38 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+
+CLIPBOARD_DIR = File.join(ENV['LAWN_BASE_DIR'], 'clipboard')
+
+dest = :clipboard
+op = nil
+
+OptionParser.new do |opts|
+  opts.on('-p') do
+    dest = :primary
+  end
+
+  opts.on('-b') do
+    dest = :clipboard
+  end
+
+  opts.on('-i') do
+    op = :copy
+  end
+
+  opts.on('-o') do
+    op = :paste
+  end
+end.parse!
+
+$stdin.set_encoding('ASCII-8BIT')
+$stdout.set_encoding('ASCII-8BIT')
+
+case op
+when :copy
+  f = File.open(File.join(CLIPBOARD_DIR, dest.to_s), "w+b")
+  IO.copy_stream($stdin, f)
+when :paste
+  f = File.open(File.join(CLIPBOARD_DIR, dest.to_s), "r+b")
+  IO.copy_stream(f, $stdout)
+end

@@ -1,0 +1,24 @@
+---
+v0:
+  socket:
+    autoprune: true
+  clipboard:
+    if: true
+    backend: xsel
+  commands:
+    noop:
+      if: true
+      command: '!true'
+    printf:
+      if: true
+      command: '!f() { printf "$@"; };f'
+    sha256sum:
+      if: true
+      command: '!sha256sum'
+    prng:
+      if: true
+      command: '!prng'
+  9p:
+    remote:
+      if: true
+      location: '!printf "%s" "$LAWN_SERVER_MOUNT"'

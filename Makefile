@@ -48,6 +48,9 @@ clean:
 test:
 	cargo test $(FEATURE_ARG)
 
+test-integration: all
+	rspec
+
 doc: $(MAN_DEST)
 	echo $(MAN_DEST)
 
@@ -97,7 +100,7 @@ ci-%: test/Dockerfile.%.stamp
 ci-freebsd:
 	vagrant init generic/freebsd$(FREEBSD_VERSION)
 	vagrant up
-	vagrant ssh -- sudo pkg install -y curl git gmake rubygem-asciidoctor rust
+	vagrant ssh -- sudo pkg install -y curl git gmake rubygem-asciidoctor rubygem-rspec rust
 	vagrant ssh -- git init /home/vagrant/lawn
 	GIT_SSH_COMMAND='f() { shift; vagrant ssh -- "$$@"; };f' git push vagrant@localhost:/home/vagrant/lawn
 	vagrant ssh -- "cd /home/vagrant/lawn && git checkout $$(git rev-parse HEAD) && gmake test-full FEATURES=$(FEATURES)"
@@ -106,15 +109,16 @@ ci-netbsd:
 	vagrant init generic/netbsd$(NETBSD_VERSION)
 	vagrant up
 	vagrant ssh -- sudo /usr/pkg/bin/pkgin update
-	vagrant ssh -- sudo /usr/pkg/bin/pkgin -y install mozilla-rootcerts-openssl curl git gmake ruby27-asciidoctor rust
+	vagrant ssh -- sudo /usr/pkg/bin/pkgin -y install mozilla-rootcerts-openssl curl git gmake ruby31-asciidoctor ruby31-rspec rust
 	vagrant ssh -- git init /home/vagrant/lawn
 	GIT_SSH_COMMAND='f() { shift; vagrant ssh -- "$$@"; };f' git push vagrant@localhost:/home/vagrant/lawn
-	vagrant ssh -- "cd /home/vagrant/lawn && git checkout $$(git rev-parse HEAD) && gmake test-full ASCIIDOCTOR=asciidoctor27  CARGO_HTTP_MULTIPLEXING=false FEATURES=$(FEATURES)"
+	vagrant ssh -- "cd /home/vagrant/lawn && git checkout $$(git rev-parse HEAD) && gmake test-full ASCIIDOCTOR=asciidoctor31  CARGO_HTTP_MULTIPLEXING=false FEATURES=$(FEATURES)"
 
 test-full:
 	$(MAKE) all
 	$(MAKE) doc
 	$(MAKE) test
+	$(MAKE) test-integration
 	$(MAKE) lint
 
 test/Dockerfile.%.stamp: test/Dockerfile.% $(SRC)
