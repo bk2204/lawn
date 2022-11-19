@@ -541,7 +541,14 @@ impl Connection {
                     last: false,
                     data: Some(data.into()),
                 },
-                _ => st.clone(),
+                _ => {
+                    trace!(logger, "channel {}: {}: error writing: {}", id, selector, e);
+                    FDStatus {
+                        open: true,
+                        last: false,
+                        data: Some(data.into()),
+                    }
+                }
             },
         }
     }
