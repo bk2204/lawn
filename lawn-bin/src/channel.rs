@@ -423,8 +423,11 @@ impl Channel for ServerGenericCommandChannel {
                 res = g.read(&mut v) => {
                     trace!(logger, "channel {}: read: {:?}", id, res);
                     match res {
-                        Ok(n) => Ok(v[..n].to_vec().into()),
-                        Err(e) => Err(e.into()),
+                        Ok(n) => {
+                            v.truncate(n);
+                            Ok(v.into())
+                        }
+                        Err(e) => Err(e.into())
                     }
                 },
                 _ = interval.tick() => {
