@@ -544,8 +544,13 @@ impl Channel for ServerGenericCommandChannel {
             match selector {
                 0 => {
                     if g.0.is_some() {
+                        let fp = g.0.take().unwrap();
+                        let r = block_on_async(async move {
+                            let mut g = fp.lock().await;
+                            g.flush().await
+                        });
                         g.0 = None;
-                        return Ok(());
+                        return r.map_err(|e| e.into());
                     }
                 }
                 1 => {
