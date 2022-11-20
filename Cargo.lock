@@ -229,6 +229,7 @@ dependencies = [
  "signal-hook-tokio",
  "tempfile",
  "tokio",
+ "tokio-pipe",
 ]
 
 [[package]]
@@ -608,6 +609,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "tokio-pipe"
+version = "0.2.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71d3bb77c86cb2a70ea8496d34b3029ce858de06f2efa2ab0f601e72efe3f15b"
+dependencies = [
+ "libc",
+ "tokio",
 ]
 
 [[package]]

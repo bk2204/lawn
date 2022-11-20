@@ -19,6 +19,7 @@ lawn-constants = { path = "../lawn-constants", version = "0.1.0" }
 lawn-9p = { path = "../lawn-9p", version = "0.1.0", features = ["unix"] }
 lawn-protocol = { path = "../lawn-protocol", version = "0.1.0", features = ["async"] }
 tokio = { version = "1", features = [ "io-std", "macros", "net", "process", "rt", "rt-multi-thread", "signal", "time" ] }
+tokio-pipe = "0.2"
 daemonize = "0.4"
 num-traits = "0.2"
 num-derive = "0.3"
