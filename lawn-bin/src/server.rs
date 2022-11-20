@@ -755,7 +755,7 @@ impl Server {
                 return Err(ResponseCode::InternalError.into());
             }
         }
-        let proc = cmd.run_command();
+        let proc = cmd.run_std_command();
         let cid = channels.next_id();
         let ch = Arc::new(ServerCommandChannel::new(logger, cid, proc)?);
         channels.insert(cid, ch);
@@ -836,7 +836,7 @@ impl Server {
         }
         let args = backend.command(target, op);
         let ctx = config.template_context(None, None);
-        let cmd = config::command_from_args(&args, &ctx);
+        let cmd = config::std_command_from_args(&args, &ctx);
         let logger = state.logger();
         let channels = state.channels();
         let cid = channels.next_id();

@@ -14,22 +14,21 @@ use lawn_protocol::protocol::{ChannelID, ClipboardChannelOperation, ErrorBody, R
 use std::collections::HashMap;
 use std::io;
 use std::os::raw::c_int;
-use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 use std::os::unix::process::ExitStatusExt;
-use std::process::{ExitStatus, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::UnixStream;
-use tokio::process::{Child, Command};
 use tokio::select;
 use tokio::sync;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
+use tokio_pipe::{PipeRead, PipeWrite};
 
 pub struct ChannelManager {
     map: RwLock<HashMap<ChannelID, Arc<dyn Channel + Send + Sync>>>,
@@ -264,12 +263,14 @@ pub trait Channel {
     fn set_dead(&self);
 }
 
-type OptionLockedFile = Option<Arc<sync::Mutex<File>>>;
+type OptionLocked<T> = Option<Arc<sync::Mutex<T>>>;
+type OptionLockedWrite = OptionLocked<PipeWrite>;
+type OptionLockedRead = OptionLocked<PipeRead>;
 
 pub struct ServerGenericCommandChannel {
     // TODO: take the FDs out of the child and handle them individually
     cmd: Mutex<Child>,
-    fds: RwLock<(OptionLockedFile, OptionLockedFile, OptionLockedFile)>,
+    fds: Arc<sync::RwLock<(OptionLockedWrite, OptionLockedRead, OptionLockedRead)>>,
     exit_status: Mutex<Option<ExitStatus>>,
     id: ChannelID,
     logger: Arc<Logger>,
@@ -282,17 +283,23 @@ pub struct ServerCommandChannel {
 
 impl ServerGenericCommandChannel {
     fn fd_from_selector(&self, selector: u32) -> Option<i32> {
-        let g = self.fds.read().unwrap();
-        let io = match selector {
-            0 => g.0.clone(),
-            1 => g.1.clone(),
-            2 => g.2.clone(),
-            _ => return None,
-        };
-        block_on_async(async {
-            match io {
-                Some(file) => Some(file.lock().await.as_raw_fd()),
-                None => None,
+        let fds = self.fds.clone();
+        block_on_async(async move {
+            let g = fds.read().await;
+            match selector {
+                0 => match &g.0 {
+                    Some(f) => Some(f.lock().await.as_raw_fd()),
+                    None => None,
+                },
+                1 => match &g.1 {
+                    Some(f) => Some(f.lock().await.as_raw_fd()),
+                    None => None,
+                },
+                2 => match &g.2 {
+                    Some(f) => Some(f.lock().await.as_raw_fd()),
+                    None => None,
+                },
+                _ => None,
             }
         })
     }
@@ -324,27 +331,22 @@ impl ServerCommandChannel {
             Ok(cmd) => cmd,
             Err(e) => return Err(e.into()),
         };
-        trace!(
-            logger,
-            "channel {}: spawn ok: pid {}",
-            id,
-            cmd.id().unwrap()
-        );
+        trace!(logger, "channel {}: spawn ok: pid {}", id, cmd.id());
         let fds = (
             Some(Arc::new(sync::Mutex::new(unsafe {
-                File::from_raw_fd(cmd.stdin.as_ref().unwrap().as_raw_fd())
+                PipeWrite::from_raw_fd(cmd.stdin.as_ref().unwrap().as_raw_fd())
             }))),
             Some(Arc::new(sync::Mutex::new(unsafe {
-                File::from_raw_fd(cmd.stdout.as_ref().unwrap().as_raw_fd())
+                PipeRead::from_raw_fd(cmd.stdout.as_ref().unwrap().as_raw_fd())
             }))),
             Some(Arc::new(sync::Mutex::new(unsafe {
-                File::from_raw_fd(cmd.stderr.as_ref().unwrap().as_raw_fd())
+                PipeRead::from_raw_fd(cmd.stderr.as_ref().unwrap().as_raw_fd())
             }))),
         );
         Ok(ServerCommandChannel {
             ch: ServerGenericCommandChannel {
                 cmd: Mutex::new(cmd),
-                fds: RwLock::new(fds),
+                fds: Arc::new(sync::RwLock::new(fds)),
                 exit_status: Mutex::new(None),
                 id,
                 logger,
@@ -400,21 +402,22 @@ impl Channel for ServerGenericCommandChannel {
     }
 
     fn read(&self, selector: u32) -> Result<Bytes, protocol::Error> {
-        let io = {
-            let g = self.fds.read().unwrap();
-            let io = match selector {
-                1 => &g.1,
-                2 => &g.2,
-                _ => return Err(protocol::Error::from_errno(libc::EBADF)),
-            };
-            match io {
-                Some(io) => io.clone(),
-                None => return Err(protocol::Error::from_errno(libc::EBADF)),
-            }
-        };
+        let fds = self.fds.clone();
         let id = self.id;
         let logger = self.logger.clone();
         block_on_async(async move {
+            let io = {
+                let g = fds.read().await;
+                let io = match selector {
+                    1 => &g.1,
+                    2 => &g.2,
+                    _ => return Err(protocol::Error::from_errno(libc::EBADF)),
+                };
+                match io {
+                    Some(io) => io.clone(),
+                    None => return Err(protocol::Error::from_errno(libc::EBADF)),
+                }
+            };
             let mut v = vec![0u8; 4096];
             let mut g = io.lock().await;
             let mut interval = tokio::time::interval(Duration::from_millis(10));
@@ -439,23 +442,24 @@ impl Channel for ServerGenericCommandChannel {
     }
 
     fn write(&self, selector: u32, data: Bytes) -> Result<u64, protocol::Error> {
-        let io = {
-            let g = self.fds.read().unwrap();
-            let io = match selector {
-                0 => &g.0,
-                _ => return Err(protocol::Error::from_errno(libc::EBADF)),
-            };
-            match io {
-                Some(io) => io.clone(),
-                None => return Err(protocol::Error::from_errno(libc::EBADF)),
-            }
-        };
+        let fds = self.fds.clone();
         let id = self.id;
         let logger = self.logger.clone();
         block_on_async(async move {
+            let io = {
+                let g = fds.read().await;
+                let io = match selector {
+                    0 => &g.0,
+                    _ => return Err(protocol::Error::from_errno(libc::EBADF)),
+                };
+                match io {
+                    Some(io) => io.clone(),
+                    None => return Err(protocol::Error::from_errno(libc::EBADF)),
+                }
+            };
             let mut g = io.lock().await;
-            let mut interval = tokio::time::interval(Duration::from_millis(10));
             trace!(logger, "channel {}: write", id);
+            let mut interval = tokio::time::interval(Duration::from_millis(10));
             select! {
                 res = g.write(&data) => {
                     trace!(logger, "channel {}: write: {:?}", id, res);
@@ -534,29 +538,32 @@ impl Channel for ServerGenericCommandChannel {
     }
 
     fn detach_selector(&self, selector: u32) -> Result<(), protocol::Error> {
-        let mut g = self.fds.write().unwrap();
-        match selector {
-            0 => {
-                if g.0.is_some() {
-                    g.0 = None;
-                    return Ok(());
+        let fds = self.fds.clone();
+        block_on_async(async move {
+            let mut g = fds.write().await;
+            match selector {
+                0 => {
+                    if g.0.is_some() {
+                        g.0 = None;
+                        return Ok(());
+                    }
                 }
-            }
-            1 => {
-                if g.1.is_some() {
-                    g.1 = None;
-                    return Ok(());
+                1 => {
+                    if g.1.is_some() {
+                        g.1 = None;
+                        return Ok(());
+                    }
                 }
-            }
-            2 => {
-                if g.2.is_some() {
-                    g.2 = None;
-                    return Ok(());
+                2 => {
+                    if g.2.is_some() {
+                        g.2 = None;
+                        return Ok(());
+                    }
                 }
-            }
-            _ => return Err(protocol::Error::from_errno(libc::EBADF)),
-        };
-        Err(protocol::Error::from_errno(libc::EBADF))
+                _ => return Err(protocol::Error::from_errno(libc::EBADF)),
+            };
+            Err(protocol::Error::from_errno(libc::EBADF))
+        })
     }
 
     fn is_alive(&self) -> bool {
@@ -592,25 +599,20 @@ impl ServerClipboardChannel {
         }
         cmd.stderr(Stdio::null());
         trace!(logger, "channel {}: spawn {:?}", id, cmd);
-        let cmd = match cmd.spawn() {
+        let mut cmd = match cmd.spawn() {
             Ok(cmd) => cmd,
             Err(e) => return Err(e.into()),
         };
-        trace!(
-            logger,
-            "channel {}: spawn ok: pid {}",
-            id,
-            cmd.id().unwrap()
-        );
+        trace!(logger, "channel {}: spawn ok: pid {}", id, cmd.id());
         let fds = (
-            Self::file_from_command(cmd.stdin.as_ref()),
-            Self::file_from_command(cmd.stdout.as_ref()),
+            Self::file_from_command::<PipeWrite, _>(cmd.stdin.take()),
+            Self::file_from_command::<PipeRead, _>(cmd.stdout.take()),
             None,
         );
         Ok(ServerClipboardChannel {
             ch: ServerGenericCommandChannel {
                 cmd: Mutex::new(cmd),
-                fds: RwLock::new(fds),
+                fds: Arc::new(sync::RwLock::new(fds)),
                 exit_status: Mutex::new(None),
                 id,
                 logger,
@@ -619,10 +621,10 @@ impl ServerClipboardChannel {
         })
     }
 
-    fn file_from_command<T: AsRawFd>(io: Option<&T>) -> Option<Arc<sync::Mutex<File>>> {
+    fn file_from_command<F: FromRawFd, T: IntoRawFd>(io: Option<T>) -> Option<Arc<sync::Mutex<F>>> {
         let io = io?;
         Some(Arc::new(sync::Mutex::new(unsafe {
-            File::from_raw_fd(io.as_raw_fd())
+            F::from_raw_fd(io.into_raw_fd())
         })))
     }
 }
