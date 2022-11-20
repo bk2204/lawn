@@ -720,9 +720,16 @@ impl Connection {
             None => return,
         };
         let req = DetachChannelSelectorRequest { id, selector };
-        let _ = handler
+        let res = handler
             .send_message::<_, Empty>(MessageKind::DetachChannelSelector, &req, Some(false))
             .await;
+        trace!(
+            self.config.logger(),
+            "channel {}: {}: detach selector: {:?}",
+            id,
+            selector,
+            res
+        );
     }
 
     async fn create_command_channel(&self, args: &[Bytes]) -> Result<ChannelID, Error> {
