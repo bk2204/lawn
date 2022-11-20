@@ -663,7 +663,13 @@ impl Connection {
                                         data: Some(data.to_vec()),
                                     }
                                 }
-                                _ => return st.clone(),
+                                _ => {
+                                    return FDStatus {
+                                        open: true,
+                                        last: false,
+                                        data: Some(data.to_vec()),
+                                    }
+                                }
                             }
                         }
                     }
@@ -671,7 +677,7 @@ impl Connection {
                 FDStatus {
                     open: true,
                     last: false,
-                    data: None,
+                    data: Some(data.to_vec()),
                 }
             }
         }
