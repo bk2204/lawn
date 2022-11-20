@@ -5,6 +5,7 @@ use crate::encoding::{escape, path};
 use crate::error::{Error, ErrorKind};
 use bytes::Bytes;
 use lawn_protocol::config::Logger;
+use lawn_protocol::handler;
 use lawn_protocol::handler::ProtocolHandler;
 use lawn_protocol::protocol;
 use lawn_protocol::protocol::{
@@ -642,7 +643,9 @@ impl Connection {
                 );
                 use std::error::Error;
                 if let Some(e) = e.source() {
-                    if let Some(e) = e.downcast_ref::<protocol::Error>() {
+                    if let Some(handler::Error::ProtocolError(e)) =
+                        e.downcast_ref::<handler::Error>()
+                    {
                         let e: Result<std::io::Error, _> = e.clone().try_into();
                         if let Ok(e) = e {
                             match e.kind() {
