@@ -656,6 +656,22 @@ pub fn command_from_shell(
     )
 }
 
+pub fn std_command_from_shell(
+    shell: &Bytes,
+    context: &TemplateContext<'_, '_>,
+) -> std::process::Command {
+    let mut shell: BytesMut = shell.as_ref().into();
+    shell.extend_from_slice(b" \"$@\"");
+    std_command_from_args(
+        &[
+            (b"sh" as &'static [u8]).into(),
+            (b"-c" as &'static [u8]).into(),
+            shell.into(),
+        ],
+        context,
+    )
+}
+
 pub fn command_from_args(
     args: &[Bytes],
     context: &TemplateContext<'_, '_>,
@@ -665,6 +681,36 @@ pub fn command_from_args(
         .map(|x| OsString::from_vec(x.to_vec()))
         .collect();
     let mut cmd = tokio::process::Command::new(&args[0]);
+    if args.len() > 1 {
+        cmd.args(&args[1..]);
+    }
+    if let Some(args) = context.args {
+        for arg in args {
+            cmd.arg(OsString::from_vec(arg.to_vec()));
+        }
+    }
+    if let Some(senv) = context.senv {
+        cmd.env_clear();
+        cmd.envs(senv.iter().map(|(k, v)| {
+            (
+                OsString::from_vec(k.to_vec()),
+                OsString::from_vec(v.to_vec()),
+            )
+        }));
+    }
+    cmd.current_dir("/");
+    cmd
+}
+
+pub fn std_command_from_args(
+    args: &[Bytes],
+    context: &TemplateContext<'_, '_>,
+) -> std::process::Command {
+    let args: Vec<OsString> = args
+        .iter()
+        .map(|x| OsString::from_vec(x.to_vec()))
+        .collect();
+    let mut cmd = std::process::Command::new(&args[0]);
     if args.len() > 1 {
         cmd.args(&args[1..]);
     }
@@ -765,6 +811,10 @@ impl<'a, 'b, 'c> Command<'a, 'b, 'c> {
 
     pub fn run_command(&self) -> tokio::process::Command {
         command_from_shell(&self.command, self.context)
+    }
+
+    pub fn run_std_command(&self) -> std::process::Command {
+        std_command_from_shell(&self.command, self.context)
     }
 
     pub async fn check_condition(&self) -> Result<bool, Error> {
