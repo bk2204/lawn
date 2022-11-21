@@ -68,4 +68,5 @@ jobs:
     - uses: actions/checkout@v2
     - run: brew install ruby asciidoctor rust
     - run: gem install rspec
-    - run: make test-full
+    - run: mkdir ~/tmp
+    - run: TMPDIR="$HOME/tmp" make test-full
