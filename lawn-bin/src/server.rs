@@ -577,7 +577,10 @@ impl Server {
                     Some(ch) => ch,
                     None => return Err(ResponseCode::NotFound.into()),
                 };
-                let data = ch.read(m.selector)?;
+                let selector = m.selector;
+                let data = tokio::task::spawn_blocking(move || ch.read(selector))
+                    .await
+                    .unwrap()?;
                 let resp = protocol::ReadChannelResponse { bytes: data };
                 Ok((false, serializer.serialize_body(&resp)))
             }
@@ -589,7 +592,11 @@ impl Server {
                     Some(ch) => ch,
                     None => return Err(ResponseCode::NotFound.into()),
                 };
-                let n = ch.write(m.selector, m.bytes)?;
+                let selector = m.selector;
+                let bytes = m.bytes;
+                let n = tokio::task::spawn_blocking(move || ch.write(selector, bytes))
+                    .await
+                    .unwrap()?;
                 let resp = protocol::WriteChannelResponse { count: n };
                 Ok((false, serializer.serialize_body(&resp)))
             }

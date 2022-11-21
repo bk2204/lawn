@@ -24,7 +24,6 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::UnixStream;
-use tokio::select;
 use tokio::sync;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
@@ -420,23 +419,14 @@ impl Channel for ServerGenericCommandChannel {
             };
             let mut v = vec![0u8; 4096];
             let mut g = io.lock().await;
-            let mut interval = tokio::time::interval(Duration::from_millis(10));
-            trace!(logger, "channel {}: read", id);
-            select! {
-                res = g.read(&mut v) => {
-                    trace!(logger, "channel {}: read: {:?}", id, res);
-                    match res {
-                        Ok(n) => {
-                            v.truncate(n);
-                            Ok(v.into())
-                        }
-                        Err(e) => Err(e.into())
-                    }
-                },
-                _ = interval.tick() => {
-                    trace!(logger, "channel {}: read: EAGAIN", id);
-                    Err(protocol::Error::from_errno(libc::EAGAIN))
+            let res = g.read(&mut v).await;
+            trace!(logger, "channel {}: read: {:?}", id, res);
+            match res {
+                Ok(n) => {
+                    v.truncate(n);
+                    Ok(v.into())
                 }
+                Err(e) => Err(e.into()),
             }
         })
     }
@@ -459,19 +449,11 @@ impl Channel for ServerGenericCommandChannel {
             };
             let mut g = io.lock().await;
             trace!(logger, "channel {}: write", id);
-            let mut interval = tokio::time::interval(Duration::from_millis(10));
-            select! {
-                res = g.write(&data) => {
-                    trace!(logger, "channel {}: write: {:?}", id, res);
-                    match res {
-                        Ok(n) => Ok(n as u64),
-                        Err(e) => Err(e.into())
-                    }
-                },
-                _ = interval.tick() => {
-                    trace!(logger, "channel {}: read: EAGAIN", id);
-                    Err(protocol::Error::from_errno(libc::EAGAIN))
-                }
+            let res = g.write(&data).await;
+            trace!(logger, "channel {}: write: {:?}", id, res);
+            match res {
+                Ok(n) => Ok(n as u64),
+                Err(e) => Err(e.into()),
             }
         })
     }
