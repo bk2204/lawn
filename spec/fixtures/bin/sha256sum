@@ -1,0 +1,20 @@
+#!/usr/bin/env ruby
+
+require 'digest'
+require 'optparse'
+
+char = ' '
+
+OptionParser.new do |opts|
+  opts.on('-b') do
+    char = '*'
+  end
+end.parse!
+
+hash = Digest::SHA256.new
+
+while buf = $stdin.read(1024)
+  hash << buf
+end
+
+puts "#{hash.hexdigest} #{char}-"

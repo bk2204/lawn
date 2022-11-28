@@ -15,6 +15,9 @@ v0:
     sha256sum:
       if: true
       command: '!sha256sum'
+    stalled-sha256sum:
+      if: true
+      command: '!staller | sha256sum | staller'
     prng:
       if: true
       command: '!prng'

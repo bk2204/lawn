@@ -1,0 +1,6 @@
+#!/usr/bin/env ruby
+
+while buf = $stdin.read(64)
+  $stdout.write buf
+  sleep 0.1
+end
