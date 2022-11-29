@@ -195,22 +195,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "lawn-9p"
-version = "0.1.0"
-dependencies = [
- "bitflags",
- "flurry",
- "hex",
- "lawn-constants",
- "libc",
- "num-derive",
- "num-traits",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "lawn-bin"
+name = "lawn"
 version = "0.1.0"
 dependencies = [
  "bytes",
@@ -230,6 +215,21 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-pipe",
+]
+
+[[package]]
+name = "lawn-9p"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "flurry",
+ "hex",
+ "lawn-constants",
+ "libc",
+ "num-derive",
+ "num-traits",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

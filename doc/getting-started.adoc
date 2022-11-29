@@ -10,7 +10,7 @@ After cloning the repository and installing Rust and Cargo from your OS, run the
 
 [source,shell]
 ----
-$ cargo install --path lawn-bin --locked --root ~
+$ cargo install --path lawn --locked --root ~
 ----
 
 That will install the binary in your `~/bin` directory.
