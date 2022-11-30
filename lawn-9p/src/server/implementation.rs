@@ -737,7 +737,7 @@ impl<
             }
             Err(e) => self.send_error(tag, e).await,
         };
-        let _ = tx.send(());
+        let _ = tx.send(()).await;
         {
             let tg = self.tags.guard();
             self.tags.remove(&tag, &tg);
