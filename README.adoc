@@ -12,6 +12,8 @@ In addition, Lawn provides functionality for mounting a portion of your local fi
 This is implemented by forwarding a Unix socket from the local machine to the remote machine, which can then make requests back over the socket.
 In addition, Lawn can proxy its connection over the SSH agent socket for ease of use, although this can result in reduced performance.
 
+The `lawn` crate is the main binary.
+
 == Getting Started
 
 Take a look at link:doc/getting-started.adoc[Getting Started guide] to learn how to get set up.
