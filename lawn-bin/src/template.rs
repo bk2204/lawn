@@ -45,7 +45,7 @@ impl Template {
         }
     }
 
-    pub fn expand<'a, 'b>(&self, context: &TemplateContext<'a, 'b>) -> Result<Bytes, Error> {
+    pub fn expand(&self, context: &TemplateContext<'_, '_>) -> Result<Bytes, Error> {
         if !self.needs_expansion {
             return Ok(self.text.clone());
         }
