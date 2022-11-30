@@ -1,0 +1,5 @@
+= lawn-protocol
+
+include::../doc/README-base.adoc
+
+The `lawn-protocol` crate provides types and definitions of the protocol used in Lawn.

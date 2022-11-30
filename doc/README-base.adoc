@@ -1,0 +1,8 @@
+Lawn (local spawn) is a program to allow spawning programs on your local computer from a trusted remote system, like a remote development environment.
+This has several applications:
+
+* Spawning a graphical editor on your local machine to edit files remotely without the hassle and overhead of X11 forwarding
+* Copying to and pasting from your local machine's clipboard via the remote system
+* Accessing credentials through a credential helper
+
+In addition, Lawn provides functionality for mounting a portion of your local file system on the remote machine.  This can be useful for preserving your shell history, work in progress, or whatever else you'd like.

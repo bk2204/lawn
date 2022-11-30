@@ -1,0 +1,5 @@
+= lawn-constants
+
+include::../doc/README-base.adoc
+
+The `lawn-constants` crate provides some constants, error types, and logging functionality used by the other crates.

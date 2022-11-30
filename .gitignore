@@ -5,6 +5,7 @@ target/
 *.1.gz
 *.html
 *.md
+lawn/README.adoc
 test/Dockerfile.*
 !test/Dockerfile.*.erb
 Vagrantfile

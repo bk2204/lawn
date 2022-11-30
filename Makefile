@@ -5,6 +5,9 @@ DOCKER_STAMPS := $(patsubst %,test/Dockerfile.%.stamp,$(GROUPS))
 CI_TARGETS := $(patsubst %,ci-%,$(GROUPS))
 INCLUDES := $(wildcard test/include/*.erb)
 
+CRATES := lawn-constants lawn-protocol lawn-9p lawn
+PACKAGE_TARGETS := $(patsubst %,package-%,$(CRATES))
+
 # Set this to a Docker target to build for a specific platform.
 PLATFORM ?=
 ifneq ($(PLATFORM),)
@@ -44,6 +47,7 @@ clean:
 	$(RM) -f *.md *.md+
 	$(RM) -fr tmp
 	$(RM) -fr doc/man/*.1 doc/man/*.1.gz
+	$(RM) lawn/README.adoc
 
 test:
 	cargo test $(FEATURE_ARG)
@@ -65,8 +69,15 @@ doc: $(MAN_DEST)
 	pandoc -f docbook -t commonmark -o $@ $@+
 	$(RM) $@+
 
-package: README.md
-	cargo package --locked --allow-dirty
+lawn/README.adoc: README.adoc
+	ruby -pe '$$_.gsub!(%r[link:doc/], "https://github.com/bk2204/lawn/tree/dev/doc/")' $^ >$@
+
+%/README.md: doc/README-base.adoc
+
+package-%: %/README.md
+	(cd $(^D) && cargo package --locked --allow-dirty)
+
+package: $(PACKAGE_TARGETS)
 
 # We do not require both of these commands here since nightly Rust may be
 # missing one or more of these. When run under CI, they should be present for

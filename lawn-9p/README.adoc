@@ -1,0 +1,9 @@
+= lawn-9p
+
+include::../doc/README-base.adoc
+
+The `lawn-9p` crate provides types and traits for implementing a 9P server, optionally with authentication.
+
+If the `unix` feature is enabled, then a 9P server backend which uses POSIX is provided.
+
+Note that documentation is at the moment unfortunately lacking.
