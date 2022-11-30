@@ -780,18 +780,14 @@ impl Server {
             _ => return Err(ResponseCode::InvalidParameters.into()),
         };
         let target = match meta.get::<Bytes>(&(b"target" as &'static [u8]).into()) {
-            Some(&Value::Text(ref s)) if s == "primary" => {
-                protocol::ClipboardChannelTarget::Primary
-            }
-            Some(&Value::Text(ref s)) if s == "clipboard" => {
-                protocol::ClipboardChannelTarget::Clipboard
-            }
+            Some(Value::Text(s)) if s == "primary" => protocol::ClipboardChannelTarget::Primary,
+            Some(Value::Text(s)) if s == "clipboard" => protocol::ClipboardChannelTarget::Clipboard,
             None => protocol::ClipboardChannelTarget::Clipboard,
             _ => return Err(ResponseCode::InvalidParameters.into()),
         };
         let op = match meta.get::<Bytes>(&(b"operation" as &'static [u8]).into()) {
-            Some(&Value::Text(ref s)) if s == "copy" => protocol::ClipboardChannelOperation::Copy,
-            Some(&Value::Text(ref s)) if s == "paste" => protocol::ClipboardChannelOperation::Paste,
+            Some(Value::Text(s)) if s == "copy" => protocol::ClipboardChannelOperation::Copy,
+            Some(Value::Text(s)) if s == "paste" => protocol::ClipboardChannelOperation::Paste,
             _ => return Err(ResponseCode::InvalidParameters.into()),
         };
         let allowed: HashSet<u32> = match op {
