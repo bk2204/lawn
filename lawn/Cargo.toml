@@ -2,6 +2,18 @@
 name = "lawn"
 version = "0.1.0"
 edition = "2018"
+license = "MIT"
+license-file = "../LICENSE"
+repository = "https://github.com/bk2204/lawn"
+description = "utility to interact with trusted remote development systems"
+readme = "README.md"
+include = [
+    "src/**/*.rs",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE",
+]
+rust-version = "1.48.0"
 
 [[bin]]
 name = "lawn"

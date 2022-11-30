@@ -2,6 +2,18 @@
 name = "lawn-protocol"
 version = "0.1.0"
 edition = "2018"
+license = "MIT"
+license-file = "../LICENSE"
+repository = "https://github.com/bk2204/lawn"
+description = "protocol types, traits, and codes for Lawn"
+readme = "README.md"
+include = [
+    "src/**/*.rs",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE",
+]
+rust-version = "1.48.0"
 
 [dependencies]
 bitflags = "1.0"
