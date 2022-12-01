@@ -282,6 +282,7 @@ impl TryFrom<(Bytes, Option<Bytes>)> for Capability {
 }
 
 #[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
 pub struct CapabilityResponse {
     pub version: Vec<u32>,
     pub capabilities: Vec<(Bytes, Option<Bytes>)>,
@@ -289,6 +290,7 @@ pub struct CapabilityResponse {
 }
 
 #[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
 pub struct VersionRequest {
     pub version: u32,
     pub enable: Vec<(Bytes, Option<Bytes>)>,
@@ -297,6 +299,7 @@ pub struct VersionRequest {
 }
 
 #[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
 pub struct AuthenticateRequest {
     pub last_id: Option<u32>,
     // All uppercase methods are SASL methods as defined by IANA.  Other methods are defined
@@ -306,6 +309,7 @@ pub struct AuthenticateRequest {
 }
 
 #[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
 pub struct AuthenticateResponse {
     // All uppercase methods are SASL methods as defined by IANA.  Other methods are defined
     // internally.
@@ -314,6 +318,7 @@ pub struct AuthenticateResponse {
 }
 
 #[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone, Copy)]
+#[serde(transparent)]
 pub struct ChannelID(pub u32);
 
 impl fmt::Display for ChannelID {
@@ -323,6 +328,7 @@ impl fmt::Display for ChannelID {
 }
 
 #[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone, Copy)]
+#[serde(transparent)]
 pub struct ChannelSelectorID(pub u32);
 
 /// A message to create a channel.
@@ -337,6 +343,7 @@ pub struct ChannelSelectorID(pub u32);
 /// Custom channel types can be created with an at sign and domain name representing the custom
 /// extension.
 #[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
 pub struct CreateChannelRequest {
     pub kind: Bytes,
     pub kind_args: Option<Vec<Bytes>>,
@@ -347,17 +354,20 @@ pub struct CreateChannelRequest {
 }
 
 #[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
 pub struct CreateChannelResponse {
     pub id: ChannelID,
 }
 
 #[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
 pub struct DeleteChannelRequest {
     pub id: ChannelID,
     pub termination: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
 pub struct ReadChannelRequest {
     pub id: ChannelID,
     pub selector: u32,
@@ -365,11 +375,13 @@ pub struct ReadChannelRequest {
 }
 
 #[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
 pub struct ReadChannelResponse {
     pub bytes: Bytes,
 }
 
 #[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
 pub struct WriteChannelRequest {
     pub id: ChannelID,
     pub selector: u32,
@@ -377,11 +389,13 @@ pub struct WriteChannelRequest {
 }
 
 #[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
 pub struct WriteChannelResponse {
     pub count: u64,
 }
 
 #[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
 pub struct DetachChannelSelectorRequest {
     pub id: ChannelID,
     pub selector: u32,
@@ -414,11 +428,13 @@ pub enum ChannelMetadataStatusKind {
 }
 
 #[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
 pub struct PingChannelRequest {
     pub id: ChannelID,
 }
 
 #[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
 pub struct PollChannelRequest {
     pub id: ChannelID,
     pub selectors: Vec<u32>,
@@ -427,12 +443,14 @@ pub struct PollChannelRequest {
 }
 
 #[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
 pub struct PollChannelResponse {
     pub id: ChannelID,
     pub selectors: BTreeMap<u32, u64>,
 }
 
 #[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
 pub struct ChannelMetadataNotification {
     pub id: ChannelID,
     pub kind: u32,
