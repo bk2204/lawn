@@ -302,6 +302,9 @@ fn dispatch_query_test_connection(
                         )),
                     }
                 }
+                if let Some(user_agent) = resp.user_agent {
+                    logger.message(&format!("Capability: user-agent: {}", user_agent));
+                }
             }
             Err(e) => logger.message(&format!("Capability: FAILED: {}", e)),
         }

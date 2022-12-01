@@ -285,6 +285,7 @@ impl TryFrom<(Bytes, Option<Bytes>)> for Capability {
 pub struct CapabilityResponse {
     pub version: Vec<u32>,
     pub capabilities: Vec<(Bytes, Option<Bytes>)>,
+    pub user_agent: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
@@ -292,6 +293,7 @@ pub struct VersionRequest {
     pub version: u32,
     pub enable: Vec<(Bytes, Option<Bytes>)>,
     pub id: Option<Bytes>,
+    pub user_agent: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]

@@ -148,6 +148,7 @@ impl Connection {
             version: 0,
             enable: ours.union(&theirs).map(|x| (*x).into()).collect(),
             id: None,
+            user_agent: Some(crate::config::VERSION.into()),
         };
         handler
             .send_message::<_, Empty>(MessageKind::Version, &req, Some(true))

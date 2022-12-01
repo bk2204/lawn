@@ -470,6 +470,7 @@ impl Server {
                         .iter()
                         .map(|c| (*c).into())
                         .collect(),
+                    user_agent: Some(config::VERSION.into()),
                 };
                 Ok((false, serializer.serialize_body(&c)))
             }
@@ -484,8 +485,8 @@ impl Server {
                     return Err(ResponseCode::ParametersNotSupported.into());
                 }
                 logger.trace(&format!(
-                    "server: {}: version: negotiated v{}; supported {:?}; requested {:?}",
-                    id, m.version, supported, requested
+                    "server: {}: version: negotiated v{}; supported {:?}; requested {:?}; user_agent {:?}",
+                    id, m.version, supported, requested, m.user_agent,
                 ));
                 match requested {
                     // There are unsupported types.

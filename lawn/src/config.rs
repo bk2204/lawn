@@ -20,6 +20,8 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, RwLock};
 
+pub const VERSION: &str = concat!("Lawn/", env!("CARGO_PKG_VERSION"));
+
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ClipboardBackend {
     XClip,
