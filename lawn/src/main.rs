@@ -612,6 +612,7 @@ fn dispatch_run(
 
 fn dispatch(verbosity: &mut i32) -> Result<(), Error> {
     let matches = App::new("lawn")
+        .version(env!("CARGO_PKG_VERSION"))
         .arg(
             Arg::with_name("verbose")
                 .long("verbose")
