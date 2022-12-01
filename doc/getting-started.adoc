@@ -202,3 +202,21 @@ Hello, world!
 
 And look!
 It works just as before.
+
+Note that currently `lawn proxy` can be much slower than forwarding a socket.
+To get better performance, especially when using 9P, you can forward a Unix socket to the other side.
+For example, assuming you created `~/.local/run/lawn` on the remote machine and that the local machine is a Linux box, you could log in like this:
+
+[source,shell]
+----
+user@local:~ $ ssh -R /home/%r/.local/run/lawn/server-$(mktemp -u XXXXXX).sock:/run/user/$(id -u)/lawn/server-0.sock user@remote
+user@remote:~ $ lawn clip -o
+Hello, world!
+----
+
+Lawn will normally look for sockets in `$XDG_RUNTIME_DIR/lawn` and `$HOME/.local/run/lawn`.
+Any socket name beginning with `server-` will be tested, and sockets that are no longer in use will be cleaned up if socket autopruning is enabled, so you don't have to worry about doing it yourself.
+
+That's the end of the quick start guide.
+If you have more questions, hopefully the documentation is sufficient.
+If it's not, please file an issue, since we'd love to improve it to explain things better.
