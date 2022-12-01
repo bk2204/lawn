@@ -20,6 +20,8 @@ Can I mix and match versions?::
   Yes!
   The protocol is explicitly designed to support a version, plus capabilities and extensions.
   If you need to use an older version on one side, then everything should degrade gracefully.
+  Note that we only consider compatibility of released versions.
+  It's possible that a version from the main branch might be broken.
 
 Do I need separate binaries for the local and remote machines?::
   Nope.
