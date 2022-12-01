@@ -6,14 +6,14 @@ jobs:
     name: Linux (Debian bullseye amd64)
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
     - uses: actions/setup-ruby@v1
     - run: make ci-bullseye
   build-bullseye-arm64:
     name: Linux (Debian bullseye arm64)
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
     - uses: actions/setup-ruby@v1
     - run: |
         echo '{"experimental": true}' | sudo tee /etc/docker/daemon.json
@@ -27,28 +27,28 @@ jobs:
     name: Linux (oldest Rust)
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
     - uses: actions/setup-ruby@v1
     - run: make ci-oldest
   build-stable:
     name: Linux (Rust stable)
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
     - uses: actions/setup-ruby@v1
     - run: make ci-stable
   build-nightly:
     name: Linux (Rust nightly)
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
     - uses: actions/setup-ruby@v1
     - run: make ci-nightly
   build-freebsd:
     name: FreeBSD
     runs-on: macos-10.15
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
       with:
         fetch-depth: 0
     - uses: actions/setup-ruby@v1
@@ -57,7 +57,7 @@ jobs:
     name: NetBSD
     runs-on: macos-10.15
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
       with:
         fetch-depth: 0
     - run: make ci-netbsd
@@ -65,7 +65,7 @@ jobs:
     name: macOS
     runs-on: macos-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
     - run: brew install ruby asciidoctor rust
     - run: gem install rspec
     - run: mkdir ~/tmp
