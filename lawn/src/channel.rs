@@ -103,6 +103,7 @@ impl ChannelManager {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn poll(
     logger: Arc<Logger>,
     selectors: Vec<u32>,
@@ -110,6 +111,7 @@ fn poll(
     fds: Vec<RawFd>,
     id: ChannelID,
     duration: Duration,
+    alive: bool,
     ch: oneshot::Sender<Result<Vec<protocol::PollChannelFlags>, protocol::Error>>,
 ) {
     let base_flags = protocol::PollChannelFlags::default();
@@ -226,6 +228,9 @@ fn poll(
                         }
                         if (fd.revents & libc::POLLNVAL) != 0 {
                             flags |= protocol::PollChannelFlags::Invalid;
+                        }
+                        if !alive {
+                            flags |= protocol::PollChannelFlags::Gone;
                         }
                         trace!(
                             logger,
@@ -487,7 +492,16 @@ impl Channel for ServerGenericCommandChannel {
             })
             .collect();
         match fds {
-            Ok(fds) => poll(logger, selectors, flags, fds, id, duration, ch),
+            Ok(fds) => poll(
+                logger,
+                selectors,
+                flags,
+                fds,
+                id,
+                duration,
+                self.is_alive(),
+                ch,
+            ),
             Err(e) => {
                 let _ = ch.send(Err(e));
             }
@@ -929,7 +943,16 @@ impl Channel for Server9PChannel {
             };
             fds.push(fd);
         }
-        poll(self.logger.clone(), selectors, flags, fds, id, duration, ch);
+        poll(
+            self.logger.clone(),
+            selectors,
+            flags,
+            fds,
+            id,
+            duration,
+            self.is_alive(),
+            ch,
+        );
     }
 
     fn ping(&self) -> Result<(), protocol::Error> {
