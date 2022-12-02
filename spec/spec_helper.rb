@@ -2,25 +2,31 @@ require 'fileutils'
 require 'tempfile'
 
 class TestEnvironment
-  attr_accessor :dir, :server, :fixtures
+  attr_accessor :dir, :server, :fixtures, :verbose
 
   class Remover
-    def initialize(dir, server_pid)
+    def initialize(dir, server, verbose)
       @dir = dir
-      @server_pid = server_pid
+      @server = server
+      @verbose = verbose
     end
 
     def call(*args)
       FileUtils.remove_dir(@dir)
-      unless @server_pid.nil?
-        Process.kill('TERM', @server_pid)
+      unless @server[:pid].nil?
+        Process.kill('TERM', @server[:pid])
+      end
+      if @verbose
+        @server[:error].seek(0, :SET)
+        $stderr.puts @server[:error].read
       end
     end
   end
 
-  def initialize
+  def initialize(**options)
     @dir = Dir.mktmpdir("lawn-spec")
     @server = nil
+    @verbose = ENV["LAWN_TEST_DEBUG"] || options[:verbose]
     @fixtures = File.join(File.dirname(__FILE__), "fixtures")
     Dir.mkdir(File.join(@dir, "runtime"))
     Dir.mkdir(File.join(@dir, "mount"))
@@ -34,9 +40,14 @@ class TestEnvironment
     set_finalizer
   end
 
+  def destroy
+    ObjectSpace.undefine_finalizer(self)
+    Remover.new(@dir, @server, @verbose).call
+  end
+
   def set_finalizer
     ObjectSpace.undefine_finalizer(self)
-    ObjectSpace.define_finalizer(self, Remover.new(@dir, @server))
+    ObjectSpace.define_finalizer(self, Remover.new(@dir, @server, @verbose))
   end
 
   def run(args, **options)
@@ -87,8 +98,12 @@ class TestEnvironment
 
   def start_server
     FileUtils.copy_file(File.join(@fixtures, "config.yaml"), File.join(@dir, "home", ".config", "lawn", "config.yaml"))
-    data = run(%w[lawn --no-detach server])
-    self.server = data[:pid]
+    data = if @verbose
+             run(%w[lawn -vvv --no-detach server], output: true)
+           else
+             run(%w[lawn --no-detach server])
+           end
+    self.server = data
     set_finalizer
   end
 end
