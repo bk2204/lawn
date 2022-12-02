@@ -16,6 +16,6 @@ include = [
 rust-version = "1.48.0"
 
 [dependencies]
-libc = "*"
+libc = "0.2"
 num-derive = "0.3"
 num-traits = "0.2"

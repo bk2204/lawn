@@ -25,7 +25,7 @@ clap = "2.32"
 serde = { version = "1.0", features = ["derive"] }
 serde_cbor = "0.11"
 serde_yaml = "0.8"
-libc = "*"
+libc = "0.2"
 signal-hook-tokio = "0.3"
 lawn-constants = { path = "../lawn-constants", version = "0.1.0" }
 lawn-9p = { path = "../lawn-9p", version = "0.1.0", features = ["unix"] }
