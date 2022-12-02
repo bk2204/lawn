@@ -482,30 +482,20 @@ impl Channel for ServerGenericCommandChannel {
         //};
         trace!(logger, "channel {}: poll: flags {:?}", self.id, base_flags);
         let id = self.id;
-        let fds: Result<Vec<_>, protocol::Error> = selectors
+        let fds: Vec<_> = selectors
             .iter()
-            .map(|s| {
-                self.fd_from_selector(*s).ok_or(protocol::Error {
-                    code: ResponseCode::InvalidParameters,
-                    body: None,
-                })
-            })
+            .map(|s| self.fd_from_selector(*s).unwrap_or(-1))
             .collect();
-        match fds {
-            Ok(fds) => poll(
-                logger,
-                selectors,
-                flags,
-                fds,
-                id,
-                duration,
-                self.is_alive(),
-                ch,
-            ),
-            Err(e) => {
-                let _ = ch.send(Err(e));
-            }
-        }
+        poll(
+            logger,
+            selectors,
+            flags,
+            fds,
+            id,
+            duration,
+            self.is_alive(),
+            ch,
+        );
     }
 
     fn ping(&self) -> Result<(), protocol::Error> {
@@ -931,17 +921,7 @@ impl Channel for Server9PChannel {
                 1 => self.rd.blocking_lock().as_ref().map(|_| self.rdwr),
                 _ => None,
             };
-            let fd = match f {
-                Some(f) => f,
-                None => {
-                    let _ = ch.send(Err(protocol::Error {
-                        code: ResponseCode::InvalidParameters,
-                        body: None,
-                    }));
-                    return;
-                }
-            };
-            fds.push(fd);
+            fds.push(f.unwrap_or(-1));
         }
         poll(
             self.logger.clone(),
