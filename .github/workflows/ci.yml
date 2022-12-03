@@ -23,7 +23,7 @@ jobs:
         echo '{"experimental": true}' | sudo tee /etc/docker/daemon.json
         sudo systemctl restart docker.service
         docker version -f '{{.Server.Experimental}}'
-    - uses: docker/setup-qemu-action@v1
+    - uses: docker/setup-qemu-action@v2
     - run: make ci-bullseye
       env:
         PLATFORM: linux/arm64
