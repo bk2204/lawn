@@ -105,5 +105,8 @@ class TestEnvironment
            end
     self.server = data
     set_finalizer
+    while !File.exist?(File.join(@dir, "runtime", "lawn", "server-0.sock"))
+      sleep 0.1
+    end
   end
 end
