@@ -702,64 +702,71 @@ impl Server {
         let cmd = match config::Command::new(&cfgcmd, &ctx) {
             Ok(cmd) => cmd,
             Err(e) => {
-                logger.error(&format!(
+                debug!(
+                    logger,
                     "server: {}: failed creating template for command {}: {}",
                     id,
                     escape(&args[0]),
                     e
-                ));
+                );
                 return Err(ResponseCode::InternalError.into());
             }
         };
         match cmd.check_condition().await {
             Ok(true) => {
-                logger.error(&format!(
+                debug!(
+                    logger,
                     "server: {}: condition succeeded for command {}",
                     id,
                     escape(&args[0])
-                ));
+                );
             }
             Ok(false) => {
-                logger.error(&format!(
+                debug!(
+                    logger,
                     "server: {}: condition failed for command {}",
                     id,
                     escape(&args[0])
-                ));
+                );
                 return Err(ResponseCode::NotFound.into());
             }
             Err(e) => {
-                logger.error(&format!(
+                error!(
+                    logger,
                     "server: {}: condition had error for command {}: {}",
                     id,
                     escape(&args[0]),
                     e
-                ));
+                );
                 return Err(ResponseCode::InternalError.into());
             }
         }
         match cmd.run_pre_hooks().await {
             Ok(true) => {
-                logger.error(&format!(
+                debug!(
+                    logger,
                     "server: {}: pre-hooks succeeded for command {}",
                     id,
                     escape(&args[0])
-                ));
+                );
             }
             Ok(false) => {
-                logger.error(&format!(
+                debug!(
+                    logger,
                     "server: {}: pre-hooks failed for command {}",
                     id,
                     escape(&args[0])
-                ));
+                );
                 return Err(ResponseCode::NotFound.into());
             }
             Err(e) => {
-                logger.error(&format!(
+                error!(
+                    logger,
                     "server: {}: pre-hooks had error for command {}: {}",
                     id,
                     escape(&args[0]),
                     e
-                ));
+                );
                 return Err(ResponseCode::InternalError.into());
             }
         }
@@ -805,15 +812,13 @@ impl Server {
         match config.clipboard_enabled() {
             Ok(true) => (),
             Ok(false) => {
-                trace!(logger, "server: {}: clipboard disabled", id);
+                debug!(logger, "server: {}: clipboard disabled", id);
                 return Err(ResponseCode::NotFound.into());
             }
             Err(e) => {
-                trace!(
+                error!(
                     logger,
-                    "server: {}: clipboard error checking if enabled: {}",
-                    id,
-                    e
+                    "server: {}: clipboard error checking if enabled: {}", id, e
                 );
                 return Err(ResponseCode::NotFound.into());
             }
@@ -821,21 +826,19 @@ impl Server {
         let backend = match config.clipboard_backend() {
             Ok(Some(backend)) => backend,
             Ok(None) => {
-                trace!(logger, "server: {}: clipboard: no backend found", id);
+                debug!(logger, "server: {}: clipboard: no backend found", id);
                 return Err(ResponseCode::NotFound.into());
             }
             Err(e) => {
-                trace!(
+                error!(
                     logger,
-                    "server: {}: clipboard error getting backend: {}",
-                    id,
-                    e
+                    "server: {}: clipboard error getting backend: {}", id, e
                 );
                 return Err(ResponseCode::NotFound.into());
             }
         };
         if !backend.supports_target(target) {
-            trace!(logger, "server: {}: clipboard: unsupported target", id);
+            debug!(logger, "server: {}: clipboard: unsupported target", id);
             return Err(ResponseCode::NotFound.into());
         }
         let args = backend.command(target, op);
@@ -875,42 +878,33 @@ impl Server {
         match config.p9p_enabled(mount) {
             Ok(true) => (),
             Ok(false) => {
-                trace!(logger, "server: {}: 9P disabled for mount {}", id, mount);
+                debug!(logger, "server: {}: 9P disabled for mount {}", id, mount);
                 return Err(ResponseCode::NotFound.into());
             }
             Err(e) => {
-                trace!(
+                error!(
                     logger,
-                    "server: {}: 9P error checking if enabled for mount {}: {}",
-                    id,
-                    mount,
-                    e
+                    "server: {}: 9P error checking if enabled for mount {}: {}", id, mount, e
                 );
                 return Err(ResponseCode::NotFound.into());
             }
         }
         let location = match config.p9p_location(mount) {
             Ok(Some(loc)) => {
-                trace!(
+                debug!(
                     logger,
-                    "server: {}: 9P mount {} points to {}",
-                    id,
-                    mount,
-                    loc
+                    "server: {}: 9P mount {} points to {}", id, mount, loc
                 );
                 loc
             }
             Ok(None) => {
-                trace!(logger, "server: {}: 9P mount {} does not exist", id, mount);
+                debug!(logger, "server: {}: 9P mount {} does not exist", id, mount);
                 return Err(ResponseCode::NotFound.into());
             }
             Err(e) => {
-                trace!(
+                error!(
                     logger,
-                    "server: {}: 9P error checking if mount {} exists: {}",
-                    id,
-                    mount,
-                    e
+                    "server: {}: 9P error checking if mount {} exists: {}", id, mount, e
                 );
                 return Err(ResponseCode::NotFound.into());
             }
