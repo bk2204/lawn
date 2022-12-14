@@ -1,5 +1,21 @@
 = Changelog
 
+== v0.1.1 (2022-02-14)
+
+=== Binary
+
+* Fix a server hang that could occur with commands or clipboard actions and was
+  most frequently (but not exclusively) seen on FreeBSD and macOS.
+
+=== Tests
+
+* Improved integration tests, including improved test reliability.
+
+=== Protocol and Internals
+
+* An invalid selector is no longer considered to be an error when polling.
+* The Gone flag is now correctly set when polling.
+
 == v0.1.0
 
 * Initial public release.
