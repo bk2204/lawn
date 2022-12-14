@@ -306,6 +306,16 @@ impl Server {
         let logger = state.logger();
         logger.trace(&format!("server: {}: starting main loop", id));
         let mut interval = time::interval(Duration::from_millis(100));
+        let (msg_tx, mut msg_rx) = sync::mpsc::channel(1);
+        let phandler = handler.clone();
+        tokio::spawn(async move {
+            loop {
+                let msg = phandler.recv().await;
+                if msg_tx.send(msg).await.is_err() {
+                    return;
+                }
+            }
+        });
         loop {
             select! {
                 _ = rx.recv() => {
@@ -318,9 +328,13 @@ impl Server {
                     // Idle loop.
                     channels.ping_channels().await;
                 }
-                res = handler.recv() => {
+                res = msg_rx.recv() => {
                     logger.trace(&format!("server: {}: message received", id));
                     let state = state.clone();
+                    let res = match res {
+                        Some(r) => r,
+                        None => return,
+                    };
                     match res {
                         Ok(None) => (),
                         Ok(Some(msg)) => {
