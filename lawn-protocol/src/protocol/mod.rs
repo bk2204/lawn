@@ -176,7 +176,7 @@ pub enum ErrorBody {
     Exit(i32),
 }
 
-#[derive(FromPrimitive, Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(FromPrimitive, Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum MessageKind {
     /// Requests that the other side provide a list of supported versions and capabilities.
     Capability = 0x00000000,
