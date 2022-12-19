@@ -53,6 +53,12 @@ macro_rules! assert_authenticated {
     }};
 }
 
+enum ResponseType {
+    Success,
+    Partial,
+    Close,
+}
+
 pub struct Server {
     config: Arc<Config>,
     destroyer: Mutex<Option<sync::oneshot::Sender<()>>>,
@@ -343,7 +349,7 @@ impl Server {
                                 let logger = state.logger();
                                 logger.trace(&format!("server: {}: processing message {}", id, msg.id));
                                 match Self::process_message(state.clone(), id, &msg).await {
-                                    Ok((true, body)) => {
+                                    Ok((ResponseType::Close, body)) => {
                                         logger.trace(&format!("server: {}: message {}: code {:08x} (closing)", id, msg.id, 0));
                                         let _ = handler.send_success(msg.id, body).await;
                                         handler.close(false).await;
@@ -366,9 +372,17 @@ impl Server {
                                         logger.trace(&format!("server: {}: message {}: error: {} (closing)", id, msg.id, e));
                                         handler.close(true).await;
                                     },
-                                    Ok((false, body)) => {
+                                    Ok((ResponseType::Success, body)) => {
                                         logger.trace(&format!("server: {}: message {}: code {:08x}", id, msg.id, 0));
                                         match handler.send_success(msg.id, body).await {
+                                            Ok(_) => (),
+                                            Err(_) => handler.close(true).await,
+                                        }
+                                        logger.trace(&format!("server: {}: message {}: code {:08x} sent", id, msg.id, 0));
+                                    },
+                                    Ok((ResponseType::Partial, body)) => {
+                                        logger.trace(&format!("server: {}: message {}: code {:08x}", id, msg.id, 0));
+                                        match handler.send_continuation(msg.id, body).await {
                                             Ok(_) => (),
                                             Err(_) => handler.close(true).await,
                                         }
@@ -464,13 +478,14 @@ impl Server {
 
     /// Processes a message of the appropriate type.
     ///
-    /// Returns a tuple indicating whether to close the connection successfully and an optional
-    /// success message, or on failure an error.
+    /// Returns a tuple indicating the kind of response and an optional success message, or on
+    /// failure an error.
+    #[allow(clippy::mutable_key_type)]
     async fn process_message<T: AsyncRead + Unpin, U: AsyncWrite + Unpin>(
         state: Arc<ServerState<T, U>>,
         id: u64,
         message: &Message,
-    ) -> Result<(bool, Option<Bytes>), handler::Error> {
+    ) -> Result<(ResponseType, Option<Bytes>), handler::Error> {
         let handler = state.handler();
         let serializer = handler.serializer();
         let channels = state.channels();
@@ -486,7 +501,7 @@ impl Server {
                         .collect(),
                     user_agent: Some(config::VERSION.into()),
                 };
-                Ok((false, serializer.serialize_body(&c)))
+                Ok((ResponseType::Success, serializer.serialize_body(&c)))
             }
             Some(MessageKind::Version) => {
                 logger.trace(&format!("server: {}: version message", id));
@@ -510,17 +525,17 @@ impl Server {
                     Err(_) => Err(ResponseCode::ParametersNotSupported.into()),
                     Ok(requested) => {
                         handler.set_capabilities(&requested).await;
-                        Ok((false, None))
+                        Ok((ResponseType::Success, None))
                     }
                 }
             }
             Some(MessageKind::CloseAlert) => {
                 logger.trace(&format!("server: {}: close alert", id));
-                Ok((true, None))
+                Ok((ResponseType::Close, None))
             }
             Some(MessageKind::Ping) => {
                 logger.trace(&format!("server: {}: ping", id));
-                Ok((false, None))
+                Ok((ResponseType::Success, None))
             }
             Some(MessageKind::Authenticate) => {
                 logger.trace(&format!("server: {}: authenticate", id));
@@ -534,7 +549,7 @@ impl Server {
                     method: m.method,
                     message: None,
                 };
-                Ok((false, serializer.serialize_body(&r)))
+                Ok((ResponseType::Success, serializer.serialize_body(&r)))
             }
             Some(MessageKind::CreateChannel) => {
                 logger.trace(&format!("server: {}: create channel", id));
@@ -576,7 +591,7 @@ impl Server {
                 match res {
                     Ok(id) => {
                         let r = protocol::CreateChannelResponse { id };
-                        Ok((false, serializer.serialize_body(&r)))
+                        Ok((ResponseType::Success, serializer.serialize_body(&r)))
                     }
                     Err(_) => {
                         logger.trace(&format!("server: {}: create channel: failed", id));
@@ -597,7 +612,7 @@ impl Server {
                     .await
                     .unwrap()?;
                 let resp = protocol::ReadChannelResponse { bytes: data };
-                Ok((false, serializer.serialize_body(&resp)))
+                Ok((ResponseType::Success, serializer.serialize_body(&resp)))
             }
             Some(MessageKind::WriteChannel) => {
                 logger.trace(&format!("server: {}: write channel", id));
@@ -613,7 +628,7 @@ impl Server {
                     .await
                     .unwrap()?;
                 let resp = protocol::WriteChannelResponse { count: n };
-                Ok((false, serializer.serialize_body(&resp)))
+                Ok((ResponseType::Success, serializer.serialize_body(&resp)))
             }
             Some(MessageKind::DeleteChannel) => {
                 logger.trace(&format!("server: {}: delete channel", id));
@@ -623,7 +638,7 @@ impl Server {
                     Some(ch) => std::mem::drop(ch),
                     None => return Err(ResponseCode::NotFound.into()),
                 };
-                Ok((false, None))
+                Ok((ResponseType::Success, None))
             }
             Some(MessageKind::DetachChannelSelector) => {
                 logger.trace(&format!("server: {}: detach channel selector", id));
@@ -634,7 +649,7 @@ impl Server {
                     None => return Err(ResponseCode::NotFound.into()),
                 };
                 match ch.detach_selector(m.selector) {
-                    Ok(()) => Ok((false, None)),
+                    Ok(()) => Ok((ResponseType::Success, None)),
                     Err(e) => Err(e.into()),
                 }
             }
@@ -667,7 +682,7 @@ impl Server {
                         .zip(rxresp.iter().cloned().map(|x| x.bits()))
                         .collect(),
                 };
-                Ok((false, serializer.serialize_body(&resp)))
+                Ok((ResponseType::Success, serializer.serialize_body(&resp)))
             }
             Some(MessageKind::PingChannel) => {
                 logger.trace(&format!("server: {}: ping channel", id));
@@ -678,7 +693,7 @@ impl Server {
                     None => return Err(ResponseCode::NotFound.into()),
                 };
                 ch.ping()?;
-                Ok((false, None))
+                Ok((ResponseType::Success, None))
             }
             Some(_) | None => {
                 logger.trace(&format!(

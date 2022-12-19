@@ -279,6 +279,27 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
         }
     }
 
+    pub async fn send_continuation(&self, id: u32, message: Option<Bytes>) -> Result<(), Error> {
+        let logger = self.config.logger();
+        let r = protocol::Response {
+            id,
+            code: protocol::ResponseCode::Continuation as u32,
+            message,
+        };
+        match self.serializer.serialize_response_simple(&r) {
+            Some(r) => {
+                logger.trace(&format!(
+                    "sending response: size {:08x} id {:08x} next {:08x}",
+                    u32::from_le_bytes(r[0..4].try_into().unwrap()),
+                    u32::from_le_bytes(r[4..8].try_into().unwrap()),
+                    u32::from_le_bytes(r[8..12].try_into().unwrap())
+                ));
+                self.send_response(&r).await
+            }
+            None => Err(Error::Unserializable),
+        }
+    }
+
     pub async fn send_error_simple(
         &self,
         id: u32,
