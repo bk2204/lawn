@@ -27,15 +27,34 @@ use std::io;
 /// is a request or a response.
 ///
 /// All data is serialized in a little-endian format.
+///
+/// ## Extension Messages
+///
+/// Extension values (message types and response codes) are assigned with
+/// values `0xff000000` and larger.  These can be dynamically allocated using
+/// the `CreateExtensionRange` message, and once allocated, will allow the
+/// extension to use the given codes both as message types and response codes.
+///
+/// Note that an implementation is not obligated to allocate or use extension
+/// codes.  For example, an implementation which offers a new sort of channel may
+/// well choose to use the existing channel codes, or it may choose to use new
+/// message types with existing response codes.
+///
+/// Lawn currently allocates these by allocating a 12-bit range internally, so
+/// the first code of the first extension is `0xff000000`, the first code of the next is
+/// `0xfff001000`,  and so on.  This provides 4096 codes per extension while
+/// allowing 4096 extensions.  However, this algorithm is subject to change at any
+/// time.
 
 /// The response codes for the protocol.
 ///
 /// The response codes are based around IMAP's response codes, and the top two bytes of the
 /// response indicates the type:
 ///
-/// * 0: success
-/// * 1: no (roughly, the request was understood, but not completed)
-/// * 2: bad (roughly, the request was not understood)
+/// * 00: success
+/// * 01: no (roughly, the request was understood, but not completed)
+/// * 02: bad (roughly, the request was not understood)
+/// * ff: extension message (dynamically allocated)
 #[derive(FromPrimitive, Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 pub enum ResponseCode {
     /// The request was successful.  The response contains the requested data.
@@ -209,6 +228,15 @@ pub enum MessageKind {
     /// For command channels, this is used by the server to notify the client that the process has
     /// terminated.
     ChannelMetadataNotification = 0x00011000,
+
+    /// Allocates a range of IDs for an extension.
+    CreateExtensionRange = 0x00020000,
+
+    /// Deallocates a range of IDs for an extension.
+    DeleteExtensionRange = 0x00020001,
+
+    /// Lists all allocated ranges of IDs for extensions.
+    ListExtensionRanges = 0x00020002,
 }
 
 #[derive(Debug, Hash, Eq, PartialEq, Ord, PartialOrd, Clone, Copy)]
@@ -217,6 +245,7 @@ pub enum Capability {
     ChannelCommand,
     Channel9P,
     ChannelClipboard,
+    ExtensionAllocate,
 }
 
 impl Capability {
@@ -226,6 +255,7 @@ impl Capability {
             Self::ChannelCommand,
             Self::ChannelClipboard,
             Self::Channel9P,
+            Self::ExtensionAllocate,
         ]
         .iter()
         .cloned()
@@ -247,6 +277,7 @@ impl From<Capability> for (&'static [u8], Option<&'static [u8]>) {
             Capability::ChannelCommand => (b"channel", Some(b"command")),
             Capability::Channel9P => (b"channel", Some(b"9p")),
             Capability::ChannelClipboard => (b"channel", Some(b"clipboard")),
+            Capability::ExtensionAllocate => (b"extension", Some(b"allocate")),
         }
     }
 }
@@ -266,6 +297,7 @@ impl TryFrom<(&[u8], Option<&[u8]>)> for Capability {
             (b"channel", Some(b"command")) => Ok(Capability::ChannelCommand),
             (b"channel", Some(b"9p")) => Ok(Capability::Channel9P),
             (b"channel", Some(b"clipboard")) => Ok(Capability::ChannelClipboard),
+            (b"extension", Some(b"allocate")) => Ok(Capability::ExtensionAllocate),
             _ => Err(()),
         }
     }
@@ -411,6 +443,66 @@ bitflags! {
         const Invalid = 0x00000010;
         const Gone    = 0x00000020;
     }
+}
+
+#[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct CreateExtensionRangeRequest {
+    pub extension: (Bytes, Option<Bytes>),
+    pub count: u32,
+}
+
+#[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct CreateExtensionRangeResponse {
+    pub range: (u32, u32),
+}
+
+#[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct DeleteExtensionRangeRequest {
+    pub extension: (Bytes, Option<Bytes>),
+    pub range: (u32, u32),
+}
+
+#[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct ListExtensionRangesResponse {
+    pub ranges: Vec<ExtensionRange>,
+}
+
+impl IntoIterator for ListExtensionRangesResponse {
+    type Item = ExtensionRange;
+    type IntoIter = std::vec::IntoIter<ExtensionRange>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.ranges.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a ListExtensionRangesResponse {
+    type Item = &'a ExtensionRange;
+    type IntoIter = std::slice::Iter<'a, ExtensionRange>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.ranges.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut ListExtensionRangesResponse {
+    type Item = &'a mut ExtensionRange;
+    type IntoIter = std::slice::IterMut<'a, ExtensionRange>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.ranges.iter_mut()
+    }
+}
+
+#[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct ExtensionRange {
+    pub extension: (Bytes, Option<Bytes>),
+    pub range: (u32, u32),
 }
 
 #[derive(FromPrimitive, Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
