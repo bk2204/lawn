@@ -84,6 +84,8 @@ pub enum ResponseCode {
     InternalError = 0x00010007,
     /// The channel has ceased to produce new data and this operation cannot complete.
     ChannelDead = 0x00010008,
+    /// The operation was aborted.
+    Aborted = 0x00010009,
 
     /// The message type was not enabled.
     NotEnabled = 0x00020000,
@@ -198,6 +200,16 @@ pub enum MessageKind {
     ///
     /// Authentication is not required for this message (obviously).
     Authenticate = 0x00000003,
+    /// Continue an in-progress request.
+    ///
+    /// This request can be used to continue an operation when the `Continuation` response is
+    /// provided.
+    Continue = 0x00000004,
+    /// Abort an in-progress request.
+    ///
+    /// This request can be used to abort an operation when the `Continuation` response is
+    /// provided.
+    Abort = 0x00000005,
 
     /// Indicates a graceful shutdown.
     ///
@@ -347,6 +359,28 @@ pub struct AuthenticateResponse {
     // internally.
     pub method: Bytes,
     pub message: Option<Bytes>,
+}
+
+#[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct PartialContinueRequest {
+    pub id: u32,
+    pub kind: u32,
+}
+
+#[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct ContinueRequest<T> {
+    pub id: u32,
+    pub kind: u32,
+    pub message: Option<T>,
+}
+
+#[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct AbortRequest {
+    pub id: u32,
+    pub kind: u32,
 }
 
 #[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone, Copy)]
