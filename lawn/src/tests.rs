@@ -1,4 +1,5 @@
-use crate::config::Config;
+use crate::client;
+use crate::config::{self, Config};
 use crate::server;
 use std::collections::btree_map::IntoIter as BTreeMapIter;
 use std::collections::BTreeMap;
@@ -132,6 +133,13 @@ v0:
     pub fn server(&self) -> Arc<server::Server> {
         Arc::new(server::Server::new(self.config()))
     }
+
+    pub async fn connection(&self) -> client::Connection {
+        let client = Arc::new(client::Client::new(self.config()));
+        let mut path = self.dir.path().to_owned();
+        path.push("runtime/lawn/server-0.sock");
+        client.connect(path, false).await.unwrap()
+    }
 }
 
 fn runtime() -> tokio::runtime::Runtime {
@@ -156,4 +164,41 @@ fn starts_server() {
         h.await
     })
     .unwrap();
+}
+
+fn with_server<F>(ti: Arc<TestInstance>, future: F)
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let rt = runtime();
+    rt.block_on(async {
+        let s = ti.server();
+        let s2 = s.clone();
+        tokio::spawn(async move {
+            s.run_async().await.unwrap();
+        });
+        let h = tokio::spawn(future);
+        h.await.unwrap();
+        s2.shutdown().await;
+    })
+}
+
+#[test]
+fn can_perform_test_connections() {
+    let ti = Arc::new(TestInstance::new());
+    with_server(ti.clone(), async move {
+        let c = ti.connection().await;
+        c.ping().await.unwrap();
+        let resp = c.negotiate_default_version().await.unwrap();
+        assert_eq!(resp.version, &[0], "version is correct");
+        assert_eq!(
+            resp.user_agent.unwrap(),
+            config::VERSION,
+            "user-agent is correct"
+        );
+        let auth = c.auth_external().await.unwrap();
+        assert_eq!(auth.method, (b"EXTERNAL" as &[u8]), "method is correct");
+        assert!(auth.message.is_none(), "no message is present");
+    });
 }
