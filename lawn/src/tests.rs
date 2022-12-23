@@ -129,7 +129,7 @@ v0:
         cfg
     }
 
-    pub fn server(&mut self) -> Arc<server::Server> {
+    pub fn server(&self) -> Arc<server::Server> {
         Arc::new(server::Server::new(self.config()))
     }
 }
@@ -143,7 +143,7 @@ fn runtime() -> tokio::runtime::Runtime {
 
 #[test]
 fn starts_server() {
-    let mut ti = TestInstance::new();
+    let ti = TestInstance::new();
     let rt = runtime();
     rt.block_on(async {
         let s = ti.server();
