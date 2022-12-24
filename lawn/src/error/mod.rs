@@ -123,6 +123,7 @@ pub enum ErrorKind {
     HandlerError,
     InvalidConfigFile,
     MissingConfigFile,
+    MissingRequiredConfigOption,
     MissingResponse,
     CommandFailure,
     TemplateError,

@@ -16,7 +16,7 @@ use std::io::{Read, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::process::ExitStatusExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -84,6 +84,132 @@ struct ConfigData {
     root: Option<bool>,
     clipboard_backend: Option<ClipboardBackend>,
     clipboard_enabled: Option<bool>,
+}
+
+type EnvFn = dyn FnMut(&str) -> Option<OsString>;
+
+pub struct ConfigBuilder {
+    env: Option<Box<EnvFn>>,
+    env_vars: Option<BTreeMap<Bytes, Bytes>>,
+    verbosity: i32,
+    config_file: Option<PathBuf>,
+    stdout: Option<Box<dyn Write + Sync + Send>>,
+    stderr: Option<Box<dyn Write + Sync + Send>>,
+    create: bool,
+}
+
+impl ConfigBuilder {
+    pub fn new() -> Self {
+        Self {
+            env: None,
+            env_vars: None,
+            verbosity: 0,
+            config_file: None,
+            stdout: None,
+            stderr: None,
+            create: false,
+        }
+    }
+
+    pub fn env<
+        E: FnMut(&str) -> Option<OsString> + 'static,
+        I: Iterator<Item = (OsString, OsString)>,
+        V: FnMut() -> I,
+    >(
+        &mut self,
+        env: E,
+        env_iter: V,
+    ) -> &mut Self {
+        let mut env_iter = env_iter;
+        self.env = Some(Box::new(env));
+        self.env_vars = Some(
+            env_iter()
+                .map(|(k, v)| (k.as_bytes().to_vec().into(), v.as_bytes().to_vec().into()))
+                .collect(),
+        );
+        self
+    }
+
+    pub fn verbosity(&mut self, verbosity: i32) -> &mut Self {
+        self.verbosity = verbosity;
+        self
+    }
+
+    pub fn config_file(&mut self, path: &Path) -> &mut Self {
+        self.config_file = Some(path.into());
+        self
+    }
+
+    pub fn stdout(&mut self, stdout: Box<dyn Write + Sync + Send>) -> &mut Self {
+        self.stdout = Some(stdout);
+        self
+    }
+
+    pub fn stderr(&mut self, stderr: Box<dyn Write + Sync + Send>) -> &mut Self {
+        self.stderr = Some(stderr);
+        self
+    }
+
+    pub fn create_runtime_dir(&mut self, create: bool) -> &mut Self {
+        self.create = create;
+        self
+    }
+
+    fn missing_config_option(opt_name: &str) -> Error {
+        Error::new_with_message(
+            ErrorKind::MissingRequiredConfigOption,
+            format!("missing required argument {}", opt_name),
+        )
+    }
+
+    #[allow(clippy::mutable_key_type)]
+    pub fn build(self) -> Result<Config, Error> {
+        let stdout = self
+            .stdout
+            .ok_or_else(|| Self::missing_config_option("stdout"))?;
+        let stderr = self
+            .stderr
+            .ok_or_else(|| Self::missing_config_option("stderr"))?;
+        let logger = Logger::new(self.verbosity, stdout, stderr);
+        let env = self.env.ok_or_else(|| Self::missing_config_option("env"))?;
+        let runtime_dir =
+            Config::create_runtime_dir(&logger, env, self.create).ok_or_else(|| {
+                Error::new_with_message(
+                    ErrorKind::RuntimeDirectoryFailure,
+                    "cannot detect runtime directory",
+                )
+            })?;
+        let config_file = {
+            match self.config_file {
+                Some(name) => match fs::File::open(name) {
+                    Ok(f) => match serde_yaml::from_reader(f) {
+                        Ok(config) => config,
+                        Err(e) => {
+                            return Err(Error::new_with_cause(ErrorKind::InvalidConfigFile, e))
+                        }
+                    },
+                    Err(e) => return Err(Error::new_with_cause(ErrorKind::MissingConfigFile, e)),
+                },
+                None => ConfigFile::new(),
+            }
+        };
+        let env_vars = self
+            .env_vars
+            .ok_or_else(|| Self::missing_config_option("env"))?;
+        Ok(Config {
+            logger: Arc::new(logger),
+            data: RwLock::new(ConfigData {
+                detach: true,
+                runtime_dir,
+                format: LogFormat::Text,
+                config_file,
+                root: None,
+                clipboard_backend: None,
+                clipboard_enabled: None,
+            }),
+            env_vars,
+        })
+    }
 }
 
 pub struct Config {

@@ -1,5 +1,5 @@
 use crate::client;
-use crate::config::{self, Config};
+use crate::config::{self, Config, ConfigBuilder};
 use crate::server;
 use std::collections::btree_map::IntoIter as BTreeMapIter;
 use std::collections::BTreeMap;
@@ -63,11 +63,11 @@ impl FakeEnvironment {
 
 pub struct TestInstance {
     dir: tempfile::TempDir,
-    config_file: PathBuf,
+    config: Arc<Config>,
 }
 
 impl TestInstance {
-    pub fn new() -> Self {
+    pub fn new(builder: Option<ConfigBuilder>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let mut server = dir.path().to_owned();
         server.push("server");
@@ -86,7 +86,18 @@ impl TestInstance {
             fs::create_dir_all(&to_create).unwrap();
         }
         let config_file = Self::write_config_file(&server);
-        Self { dir, config_file }
+        let env = FakeEnvironment::new(dir.path());
+        let iterenv = env.clone();
+        let mut builder = builder.unwrap_or_else(|| ConfigBuilder::new());
+        builder.env(move |s| env.env(s), move || iterenv.iter());
+        builder.create_runtime_dir(false);
+        builder.verbosity(5);
+        builder.stdout(Box::new(io::Cursor::new(Vec::new())));
+        builder.stderr(Box::new(io::stderr()));
+        builder.config_file(&config_file);
+        let cfg = Arc::new(builder.build().unwrap());
+        cfg.set_detach(false);
+        Self { dir, config: cfg }
     }
 
     fn write_config_file(dir: &Path) -> PathBuf {
@@ -112,22 +123,7 @@ v0:
     }
 
     pub fn config(&self) -> Arc<Config> {
-        let env = FakeEnvironment::new(self.dir.path());
-        let iterenv = env.clone();
-        let cfg = Arc::new(
-            Config::new(
-                move |s| env.env(s),
-                move || iterenv.iter(),
-                false,
-                5,
-                Box::new(io::Cursor::new(Vec::new())),
-                Box::new(io::stderr()),
-                Some(&self.config_file),
-            )
-            .unwrap(),
-        );
-        cfg.set_detach(false);
-        cfg
+        self.config.clone()
     }
 
     pub fn server(&self) -> Arc<server::Server> {
@@ -151,7 +147,7 @@ fn runtime() -> tokio::runtime::Runtime {
 
 #[test]
 fn starts_server() {
-    let ti = TestInstance::new();
+    let ti = TestInstance::new(None);
     let rt = runtime();
     rt.block_on(async {
         let s = ti.server();
@@ -186,7 +182,7 @@ where
 
 #[test]
 fn can_perform_test_connections() {
-    let ti = Arc::new(TestInstance::new());
+    let ti = Arc::new(TestInstance::new(None));
     with_server(ti.clone(), async move {
         let c = ti.connection().await;
         c.ping().await.unwrap();
