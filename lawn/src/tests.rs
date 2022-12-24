@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -175,9 +175,9 @@ where
     rt.block_on(async {
         let s = ti.server();
         let s2 = s.clone();
-        tokio::spawn(async move {
-            s.run_async().await.unwrap();
-        });
+        let mut file = s.run_async().await.unwrap();
+        let mut buf = [0u8; 1];
+        let _ = file.read(&mut buf);
         let h = tokio::spawn(future);
         h.await.unwrap();
         s2.shutdown().await;

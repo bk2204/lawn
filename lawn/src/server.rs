@@ -96,7 +96,7 @@ impl Server {
     }
 
     #[allow(dead_code)]
-    pub async fn run_async(&self) -> Result<(), Error> {
+    pub async fn run_async(self: Arc<Self>) -> Result<File, Error> {
         let logger = self.config.logger();
         let mut socket_path: PathBuf = self.config.runtime_dir();
         socket_path.push("server-0.sock");
@@ -109,7 +109,9 @@ impl Server {
             let mut g = self.destroyer.lock().unwrap();
             *g = Some(tx);
         }
-        self.runtime_async(&socket_path, None, rx).await
+        let (fdrd, fdwr) = self.pipe()?;
+        tokio::spawn(async move { self.runtime_async(&socket_path, Some(fdwr), rx).await });
+        Ok(fdrd)
     }
 
     #[allow(dead_code)]
