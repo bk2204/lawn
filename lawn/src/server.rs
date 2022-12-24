@@ -465,7 +465,10 @@ impl Server {
                         status_kind: kind,
                         meta: None,
                     };
-                    let _: Result<Option<protocol::Empty>, _> = state
+                    let _: Result<
+                        Option<protocol::ResponseValue<protocol::Empty, protocol::Empty>>,
+                        _,
+                    > = state
                         .handler()
                         .send_message(
                             protocol::MessageKind::ChannelMetadataNotification,

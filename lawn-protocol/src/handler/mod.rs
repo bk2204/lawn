@@ -157,7 +157,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
         }
         if send_alert {
             let _ = self
-                .send_message_simple_internal::<protocol::Empty>(
+                .send_message_simple_internal::<protocol::Empty, protocol::Empty>(
                     protocol::MessageKind::CloseAlert,
                     true,
                     false,
@@ -358,12 +358,12 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
         Ok(())
     }
 
-    pub async fn send_message<S: Serialize, D: DeserializeOwned>(
+    pub async fn send_message<S: Serialize, D1: DeserializeOwned, D2: DeserializeOwned>(
         &self,
         kind: protocol::MessageKind,
         body: &S,
         synchronous: Option<bool>,
-    ) -> Result<Option<D>, Error> {
+    ) -> Result<Option<protocol::ResponseValue<D1, D2>>, Error> {
         let id = {
             let mut g = self.id.lock().await;
             let v = *g;
@@ -383,21 +383,21 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
             .await
     }
 
-    pub async fn send_message_simple<D: DeserializeOwned>(
+    pub async fn send_message_simple<D1: DeserializeOwned, D2: DeserializeOwned>(
         &self,
         kind: protocol::MessageKind,
         synchronous: Option<bool>,
-    ) -> Result<Option<D>, Error> {
+    ) -> Result<Option<protocol::ResponseValue<D1, D2>>, Error> {
         self.send_message_simple_internal(kind, false, synchronous.unwrap_or(self.synchronous))
             .await
     }
 
-    async fn send_message_simple_internal<D: DeserializeOwned>(
+    async fn send_message_simple_internal<D1: DeserializeOwned, D2: DeserializeOwned>(
         &self,
         kind: protocol::MessageKind,
         closing: bool,
         synchronous: bool,
-    ) -> Result<Option<D>, Error> {
+    ) -> Result<Option<protocol::ResponseValue<D1, D2>>, Error> {
         let id = {
             let mut g = self.id.lock().await;
             let v = *g;
@@ -423,13 +423,13 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
             .await
     }
 
-    async fn send_message_internal<D: DeserializeOwned>(
+    async fn send_message_internal<D1: DeserializeOwned, D2: DeserializeOwned>(
         &self,
         id: u32,
         data: &Bytes,
         closing: bool,
         synchronous: bool,
-    ) -> Result<Option<D>, Error> {
+    ) -> Result<Option<protocol::ResponseValue<D1, D2>>, Error> {
         let logger = self.config.logger();
         if !closing {
             let g = self.closing.read().await;

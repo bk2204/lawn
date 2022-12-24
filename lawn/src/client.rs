@@ -12,9 +12,9 @@ use lawn_protocol::protocol::{
     AuthenticateRequest, AuthenticateResponse, CapabilityResponse, ChannelID,
     ChannelMetadataNotification, ChannelMetadataNotificationKind, ChannelMetadataStatusKind,
     ClipboardChannelOperation, ClipboardChannelTarget, CreateChannelRequest, CreateChannelResponse,
-    DeleteChannelRequest, DetachChannelSelectorRequest, Empty, MessageKind, PollChannelFlags,
-    PollChannelRequest, PollChannelResponse, ReadChannelRequest, ReadChannelResponse,
-    VersionRequest, WriteChannelRequest, WriteChannelResponse,
+    DeleteChannelRequest, DetachChannelSelectorRequest, Empty, MessageKind, PartialContinueRequest,
+    PollChannelFlags, PollChannelRequest, PollChannelResponse, ReadChannelRequest,
+    ReadChannelResponse, ResponseValue, VersionRequest, WriteChannelRequest, WriteChannelResponse,
 };
 use num_traits::FromPrimitive;
 use serde::{de::DeserializeOwned, Serialize};
@@ -107,7 +107,7 @@ impl Connection {
             None => return Err(Error::new(ErrorKind::NotConnected)),
         };
         handler
-            .send_message_simple::<Empty>(MessageKind::Ping, Some(true))
+            .send_message_simple::<Empty, Empty>(MessageKind::Ping, Some(true))
             .await?;
         Ok(())
     }
@@ -118,24 +118,31 @@ impl Connection {
             None => return Err(Error::new(ErrorKind::NotConnected)),
         };
         match handler
-            .send_message_simple(MessageKind::Capability, Some(true))
+            .send_message_simple::<_, Empty>(MessageKind::Capability, Some(true))
             .await?
         {
-            Some(resp) => Ok(resp),
+            Some(ResponseValue::Success(resp)) => Ok(resp),
+            Some(ResponseValue::Continuation(_)) => {
+                Err(Error::new(ErrorKind::UnexpectedContinuation))
+            }
             None => Err(Error::new(ErrorKind::MissingResponse)),
         }
     }
 
+    #[allow(clippy::mutable_key_type)]
     pub async fn negotiate_default_version(&self) -> Result<CapabilityResponse, Error> {
         let handler = match self.handler.as_ref() {
             Some(handler) => handler,
             None => return Err(Error::new(ErrorKind::NotConnected)),
         };
         let resp: CapabilityResponse = match handler
-            .send_message_simple(MessageKind::Capability, Some(true))
+            .send_message_simple::<_, Empty>(MessageKind::Capability, Some(true))
             .await?
         {
-            Some(resp) => resp,
+            Some(ResponseValue::Success(resp)) => resp,
+            Some(ResponseValue::Continuation(_)) => {
+                return Err(Error::new(ErrorKind::UnexpectedContinuation))
+            }
             None => return Err(Error::new(ErrorKind::MissingResponse)),
         };
         let ours = protocol::Capability::implemented();
@@ -152,7 +159,7 @@ impl Connection {
             user_agent: Some(crate::config::VERSION.into()),
         };
         handler
-            .send_message::<_, Empty>(MessageKind::Version, &req, Some(true))
+            .send_message::<_, Empty, Empty>(MessageKind::Version, &req, Some(true))
             .await?;
         Ok(resp)
     }
@@ -168,19 +175,22 @@ impl Connection {
             message: None,
         };
         match handler
-            .send_message(MessageKind::Authenticate, &req, Some(true))
+            .send_message::<_, _, Empty>(MessageKind::Authenticate, &req, Some(true))
             .await?
         {
-            Some(resp) => Ok(resp),
+            Some(ResponseValue::Success(resp)) => Ok(resp),
+            Some(ResponseValue::Continuation(_)) => {
+                Err(Error::new(ErrorKind::UnexpectedContinuation))
+            }
             None => Err(Error::new(ErrorKind::MissingResponse)),
         }
     }
 
-    pub async fn send_message<T: Serialize, U: DeserializeOwned>(
+    pub async fn send_message<T: Serialize, U: DeserializeOwned, V: DeserializeOwned>(
         &self,
         message: MessageKind,
         body: Option<T>,
-    ) -> Result<Option<U>, Error> {
+    ) -> Result<Option<ResponseValue<U, V>>, Error> {
         let handler = match self.handler.as_ref() {
             Some(handler) => handler,
             None => return Err(Error::new(ErrorKind::NotConnected)),
@@ -433,12 +443,18 @@ impl Connection {
             wanted: Some(wanted),
         };
         trace!(logger, "channel {}: poll: selectors: {:?}", id, selectors);
-        let resp: PollChannelResponse = match handler
-            .send_message(MessageKind::PollChannel, &req, Some(false))
+        let resp = match handler
+            .send_message::<_, _, Empty>(MessageKind::PollChannel, &req, Some(false))
             .await?
         {
             Some(resp) => resp,
             None => return Err(Error::new(ErrorKind::MissingResponse)),
+        };
+        let resp: PollChannelResponse = match resp {
+            ResponseValue::Success(resp) => resp,
+            ResponseValue::Continuation(_) => {
+                return Err(Error::new(ErrorKind::UnexpectedContinuation))
+            }
         };
         trace!(logger, "channel {}: poll: response", id);
         Ok(resp.selectors)
@@ -712,10 +728,13 @@ impl Connection {
             count: 65536,
         };
         let resp: ReadChannelResponse = match handler
-            .send_message(MessageKind::ReadChannel, &req, Some(false))
+            .send_message::<_, _, Empty>(MessageKind::ReadChannel, &req, Some(false))
             .await?
         {
-            Some(resp) => resp,
+            Some(ResponseValue::Success(resp)) => resp,
+            Some(ResponseValue::Continuation(_)) => {
+                return Err(Error::new(ErrorKind::UnexpectedContinuation))
+            }
             None => return Err(Error::new(ErrorKind::MissingResponse)),
         };
         Ok(resp.bytes)
@@ -732,10 +751,13 @@ impl Connection {
             bytes: data.to_vec().into(),
         };
         let resp: WriteChannelResponse = match handler
-            .send_message(MessageKind::WriteChannel, &req, Some(false))
+            .send_message::<_, _, Empty>(MessageKind::WriteChannel, &req, Some(false))
             .await?
         {
-            Some(resp) => resp,
+            Some(ResponseValue::Success(resp)) => resp,
+            Some(ResponseValue::Continuation(_)) => {
+                return Err(Error::new(ErrorKind::UnexpectedContinuation))
+            }
             None => return Err(Error::new(ErrorKind::MissingResponse)),
         };
         Ok(resp.count)
@@ -748,7 +770,7 @@ impl Connection {
         };
         let req = DetachChannelSelectorRequest { id, selector };
         let res = handler
-            .send_message::<_, Empty>(MessageKind::DetachChannelSelector, &req, Some(false))
+            .send_message::<_, Empty, Empty>(MessageKind::DetachChannelSelector, &req, Some(false))
             .await;
         trace!(
             self.config.logger(),
@@ -774,10 +796,13 @@ impl Connection {
             selectors: vec![0, 1, 2],
         };
         let resp: CreateChannelResponse = match handler
-            .send_message(MessageKind::CreateChannel, &req, Some(true))
+            .send_message::<_, _, Empty>(MessageKind::CreateChannel, &req, Some(true))
             .await?
         {
-            Some(resp) => resp,
+            Some(ResponseValue::Success(resp)) => resp,
+            Some(ResponseValue::Continuation(_)) => {
+                return Err(Error::new(ErrorKind::UnexpectedContinuation))
+            }
             None => return Err(Error::new(ErrorKind::MissingResponse)),
         };
         Ok(resp.id)
@@ -830,10 +855,13 @@ impl Connection {
             selectors,
         };
         let resp: CreateChannelResponse = match handler
-            .send_message(MessageKind::CreateChannel, &req, Some(true))
+            .send_message::<_, _, Empty>(MessageKind::CreateChannel, &req, Some(true))
             .await?
         {
-            Some(resp) => resp,
+            Some(ResponseValue::Success(resp)) => resp,
+            Some(ResponseValue::Continuation(_)) => {
+                return Err(Error::new(ErrorKind::UnexpectedContinuation))
+            }
             None => return Err(Error::new(ErrorKind::MissingResponse)),
         };
         Ok(resp.id)
@@ -853,10 +881,13 @@ impl Connection {
             selectors: vec![0, 1],
         };
         let resp: CreateChannelResponse = match handler
-            .send_message(MessageKind::CreateChannel, &req, Some(true))
+            .send_message::<_, _, Empty>(MessageKind::CreateChannel, &req, Some(true))
             .await?
         {
-            Some(resp) => resp,
+            Some(ResponseValue::Success(resp)) => resp,
+            Some(ResponseValue::Continuation(_)) => {
+                return Err(Error::new(ErrorKind::UnexpectedContinuation))
+            }
             None => return Err(Error::new(ErrorKind::MissingResponse)),
         };
         Ok(resp.id)
@@ -872,7 +903,7 @@ impl Connection {
             termination: None,
         };
         handler
-            .send_message::<_, Empty>(MessageKind::DeleteChannel, &req, Some(false))
+            .send_message::<_, Empty, Empty>(MessageKind::DeleteChannel, &req, Some(false))
             .await?;
         Ok(())
     }

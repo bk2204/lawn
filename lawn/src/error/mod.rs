@@ -125,6 +125,7 @@ pub enum ErrorKind {
     MissingConfigFile,
     MissingRequiredConfigOption,
     MissingResponse,
+    UnexpectedContinuation,
     CommandFailure,
     TemplateError,
     UnknownCommandType,

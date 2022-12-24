@@ -3,7 +3,7 @@ use crate::config::Config;
 use bitflags::bitflags;
 use bytes::{Bytes, BytesMut};
 use num_traits::FromPrimitive;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_cbor::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::{TryFrom, TryInto};
@@ -620,6 +620,12 @@ pub enum Data {
     Response(Response),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
+pub enum ResponseValue<T: DeserializeOwned, U: DeserializeOwned> {
+    Success(T),
+    Continuation((u32, U)),
+}
+
 impl ProtocolSerializer {
     const MAX_MESSAGE_SIZE: u32 = 0x00ffffff;
 
@@ -745,14 +751,25 @@ impl ProtocolSerializer {
         }
     }
 
-    pub fn deserialize_response_typed<'a, D: Deserialize<'a>>(
+    pub fn deserialize_response_typed<D1: DeserializeOwned, D2: DeserializeOwned>(
         &self,
-        resp: &'a Response,
-    ) -> Result<Option<D>, Error> {
+        resp: &Response,
+    ) -> Result<Option<ResponseValue<D1, D2>>, Error> {
         if resp.code == ResponseCode::Success as u32 {
             match &resp.message {
                 Some(body) => match serde_cbor::from_slice(body) {
-                    Ok(decoded) => Ok(Some(decoded)),
+                    Ok(decoded) => Ok(Some(ResponseValue::Success(decoded))),
+                    Err(_) => Err(Error {
+                        code: ResponseCode::Invalid,
+                        body: None,
+                    }),
+                },
+                None => Ok(None),
+            }
+        } else if resp.code == ResponseCode::Continuation as u32 {
+            match &resp.message {
+                Some(body) => match serde_cbor::from_slice(body) {
+                    Ok(decoded) => Ok(Some(ResponseValue::Continuation((resp.id, decoded)))),
                     Err(_) => Err(Error {
                         code: ResponseCode::Invalid,
                         body: None,
