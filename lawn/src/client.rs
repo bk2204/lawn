@@ -17,6 +17,7 @@ use lawn_protocol::protocol::{
     VersionRequest, WriteChannelRequest, WriteChannelResponse,
 };
 use num_traits::FromPrimitive;
+use serde::{de::DeserializeOwned, Serialize};
 use serde_cbor::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::TryInto;
@@ -173,6 +174,22 @@ impl Connection {
             Some(resp) => Ok(resp),
             None => Err(Error::new(ErrorKind::MissingResponse)),
         }
+    }
+
+    pub async fn send_message<T: Serialize, U: DeserializeOwned>(
+        &self,
+        message: MessageKind,
+        body: Option<T>,
+    ) -> Result<Option<U>, Error> {
+        let handler = match self.handler.as_ref() {
+            Some(handler) => handler,
+            None => return Err(Error::new(ErrorKind::NotConnected)),
+        };
+        let resp = match body {
+            Some(body) => handler.send_message(message, &body, Some(true)).await?,
+            None => handler.send_message_simple(message, Some(true)).await?,
+        };
+        Ok(resp)
     }
 
     pub async fn run_clipboard<I: AsyncReadExt + Unpin, O: AsyncWriteExt + Unpin>(
