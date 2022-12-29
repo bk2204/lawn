@@ -4,10 +4,10 @@ use crate::template::{Template, TemplateContext};
 use bytes::{Bytes, BytesMut};
 use lawn_constants::logger::Logger as LoggerTrait;
 use lawn_constants::logger::{LogFormat, LogLevel};
-use lawn_protocol::protocol::{ClipboardChannelOperation, ClipboardChannelTarget};
+use lawn_protocol::protocol::{Capability, ClipboardChannelOperation, ClipboardChannelTarget};
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::fs;
@@ -84,6 +84,7 @@ struct ConfigData {
     root: Option<bool>,
     clipboard_backend: Option<ClipboardBackend>,
     clipboard_enabled: Option<bool>,
+    capability: BTreeSet<Capability>,
 }
 
 type EnvFn = dyn FnMut(&str) -> Option<OsString>;
@@ -96,6 +97,7 @@ pub struct ConfigBuilder {
     stdout: Option<Box<dyn Write + Sync + Send>>,
     stderr: Option<Box<dyn Write + Sync + Send>>,
     create: bool,
+    capabilities: Option<BTreeSet<Capability>>,
 }
 
 impl ConfigBuilder {
@@ -108,6 +110,7 @@ impl ConfigBuilder {
             stdout: None,
             stderr: None,
             create: false,
+            capabilities: None,
         }
     }
 
@@ -152,6 +155,11 @@ impl ConfigBuilder {
 
     pub fn create_runtime_dir(&mut self, create: bool) -> &mut Self {
         self.create = create;
+        self
+    }
+
+    pub fn capabilities(&mut self, capabilities: BTreeSet<Capability>) -> &mut Self {
+        self.capabilities = Some(capabilities);
         self
     }
 
@@ -206,6 +214,7 @@ impl ConfigBuilder {
                 root: None,
                 clipboard_backend: None,
                 clipboard_enabled: None,
+                capability: self.capabilities.unwrap_or_else(Capability::implemented),
             }),
             env_vars,
         })
@@ -264,6 +273,7 @@ impl Config {
                 root: None,
                 clipboard_backend: None,
                 clipboard_enabled: None,
+                capability: Capability::implemented(),
             }),
             env_vars: env_iter()
                 .map(|(k, v)| (k.as_bytes().to_vec().into(), v.as_bytes().to_vec().into()))
@@ -303,6 +313,12 @@ impl Config {
 
     pub fn logger(&self) -> Arc<Logger> {
         self.logger.clone()
+    }
+
+    #[allow(clippy::mutable_key_type)]
+    pub fn capabilities(&self) -> BTreeSet<Capability> {
+        let g = self.data.read().unwrap();
+        g.capability.clone()
     }
 
     pub fn detach(&self) -> bool {

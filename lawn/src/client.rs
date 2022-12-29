@@ -145,7 +145,7 @@ impl Connection {
             }
             None => return Err(Error::new(ErrorKind::MissingResponse)),
         };
-        let ours = protocol::Capability::implemented();
+        let ours = self.config.capabilities();
         let theirs: BTreeSet<protocol::Capability> = resp
             .capabilities
             .iter()

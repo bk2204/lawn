@@ -500,7 +500,9 @@ impl Server {
                 logger.trace(&format!("server: {}: capability message", id));
                 let c = protocol::CapabilityResponse {
                     version: vec![0x00000000],
-                    capabilities: protocol::Capability::implemented()
+                    capabilities: state
+                        .config()
+                        .capabilities()
                         .iter()
                         .map(|c| (*c).into())
                         .collect(),
@@ -512,7 +514,7 @@ impl Server {
                 logger.trace(&format!("server: {}: version message", id));
                 handler.flush_requests().await;
                 let m = valid_message!(handler, protocol::VersionRequest, message);
-                let supported = protocol::Capability::implemented();
+                let supported = state.config().capabilities();
                 let requested: Result<BTreeSet<protocol::Capability>, _> =
                     m.enable.iter().cloned().map(|c| c.try_into()).collect();
                 if m.version != 0x00000000 {
