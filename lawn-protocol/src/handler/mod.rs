@@ -128,6 +128,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
         g.capabilities.contains(capa)
     }
 
+    #[allow(clippy::mutable_key_type)]
     pub async fn set_capabilities(&self, capa: &BTreeSet<protocol::Capability>) {
         let mut g = self.capability.write().await;
         g.capabilities = capa.iter().cloned().collect()

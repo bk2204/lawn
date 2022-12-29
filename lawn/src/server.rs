@@ -504,7 +504,7 @@ impl Server {
                         .config()
                         .capabilities()
                         .iter()
-                        .map(|c| (*c).into())
+                        .map(|c| (*c).clone().into())
                         .collect(),
                     user_agent: Some(config::VERSION.into()),
                 };

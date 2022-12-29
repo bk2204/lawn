@@ -154,7 +154,7 @@ impl Connection {
             .collect();
         let req = VersionRequest {
             version: 0,
-            enable: ours.union(&theirs).map(|x| (*x).into()).collect(),
+            enable: ours.union(&theirs).map(|x| (*x).clone().into()).collect(),
             id: None,
             user_agent: Some(crate::config::VERSION.into()),
         };

@@ -6,7 +6,7 @@ use num_traits::FromPrimitive;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_cbor::Value;
 use std::collections::{BTreeMap, BTreeSet};
-use std::convert::{TryFrom, TryInto};
+use std::convert::TryInto;
 use std::fmt;
 use std::io;
 
@@ -251,16 +251,18 @@ pub enum MessageKind {
     ListExtensionRanges = 0x00020002,
 }
 
-#[derive(Debug, Hash, Eq, PartialEq, Ord, PartialOrd, Clone, Copy)]
+#[derive(Debug, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
 pub enum Capability {
     AuthExternal,
     ChannelCommand,
     Channel9P,
     ChannelClipboard,
     ExtensionAllocate,
+    Other(Bytes, Option<Bytes>),
 }
 
 impl Capability {
+    #[allow(clippy::mutable_key_type)]
     pub fn implemented() -> BTreeSet<Capability> {
         [
             Self::AuthExternal,
@@ -282,45 +284,51 @@ impl Capability {
     }
 }
 
-impl From<Capability> for (&'static [u8], Option<&'static [u8]>) {
-    fn from(capa: Capability) -> (&'static [u8], Option<&'static [u8]>) {
-        match capa {
-            Capability::AuthExternal => (b"auth", Some(b"EXTERNAL")),
-            Capability::ChannelCommand => (b"channel", Some(b"command")),
-            Capability::Channel9P => (b"channel", Some(b"9p")),
-            Capability::ChannelClipboard => (b"channel", Some(b"clipboard")),
-            Capability::ExtensionAllocate => (b"extension", Some(b"allocate")),
-        }
-    }
-}
-
 impl From<Capability> for (Bytes, Option<Bytes>) {
     fn from(capa: Capability) -> (Bytes, Option<Bytes>) {
-        let (a, b): (&'static [u8], Option<&'static [u8]>) = capa.into();
-        (a.into(), b.map(|x| x.into()))
-    }
-}
-
-impl TryFrom<(&[u8], Option<&[u8]>)> for Capability {
-    type Error = ();
-    fn try_from(data: (&[u8], Option<&[u8]>)) -> Result<Capability, ()> {
-        match data {
-            (b"auth", Some(b"EXTERNAL")) => Ok(Capability::AuthExternal),
-            (b"channel", Some(b"command")) => Ok(Capability::ChannelCommand),
-            (b"channel", Some(b"9p")) => Ok(Capability::Channel9P),
-            (b"channel", Some(b"clipboard")) => Ok(Capability::ChannelClipboard),
-            (b"extension", Some(b"allocate")) => Ok(Capability::ExtensionAllocate),
-            _ => Err(()),
+        match capa {
+            Capability::AuthExternal => (
+                (b"auth" as &[u8]).into(),
+                Some((b"EXTERNAL" as &[u8]).into()),
+            ),
+            Capability::ChannelCommand => (
+                (b"channel" as &[u8]).into(),
+                Some((b"command" as &[u8]).into()),
+            ),
+            Capability::Channel9P => ((b"channel" as &[u8]).into(), Some((b"9p" as &[u8]).into())),
+            Capability::ChannelClipboard => (
+                (b"channel" as &[u8]).into(),
+                Some((b"clipboard" as &[u8]).into()),
+            ),
+            Capability::ExtensionAllocate => (
+                (b"extension" as &[u8]).into(),
+                Some((b"allocate" as &[u8]).into()),
+            ),
+            Capability::Other(name, subtype) => (name, subtype),
         }
     }
 }
 
-impl TryFrom<(Bytes, Option<Bytes>)> for Capability {
-    type Error = ();
-    fn try_from(data: (Bytes, Option<Bytes>)) -> Result<Capability, ()> {
+impl From<(&[u8], Option<&[u8]>)> for Capability {
+    fn from(data: (&[u8], Option<&[u8]>)) -> Capability {
         match data {
-            (a, Some(b)) => (&a as &[u8], Some(&b as &[u8])).try_into(),
-            (a, None) => (&a as &[u8], None).try_into(),
+            (b"auth", Some(b"EXTERNAL")) => Capability::AuthExternal,
+            (b"channel", Some(b"command")) => Capability::ChannelCommand,
+            (b"channel", Some(b"9p")) => Capability::Channel9P,
+            (b"channel", Some(b"clipboard")) => Capability::ChannelClipboard,
+            (b"extension", Some(b"allocate")) => Capability::ExtensionAllocate,
+            (name, subtype) => {
+                Capability::Other(name.to_vec().into(), subtype.map(|s| s.to_vec().into()))
+            }
+        }
+    }
+}
+
+impl From<(Bytes, Option<Bytes>)> for Capability {
+    fn from(data: (Bytes, Option<Bytes>)) -> Capability {
+        match data {
+            (a, Some(b)) => (&a as &[u8], Some(&b as &[u8])).into(),
+            (a, None) => (&a as &[u8], None).into(),
         }
     }
 }

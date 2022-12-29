@@ -158,6 +158,7 @@ impl ConfigBuilder {
         self
     }
 
+    #[allow(clippy::mutable_key_type)]
     pub fn capabilities(&mut self, capabilities: BTreeSet<Capability>) -> &mut Self {
         self.capabilities = Some(capabilities);
         self
