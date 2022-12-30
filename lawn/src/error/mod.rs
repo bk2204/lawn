@@ -1,5 +1,6 @@
 use crate::p9p_proxy;
-use lawn_protocol::handler;
+use lawn_protocol::{handler, protocol};
+use std::convert::TryFrom;
 use std::fmt;
 use std::fmt::Display;
 
@@ -108,6 +109,36 @@ impl From<handler::Error> for Error {
 impl From<Error> for i32 {
     fn from(e: Error) -> i32 {
         e.kind.into()
+    }
+}
+
+#[derive(Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
+pub struct WrongTypeError;
+
+impl TryFrom<Error> for handler::Error {
+    type Error = WrongTypeError;
+    fn try_from(e: Error) -> Result<handler::Error, Self::Error> {
+        match e.kind {
+            ErrorKind::HandlerError => match e.cause {
+                Some(mut cause) => match cause.downcast_mut::<handler::Error>() {
+                    Some(e) => Ok(std::mem::replace(e, handler::Error::Unserializable)),
+                    None => Err(WrongTypeError),
+                },
+                None => Err(WrongTypeError),
+            },
+            _ => Err(WrongTypeError),
+        }
+    }
+}
+
+impl TryFrom<Error> for protocol::Error {
+    type Error = WrongTypeError;
+    fn try_from(e: Error) -> Result<protocol::Error, Self::Error> {
+        let err = handler::Error::try_from(e)?;
+        if let handler::Error::ProtocolError(e) = err {
+            return Ok(e);
+        }
+        Err(WrongTypeError)
     }
 }
 
