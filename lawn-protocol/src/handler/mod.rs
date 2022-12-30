@@ -3,12 +3,13 @@ use crate::protocol;
 use bytes::Bytes;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::convert::TryInto;
 use std::fmt;
 use std::fmt::Display;
 use std::io;
 use std::marker::Unpin;
+use std::ops::RangeInclusive;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -61,6 +62,142 @@ impl From<protocol::Error> for Error {
 impl From<protocol::ResponseCode> for Error {
     fn from(e: protocol::ResponseCode) -> Self {
         Self::ProtocolError(e.into())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum ExtensionError {
+    NoSpace,
+    RangeTooLarge,
+    RangeInUse,
+    WrongExtension,
+    NoSuchRange,
+    NoSuchKind,
+    NotExtensionMessage,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct ExtensionData {
+    pub extension: (Bytes, Option<Bytes>),
+    pub base: u32,
+    pub count: u32,
+}
+
+pub struct ExtensionMapIter<'a> {
+    iter: std::collections::btree_map::Iter<'a, u32, ExtensionData>,
+}
+
+impl<'a> Iterator for ExtensionMapIter<'a> {
+    type Item = (RangeInclusive<u32>, &'a ExtensionData);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter
+            .next()
+            .map(|(_, e)| (e.base..=e.base + e.count, e))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.iter.size_hint()
+    }
+}
+
+#[derive(Default, Debug, Clone)]
+pub struct ExtensionMap {
+    map: BTreeMap<u32, ExtensionData>,
+}
+
+impl ExtensionMap {
+    pub fn new() -> Self {
+        Self {
+            map: BTreeMap::new(),
+        }
+    }
+
+    pub fn insert(
+        &mut self,
+        base: Option<u32>,
+        extension: (Bytes, Option<Bytes>),
+        count: u32,
+    ) -> Result<u32, ExtensionError> {
+        if count > 0x1000 {
+            return Err(ExtensionError::RangeTooLarge);
+        }
+        let base = match base {
+            Some(base) => {
+                if !Self::is_extension_message(base) {
+                    return Err(ExtensionError::NotExtensionMessage);
+                }
+                if self.map.contains_key(&base) {
+                    return Err(ExtensionError::RangeInUse);
+                }
+                base
+            }
+            None => {
+                let base = (0..=0xfff)
+                    .map(|bits| 0xff000000 | (bits << 12))
+                    .find(|bottom| !self.map.contains_key(&bottom));
+                match base {
+                    Some(base) => base,
+                    None => return Err(ExtensionError::NoSpace),
+                }
+            }
+        };
+        self.map.insert(
+            base,
+            ExtensionData {
+                extension,
+                base,
+                count,
+            },
+        );
+        Ok(base)
+    }
+
+    pub fn remove(
+        &mut self,
+        base: u32,
+        extension: (Bytes, Option<Bytes>),
+    ) -> Result<(), ExtensionError> {
+        let ext = self.map.get(&base).map(|e| e.extension.clone());
+        if let Some(ext) = ext {
+            if ext == extension {
+                self.map.remove(&base);
+                Ok(())
+            } else {
+                Err(ExtensionError::WrongExtension)
+            }
+        } else {
+            Err(ExtensionError::NoSuchRange)
+        }
+    }
+
+    pub fn is_extension_message(kind: u32) -> bool {
+        (kind & 0xff000000) == 0xff000000
+    }
+
+    pub fn find(&self, kind: u32) -> Result<((Bytes, Option<Bytes>), u32), ExtensionError> {
+        if !Self::is_extension_message(kind) {
+            // This is not in the extension range.
+            return Err(ExtensionError::NotExtensionMessage);
+        }
+        let base = kind & 0xfffff000;
+        match self.map.get(&base) {
+            Some(entry) => {
+                let offset = kind & 0x00000fff;
+                if offset < entry.count {
+                    Ok((entry.extension.clone(), offset))
+                } else {
+                    Err(ExtensionError::NoSuchKind)
+                }
+            }
+            None => Err(ExtensionError::NoSuchKind),
+        }
+    }
+
+    pub fn iter(&self) -> ExtensionMapIter<'_> {
+        ExtensionMapIter {
+            iter: self.map.iter(),
+        }
     }
 }
 

@@ -202,6 +202,57 @@ impl Connection {
         Ok(resp)
     }
 
+    pub async fn send_pagination_message<
+        I,
+        T: Serialize,
+        U: DeserializeOwned + IntoIterator<Item = I>,
+    >(
+        &self,
+        message: MessageKind,
+        body: Option<T>,
+    ) -> Result<Option<Vec<I>>, Error> {
+        let handler = match self.handler.as_ref() {
+            Some(handler) => handler,
+            None => return Err(Error::new(ErrorKind::NotConnected)),
+        };
+        let mut resp = match body {
+            Some(body) => handler.send_message(message, &body, Some(true)).await,
+            None => handler.send_message_simple(message, Some(true)).await,
+        };
+        let mut data = vec![];
+        let mut id = None;
+        loop {
+            let msgid = match resp {
+                Ok(Some(ResponseValue::Success(v))) => {
+                    let v: U = v;
+                    data.extend(v.into_iter());
+                    return Ok(Some(data));
+                }
+                Ok(Some(ResponseValue::Continuation((id, v)))) => {
+                    let v: U = v;
+                    data.extend(v.into_iter());
+                    id
+                }
+                Ok(None) => return Ok(None),
+                Err(e) => return Err(e.into()),
+            };
+            let reqid = match id {
+                Some(id) => id,
+                None => {
+                    id = Some(msgid);
+                    msgid
+                }
+            };
+            let req = PartialContinueRequest {
+                kind: message as u32,
+                id: reqid,
+            };
+            resp = handler
+                .send_message(MessageKind::Continue, &req, Some(true))
+                .await;
+        }
+    }
+
     pub async fn run_clipboard<I: AsyncReadExt + Unpin, O: AsyncWriteExt + Unpin>(
         &self,
         stdin: I,

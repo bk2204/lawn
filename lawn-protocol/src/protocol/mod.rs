@@ -86,6 +86,18 @@ pub enum ResponseCode {
     ChannelDead = 0x00010008,
     /// The operation was aborted.
     Aborted = 0x00010009,
+    /// There is no continuation with the specified parameters.
+    ContinuationNotFound = 0x0001000a,
+    /// The result was out of range.
+    ///
+    /// The semantics for this message are equivalent to `ERANGE`.
+    OutOfRange = 0x0001000b,
+    /// There is no more space for the requested item.
+    NoSpace = 0x0001000c,
+    /// The requested operation would conflict with something already existing.
+    ///
+    /// The semantics for this message are equivalent to an HTTP 409 response.
+    Conflict = 0x0001000d,
 
     /// The message type was not enabled.
     NotEnabled = 0x00020000,
@@ -279,7 +291,11 @@ impl Capability {
     pub fn is_implemented(&self) -> bool {
         matches!(
             self,
-            Self::AuthExternal | Self::ChannelCommand | Self::ChannelClipboard | Self::Channel9P
+            Self::AuthExternal
+                | Self::ChannelCommand
+                | Self::ChannelClipboard
+                | Self::Channel9P
+                | Self::ExtensionAllocate
         )
     }
 }

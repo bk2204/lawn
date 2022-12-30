@@ -10,11 +10,12 @@ use bytes::Bytes;
 use daemonize::Daemonize;
 use lawn_protocol::config::Logger as LoggerTrait;
 use lawn_protocol::handler;
-use lawn_protocol::handler::ProtocolHandler;
+use lawn_protocol::handler::{ExtensionError, ExtensionMap, ProtocolHandler};
 use lawn_protocol::protocol;
 use lawn_protocol::protocol::{Message, MessageKind, ResponseCode};
 use num_traits::cast::FromPrimitive;
 use serde_cbor::Value;
+use std::any::Any;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::convert::TryInto;
 use std::fs::File;
@@ -23,7 +24,7 @@ use std::marker::Unpin;
 use std::os::unix::io::FromRawFd;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net;
@@ -53,10 +54,49 @@ macro_rules! assert_authenticated {
     }};
 }
 
+macro_rules! assert_capability {
+    ($handler:expr, $capa:expr) => {{
+        if !$handler.has_capability(&$capa).await {
+            return Err(ResponseCode::NotEnabled.into());
+        }
+    }};
+}
+
 enum ResponseType {
     Success,
     Partial,
     Close,
+}
+
+type ContinuationMapByID = HashMap<u32, Box<dyn Any + Send>>;
+
+struct Continuations {
+    data: Mutex<HashMap<MessageKind, ContinuationMapByID>>,
+}
+
+impl Continuations {
+    fn new() -> Self {
+        Self {
+            data: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn insert<T: Any + Send + 'static>(&self, kind: MessageKind, id: u32, data: T) {
+        let mut g = self.data.lock().unwrap();
+        let e = g.entry(kind).or_default();
+        e.insert(id, Box::<T>::new(data));
+    }
+
+    fn remove<T: Any + Send + 'static>(&self, kind: MessageKind, id: u32) -> Option<Box<T>> {
+        let mut g = self.data.lock().unwrap();
+        let m = g.get_mut(&kind)?;
+        let e = m.remove(&id)?;
+        e.downcast().ok()
+    }
+}
+
+struct ExtensionContinuation {
+    off: usize,
 }
 
 pub struct Server {
@@ -308,6 +348,8 @@ impl Server {
             )),
             channels: Arc::new(ChannelManager::new(Some(chandeathtx))),
             config,
+            extensions: Arc::new(RwLock::new(ExtensionMap::new())),
+            continuations: Continuations::new(),
         });
         let handler = state.handler();
         let channels = state.channels();
@@ -558,6 +600,69 @@ impl Server {
                 };
                 Ok((ResponseType::Success, serializer.serialize_body(&r)))
             }
+            Some(MessageKind::Continue) => {
+                trace!(logger, "server: {}: continue", id);
+                let m = valid_message!(handler, protocol::PartialContinueRequest, message);
+                let kind = MessageKind::from_u32(m.kind).ok_or_else::<handler::Error, _>(|| {
+                    ResponseCode::ParametersNotSupported.into()
+                })?;
+                let id = m.id;
+                if kind != MessageKind::Authenticate {
+                    assert_authenticated!(handler, message);
+                }
+                match kind {
+                    MessageKind::ListExtensionRanges => {
+                        let cont = state
+                            .continuations
+                            .remove::<ExtensionContinuation>(kind, id)
+                            .ok_or_else::<handler::Error, _>(|| {
+                                ResponseCode::ContinuationNotFound.into()
+                            })?;
+                        let ext = state.extensions.read().unwrap();
+                        let mut it = ext.iter();
+                        let chunk = it
+                            .by_ref()
+                            .skip(cont.off)
+                            .take(100)
+                            .map(|(_, ext)| protocol::ExtensionRange {
+                                extension: ext.extension.clone(),
+                                range: (ext.base, ext.base + ext.count),
+                            })
+                            .collect();
+                        let kind = if it.next().is_some() {
+                            state.continuations.insert(
+                                MessageKind::ListExtensionRanges,
+                                message.id,
+                                ExtensionContinuation {
+                                    off: cont.off + 100,
+                                },
+                            );
+                            ResponseType::Partial
+                        } else {
+                            ResponseType::Success
+                        };
+                        let resp = protocol::ListExtensionRangesResponse { ranges: chunk };
+                        Ok((kind, serializer.serialize_body(&resp)))
+                    }
+                    _ => Err(ResponseCode::ContinuationNotFound.into()),
+                }
+            }
+            Some(MessageKind::Abort) => {
+                let m = valid_message!(handler, protocol::PartialContinueRequest, message);
+                let kind = MessageKind::from_u32(m.kind).ok_or_else::<handler::Error, _>(|| {
+                    ResponseCode::ParametersNotSupported.into()
+                })?;
+                let id = m.id;
+                if kind != MessageKind::Authenticate {
+                    assert_authenticated!(handler, message);
+                }
+                // The type here doesn't matter; it will be removed regardless, which is what we
+                // want.
+                state
+                    .continuations
+                    .remove::<ExtensionContinuation>(kind, id);
+                Ok((ResponseType::Success, None))
+            }
             Some(MessageKind::CreateChannel) => {
                 logger.trace(&format!("server: {}: create channel", id));
                 assert_authenticated!(handler, message);
@@ -701,6 +806,63 @@ impl Server {
                 };
                 ch.ping()?;
                 Ok((ResponseType::Success, None))
+            }
+            Some(MessageKind::CreateExtensionRange) => {
+                trace!(logger, "server: {}: create extension range", id);
+                assert_authenticated!(handler, message);
+                assert_capability!(handler, protocol::Capability::ExtensionAllocate);
+                let m = valid_message!(handler, protocol::CreateExtensionRangeRequest, message);
+                let mut ext = state.extensions.write().unwrap();
+                match ext.insert(None, m.extension, m.count) {
+                    Ok(base) => {
+                        let resp = protocol::CreateExtensionRangeResponse {
+                            range: (base, base + m.count),
+                        };
+                        Ok((ResponseType::Success, serializer.serialize_body(&resp)))
+                    }
+                    Err(ExtensionError::RangeTooLarge) => Err(ResponseCode::OutOfRange.into()),
+                    Err(ExtensionError::RangeInUse) => Err(ResponseCode::Conflict.into()),
+                    Err(ExtensionError::NoSpace) => Err(ResponseCode::NoSpace.into()),
+                    Err(_) => Err(ResponseCode::InternalError.into()),
+                }
+            }
+            Some(MessageKind::DeleteExtensionRange) => {
+                trace!(logger, "server: {}: delete extension range", id);
+                assert_authenticated!(handler, message);
+                assert_capability!(handler, protocol::Capability::ExtensionAllocate);
+                let m = valid_message!(handler, protocol::DeleteExtensionRangeRequest, message);
+                let mut ext = state.extensions.write().unwrap();
+                match ext.remove(m.range.0, m.extension) {
+                    Ok(()) => Ok((ResponseType::Success, None)),
+                    Err(_) => Err(ResponseCode::NotFound.into()),
+                }
+            }
+            Some(MessageKind::ListExtensionRanges) => {
+                trace!(logger, "server: {}: list extension ranges", id);
+                assert_authenticated!(handler, message);
+                assert_capability!(handler, protocol::Capability::ExtensionAllocate);
+                let ext = state.extensions.read().unwrap();
+                let mut it = ext.iter();
+                let chunk = it
+                    .by_ref()
+                    .take(100)
+                    .map(|(_, ext)| protocol::ExtensionRange {
+                        extension: ext.extension.clone(),
+                        range: (ext.base, ext.base + ext.count),
+                    })
+                    .collect();
+                let kind = if it.next().is_some() {
+                    state.continuations.insert(
+                        MessageKind::ListExtensionRanges,
+                        message.id,
+                        ExtensionContinuation { off: 100 },
+                    );
+                    ResponseType::Partial
+                } else {
+                    ResponseType::Success
+                };
+                let resp = protocol::ListExtensionRangesResponse { ranges: chunk };
+                Ok((kind, serializer.serialize_body(&resp)))
             }
             Some(_) | None => {
                 logger.trace(&format!(
@@ -996,6 +1158,8 @@ struct ServerState<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> {
     handler: Arc<ProtocolHandler<T, U>>,
     channels: Arc<ChannelManager>,
     config: Arc<Config>,
+    extensions: Arc<RwLock<ExtensionMap>>,
+    continuations: Continuations,
 }
 
 impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ServerState<T, U> {

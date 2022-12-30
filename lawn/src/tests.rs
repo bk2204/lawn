@@ -1,8 +1,11 @@
 use crate::client;
 use crate::config::{self, Config, ConfigBuilder};
 use crate::server;
+use bytes::Bytes;
+use lawn_protocol::protocol::Capability;
 use std::collections::btree_map::IntoIter as BTreeMapIter;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::convert::TryFrom;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
@@ -196,5 +199,179 @@ fn can_perform_test_connections() {
         let auth = c.auth_external().await.unwrap();
         assert_eq!(auth.method, (b"EXTERNAL" as &[u8]), "method is correct");
         assert!(auth.message.is_none(), "no message is present");
+    });
+}
+
+#[test]
+fn can_handle_extensions_listing_with_many_extensions() {
+    use lawn_protocol::protocol;
+
+    let mut capabilities: BTreeSet<_> = (1..=200)
+        .map(|n| {
+            Capability::Other(
+                format!("test-capa-{}@test.ns.crustytoothpaste.net", n)
+                    .into_bytes()
+                    .into(),
+                Some((b"v1" as &[u8]).into()),
+            )
+        })
+        .collect();
+    capabilities.extend(Capability::implemented());
+
+    let mut cb = ConfigBuilder::new();
+    cb.capabilities(capabilities.clone());
+    let unwrapped: Vec<(Bytes, Option<Bytes>)> =
+        capabilities.iter().map(|c| (*c).clone().into()).collect();
+    let ti = Arc::new(TestInstance::new(Some(cb)));
+    with_server(ti.clone(), async move {
+        // Basic setup.
+        let c = ti.connection().await;
+        c.ping().await.unwrap();
+        let resp = c.negotiate_default_version().await.unwrap();
+        assert_eq!(resp.version, &[0], "version is correct");
+        assert_eq!(resp.capabilities, unwrapped);
+        assert_eq!(
+            resp.user_agent.unwrap(),
+            config::VERSION,
+            "user-agent is correct"
+        );
+        c.auth_external().await.unwrap();
+
+        // Create extensions 200 extensions, each with a different number of reserved items.
+        let mut set = BTreeSet::new();
+        for n in 1..=200 {
+            let extension = protocol::CreateExtensionRangeRequest {
+                extension: (
+                    format!("test-capa-{}@test.ns.crustytoothpaste.net", n)
+                        .into_bytes()
+                        .into(),
+                    Some((b"v1" as &[u8]).into()),
+                ),
+                count: n,
+            };
+            let resp: protocol::ResponseValue<
+                protocol::CreateExtensionRangeResponse,
+                protocol::Empty,
+            > = c
+                .send_message(protocol::MessageKind::CreateExtensionRange, Some(extension))
+                .await
+                .unwrap()
+                .unwrap();
+            if let protocol::ResponseValue::Success(v) = resp {
+                assert_eq!(v.range.1 - v.range.0, n, "correct number of elements");
+                assert_eq!(
+                    v.range.0 & 0xff000000,
+                    0xff000000,
+                    "bottom of range is in extension range"
+                );
+                assert_eq!(
+                    v.range.1 & 0xff000000,
+                    0xff000000,
+                    "top of range is in extension range"
+                );
+                let ours: BTreeSet<_> = (v.range.0..v.range.1).collect();
+                assert!(
+                    set.is_disjoint(&ours),
+                    "this range is not otherwise assigned"
+                );
+                set.extend(ours);
+            } else {
+                panic!("wrong type: continuation");
+            }
+        }
+
+        // Test listing ranges.
+        let resp = c
+            .send_pagination_message::<_, protocol::Empty, protocol::ListExtensionRangesResponse>(
+                protocol::MessageKind::ListExtensionRanges,
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resp.len(), 200);
+        for (n, val) in (1..=200).zip((&resp).into_iter()) {
+            let extension = (
+                format!("test-capa-{}@test.ns.crustytoothpaste.net", n)
+                    .into_bytes()
+                    .into(),
+                Some((b"v1" as &[u8]).into()),
+            );
+            assert_eq!(val.extension, extension, "has correct extension");
+            assert_eq!(val.range.1 - val.range.0, n, "has correct number of items");
+            assert_eq!(
+                val.range.0 & 0xff000000,
+                0xff000000,
+                "bottom of range is in extension range"
+            );
+            assert_eq!(
+                val.range.1 & 0xff000000,
+                0xff000000,
+                "top of range is in extension range"
+            );
+        }
+
+        // Will fail because this is a bad extension.
+        let req = protocol::DeleteExtensionRangeRequest {
+            extension: (
+                (b"not-a-valid-extension@test.ns.crustytoothpaste.net" as &[u8]).into(),
+                None,
+            ),
+            range: (0xff000000, 0xff000001),
+        };
+        let err = c
+            .send_message::<_, protocol::Empty, protocol::Empty>(
+                protocol::MessageKind::DeleteExtensionRange,
+                Some(req),
+            )
+            .await
+            .unwrap_err();
+        let e = protocol::Error::try_from(err).unwrap();
+        assert_eq!(e.code, protocol::ResponseCode::NotFound);
+
+        // Will fail because the extension is of the wrong size.
+        let req = protocol::DeleteExtensionRangeRequest {
+            extension: (
+                (b"test-capa-1@test.ns.crustytoothpaste.net" as &[u8]).into(),
+                None,
+            ),
+            range: (0xff000000, 0xff0000ff),
+        };
+        let err = c
+            .send_message::<_, protocol::Empty, protocol::Empty>(
+                protocol::MessageKind::DeleteExtensionRange,
+                Some(req),
+            )
+            .await
+            .unwrap_err();
+        let e = protocol::Error::try_from(err).unwrap();
+        assert_eq!(e.code, protocol::ResponseCode::NotFound);
+
+        // Delete extension assignments.
+        for val in resp.iter() {
+            let extension = protocol::DeleteExtensionRangeRequest {
+                extension: val.extension.clone(),
+                range: val.range,
+            };
+            assert!(c
+                .send_message::<_, protocol::Empty, protocol::Empty>(
+                    protocol::MessageKind::DeleteExtensionRange,
+                    Some(extension)
+                )
+                .await
+                .unwrap()
+                .is_none());
+        }
+
+        // Verify that there are no extension assignments left.
+        let resp = c
+            .send_pagination_message::<_, protocol::Empty, protocol::ListExtensionRangesResponse>(
+                protocol::MessageKind::ListExtensionRanges,
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resp.len(), 0);
     });
 }
