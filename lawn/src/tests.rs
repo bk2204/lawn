@@ -375,3 +375,86 @@ fn can_handle_extensions_listing_with_many_extensions() {
         assert_eq!(resp.len(), 0);
     });
 }
+
+#[test]
+fn can_create_and_delete_extension_ranges_without_auth() {
+    use lawn_protocol::protocol;
+
+    let mut capabilities: BTreeSet<_> = (1..=200)
+        .map(|n| {
+            Capability::Other(
+                format!("test-capa-{}@test.ns.crustytoothpaste.net", n)
+                    .into_bytes()
+                    .into(),
+                Some((b"v1" as &[u8]).into()),
+            )
+        })
+        .collect();
+    capabilities.extend(Capability::implemented());
+
+    let mut cb = ConfigBuilder::new();
+    cb.capabilities(capabilities.clone());
+    let unwrapped: Vec<(Bytes, Option<Bytes>)> =
+        capabilities.iter().map(|c| (*c).clone().into()).collect();
+    let ti = Arc::new(TestInstance::new(Some(cb)));
+    with_server(ti.clone(), async move {
+        // Basic setup.
+        let c = ti.connection().await;
+        c.ping().await.unwrap();
+        let resp = c.negotiate_default_version().await.unwrap();
+        assert_eq!(resp.version, &[0], "version is correct");
+        assert_eq!(resp.capabilities, unwrapped);
+        assert_eq!(
+            resp.user_agent.unwrap(),
+            config::VERSION,
+            "user-agent is correct"
+        );
+
+        // Create an extension range.
+        let extension = protocol::CreateExtensionRangeRequest {
+            extension: (
+                (b"test-capa-1@test.ns.crustytoothpaste.net" as &[u8]).into(),
+                Some((b"v1" as &[u8]).into()),
+            ),
+            count: 10,
+        };
+        let resp: protocol::ResponseValue<protocol::CreateExtensionRangeResponse, protocol::Empty> =
+            c.send_message(protocol::MessageKind::CreateExtensionRange, Some(extension))
+                .await
+                .unwrap()
+                .unwrap();
+        let v = if let protocol::ResponseValue::Success(v) = resp {
+            assert_eq!(v.range.1 - v.range.0, 10, "correct number of elements");
+            assert_eq!(
+                v.range.0 & 0xff000000,
+                0xff000000,
+                "bottom of range is in extension range"
+            );
+            assert_eq!(
+                v.range.1 & 0xff000000,
+                0xff000000,
+                "top of range is in extension range"
+            );
+            v
+        } else {
+            panic!("wrong type: continuation");
+        };
+
+        // Delete extension assignments.
+        let extension = protocol::DeleteExtensionRangeRequest {
+            extension: (
+                (b"test-capa-1@test.ns.crustytoothpaste.net" as &[u8]).into(),
+                Some((b"v1" as &[u8]).into()),
+            ),
+            range: v.range,
+        };
+        assert!(c
+            .send_message::<_, protocol::Empty, protocol::Empty>(
+                protocol::MessageKind::DeleteExtensionRange,
+                Some(extension)
+            )
+            .await
+            .unwrap()
+            .is_none());
+    });
+}

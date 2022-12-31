@@ -809,7 +809,6 @@ impl Server {
             }
             Some(MessageKind::CreateExtensionRange) => {
                 trace!(logger, "server: {}: create extension range", id);
-                assert_authenticated!(handler, message);
                 assert_capability!(handler, protocol::Capability::ExtensionAllocate);
                 let m = valid_message!(handler, protocol::CreateExtensionRangeRequest, message);
                 let mut ext = state.extensions.write().unwrap();
@@ -828,7 +827,6 @@ impl Server {
             }
             Some(MessageKind::DeleteExtensionRange) => {
                 trace!(logger, "server: {}: delete extension range", id);
-                assert_authenticated!(handler, message);
                 assert_capability!(handler, protocol::Capability::ExtensionAllocate);
                 let m = valid_message!(handler, protocol::DeleteExtensionRangeRequest, message);
                 let mut ext = state.extensions.write().unwrap();
