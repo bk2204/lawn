@@ -33,6 +33,10 @@ NETBSD_VERSION ?= 9
 MAN_SRC := $(wildcard doc/man/*.adoc)
 MAN_DEST := $(patsubst %.adoc,%.1,$(MAN_SRC)) $(patsubst %.adoc,%.1.gz,$(MAN_SRC))
 
+DOC_SRC := $(wildcard doc/man/*.adoc) $(wildcard doc/*.adoc)
+XHTML_DEST := $(patsubst %.adoc,%.xhtml,$(DOC_SRC))
+HTML_DEST := $(patsubst %.adoc,%.html,$(DOC_SRC))
+
 all:
 	cargo build --release $(FEATURE_ARG)
 
@@ -55,8 +59,14 @@ test:
 test-integration: all
 	rspec
 
-doc: $(MAN_DEST)
+doc: $(MAN_DEST) $(XHTML_DEST) $(HTML_DEST)
 	echo $(MAN_DEST)
+
+%.xhtml: %.adoc
+	$(ASCIIDOCTOR) -b xhtml5 -o $@ $^
+
+%.html: %.adoc
+	$(ASCIIDOCTOR) -b html5 -o $@ $^
 
 %.1: %.adoc
 	$(ASCIIDOCTOR) -b manpage -o $@ $^

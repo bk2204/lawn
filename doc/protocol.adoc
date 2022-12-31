@@ -1,0 +1,1018 @@
+= The Lawn Protocol
+
+This document defines the protocols used in Lawn.
+
+The key words "`MUST`", "`MUST NOT`", "`REQUIRED`", "`SHALL`", "`SHALL NOT`", "`SHOULD`", "`SHOULD NOT`", "`RECOMMENDED`",  "`MAY`", and "`OPTIONAL`" in this document are to be interpreted as described in
+https://datatracker.ietf.org/doc/html/rfc2119[RFC 2119].
+
+The CBOR structures in this document are written in terms of Rust structures without the `pub`, `struct`, or type name and the allowed use of kebab-case.
+Byte strings are referred to as `Bytes`, maps as `Map`, and sequences as `Vec` or as a tuple.
+A type of `Value` represents a value of any CBOR type whose interpretation will be further explained.
+
+== Main Protocol (version 0)
+
+=== Framing
+
+The Lawn protocol is relatively simple.
+It comprises a client and a server.
+
+Each request consists of a 32-bit size, a 32-bit request ID, a 32-bit message type, and an optional per-message CBOR blob representing message data.
+The message size is limited to 2^24^ in size for performance and security reasons, but uses a 32-bit integer for efficiency.
+The quantity in the size field includes all fields other than the size.
+If the CBOR blob would be of size 0, then it is absent; otherwise, it is present.
+
+Each response consists of a 32-bit size, a 32-bit request ID, a 32-bit response code, and an optional per-message CBOR blob.
+Otherwise, it is formatted exactly like a request and with the same interpretation of the size.
+
+Multiple requests may be in flight at the same time except as specified below and responses need not return in the same order.
+
+The bottom 31 bits of the request ID may be any value.
+Incrementing integers are usual, but implementations MUST NOT assume that.
+No check is made for duplicates, so the requester SHOULD NOT repeat IDs in flight.
+The top bit is clear (zero) if the request is client to server and set (one) if the request is server to client.
+This helps eliminate confusion as to whether a message is a request or a response.
+
+All of the 32-bit quantities are serialized in little-endian format because most modern machines are little endian.
+CBOR data is serialized in accordance with https://datatracker.ietf.org/doc/html/rfc8949[RFC 8949].
+
+When any text string or any Unicode string is encoded as a byte string, it MUST be encoded as valid UTF-8 without a BOM (unless that BOM is part of the text).
+
+=== Compatibility
+
+CBOR blobs are typically serialized as maps.
+Future versions of this document may add additional fields to the map to extend functionality provided that they are optional and functionality continues to work with or without them.
+A user may specify custom fields with a key consisting of an extension string, as specified below, provided these are specified with a capability.
+
+=== Extensions
+
+Certain portions of the protocol allow for an _extension string_.
+This is a UTF-8 string containing a single `@` sign followed by a lowercase domain name.
+The portion before the `@` indicates the extension and the domain name indicates the party defining that extension.
+This is designed to work just like in the SSH protocol.
+
+For example, if the party controlling `example.org` wished to implement extension `foo`, the string would be `foo@example.org`.
+
+=== Capabilities
+
+A capability is specified as a two-part value.
+The first part is mandatory, and the second part is optional.
+In a two-part form, the first part indicates a general category, such as `auth` for authentication, while the second part indicates a specific type of capability supported (such as `EXTERNAL` for external authentication).
+However, an implementation need not use the two-part form and may instead provide only a single entry.
+
+Extension capabilities by other projects may use an extension string in the second portion if the extension they're implementing is of a standard type (e.g., an authentication mechanism).
+Otherwise, they MUST use the extension string in the first part to indicate that this is an extension.
+
+Two-part extensions are written in text form with an equals sign, such as `auth=EXTERNAL`.
+
+If an extension provides multiple versions, then the versions should be denoted either with a second portion containing a version number or, if the extension already has a second portion, with a slash and a version number.
+The first version is `v0`.
+Similarly, parameters which add capabilities to a second part should contain a slash and the extension.
+Some examples follow:
+
+* `foo=v1`
+* `foo=bar/v1`
+* `channel=command/tty`
+
+If a capability has the ability to modify the protocol, it MUST use either `extension` or `protocol` as the first part of the capability.
+This is so that implementations which proxy data can determine which extensions it can pass through without understanding and which it cannot.
+
+=== Continuations
+
+Most requests contain a single response.
+However, some messages may require multiple round-trips, such as some authentication methods or responses where the value must be paginated.
+
+In such a case, the server may respond with the Continuation response code, which indicates that the request is so far successful, but requires more data to complete.
+If the sender of the message wishes to continue, it sends a Continue request where the `id` field matches the original ID for the original request and the `kind` field contains the message typ of the original request.
+The `message` field, if present, indicates a continuation message, which is usually of the same type as the original request (but may be different in some cases).
+If the second wishes to abort the operation, it sends an Abort request with the same values.
+
+Note that if multiple continuation requests are used, the `id` and `kind` always refer to the first message in the chain, and never to any subsequent messages.
+The server should use these to store any necessary state between the operations.
+
+Note that further continuation messages cannot be sent once a final status code (that is, a non-Continuation response) is received.
+At that point, the server will have freed any resources associated with the request.
+
+=== Pagination
+
+Most requests contain a single response.
+However, sometimes the size of a response will be large.
+In such a case, a request that is paginated will use a continuation to send multiple response of the same type.
+The server may decide the number of responses to send in each page, but it is typically 100.
+
+For a paginated request, all responses, whether the initial or the continuation responses, are of the same type.
+The `message` field on the continuation requests should always be set to null.
+Thus, a paginated request is merely a special case of a continuation.
+
+Note that if at any point no more responses are desired, an Abort response should still be sent to free resources.
+
+=== Required Functionality
+
+All implementations MUST implement the following messages:
+
+* Capability
+* Version
+* Ping
+* Authenticate
+* Continue
+* Abort
+* CloseAlert
+
+All implementations MUST implement the following response codes:
+
+* Success
+* Continuation
+* NeedsAuthentication
+* AuthenticationFailed
+* ContinuationNotFound
+* TooLarge
+* TooManyMessages
+
+All implementations MUST implement the following capabilities:
+
+* `auth=EXTERNAL`
+
+Implementations that proxy data MUST not advertise all capabilities with a first part of `extension` or `protocol` that they do not understand and implement, since these may change the way the protocol works.
+Custom extensions that affect the way the protocol works (e.g., by implementing the equivalent of STARTTLS), must use `protocol` as the first part of the extension.
+
+Similarly, all implementations MUST refuse to advertise a version number that they do not implement.
+Implementations which proxy data and advertise extensions which they don't support MUST gracefully handle message types and response codes for messages they don't implement.
+For compatibility, these implementations SHOULD implement the `extension=allocate` capability to allow other tools to implement this functionality.
+
+Note that an implementation is not required to advertise support for a capability that it doesn't wish to support, such as external authentication, only that it must understand it and handle it gracefully.
+
+If an implementation receives a response code it doesn't understand with a value in the range [0x00010000, 0xff000000), it MUST assume that the request was unsuccessful.
+
+An implementation which wishes to allocate its own message types or response codes MUST implement the `extension=allocate` capability; it MUST NOT assign its own static codes.
+
+An implementation supporting any two-part capability with the first part of `channel` must implement the following requests:
+
+* CreateChannel
+* DeleteChannel
+* ReadChannel
+* WriteChannel
+* PollChannel
+* DetachChannelSelector
+* ChannelMetadataNotification
+
+Such an implementation must also support the Errno response.
+
+An implementation supporting the `extension=allocate` capability must support the following requests:
+
+* CreateExtensionRange
+* DeleteExtensionRange
+* ListExtensionRange
+
+=== Requests
+
+Request codes are grouped by category by their first sixteen bits.
+All request codes dynamically allocated to extensions using the `extension=allocate` capability have the top bits set to 0xff and these are referred to as extension requests.
+
+==== Capability
+
+The capability request (`0x00000000`) requests that the other side provide a list of supported versions and capabilities.
+
+No CBOR blob is presently specified for this request.
+
+A successful response looks like this:
+
+----
+{
+  version: Vec<u32>,
+  capabilities: Vec<(Bytes, Option<Bytes>)>,
+  user-agent: Option<String>,
+}
+----
+
+The `version` array specifies a list of supported versions.
+`capabilities` lists a set of capabilities with a key and optional value.
+A key may be repeated multiple times with different values.
+
+The `user-agent` field indicates the user-agent of the responder.
+Typically, this is in the form `<implementation>/<version>`, such as `Lawn/0.1.0`.
+It is OPTIONAL, but helpful for troubleshooting.
+Implementations MAY use this value for detecting buggy implementations, but SHOULD NOT use it to restrict access to certain implementations.
+
+The following capabilities are known:
+
+|===
+| Key | Value | Meaning
+
+| `auth`      | `EXTERNAL`           | external authentication
+| `auth`      | any uppercase string | Any standardized SASL authentication mechanism
+| `auth`      | any lowercase string | Reserved for future Lawn-defined authentication mechanisms
+| `auth`      | any extension string | Reserved for custom extensions
+
+| `channel`   | `9p`                 | 9P channels (including all variants of the protocol)
+| `channel`   | `clipboard`          | clipboard channels
+| `channel`   | `command`            | command channels
+| `channel`   | any extension string | Reserved for custom extensions
+
+| `extension` | `allocate`           | dynamic message code extensions
+
+| `protocol` | any extension string  | Reserved for custom extensions that modify the protocol
+|===
+
+In the above text, an "`uppercase string`" is a string where all ASCII letters are in uppercase; similarly, a "`lowercase string`" is a string where all ASCII letters are in lowercase.
+Both may contain numbers or other characters defined by the specification.
+
+This request does not require authentication.
+It SHOULD be sent as the first request on a connection.
+
+==== Version
+
+The capability request (`0x00000001`) requests a version and a set of capabilities.
+
+A version request looks like this:
+
+----
+{
+  version: u32,
+  enable: Vec<(Bytes, Option<Bytes>)>,
+  id: Option<Bytes>,
+  user-agent: Option<String>,
+}
+----
+
+The `version` field specifies the version to be negotiated.
+`enable` indicates the capabilities to be enabled.
+The `user-agent` field is an optional field of the requester.
+It should be in the same form as the one in the Capability response.
+
+The `id` field is reserved for future use and should be specified as `None`.
+
+Note that no extension may be used and no extension codes may be mapped for use unless a capability has been advertised by the server and the client has enabled it.
+
+This request aborts all other in-flight requests, which will either not receive a response or will receive an empty Aborted response.
+If an Aborted response is sent to an in-flight request, it will be sent before the response to this request.
+As a result, it SHOULD be sent as the first message after the Capability message.
+It does not require authentication.
+
+If this protocol changes the version from v0, then the response to this message is sent with v0, and immediately thereafter, all messages are sent in the new version.
+
+==== Ping
+
+The ping request (`0x00000002`) requests a successful response without any further action.
+
+The other side SHOULD respond immediately with a successful response.
+This request does not require authentication.
+
+==== Authenticate
+
+The authenticate request (`0x00000003`) requests that the connection be authenticated.
+
+An authenticate request looks like this:
+
+----
+{
+  method: Bytes,
+  message: Option<Bytes>,
+}
+----
+
+The `method` field specifies the authentication method, which MUST be an authentication method supported by the server in the capability response.
+The `message` should contain a message if one is necessary for the client side of the connection.
+
+A response is identical to the original request, except that it contains the server's message.
+Continuation requests and responses are identical to the original message.
+
+The `message` in each case is the byte sequence required by the protocol.
+For SASL messages, this will contain each side's data in the message as defined by the SASL documentation; if one side has no data, then the message is null.
+
+This request aborts all other in-flight requests, which will either not receive a response or will receive an empty Aborted response.
+If an Aborted response is sent to an in-flight request, it will be sent before the response to this request.
+As a result, it SHOULD be sent as the first message after the Version message.
+
+Obviously, this message does not require authentication.
+Typically, a response to this request will be Success, AuthenticationFailed, or Continuation.
+
+===== External Authentication
+
+External authentication (`auth=EXTERNAL`) may be used where the connection itself provides a secure connection.
+An example is a Unix socket.
+The `message` field is null, and no continuation is expected.
+
+==== Continue
+
+The continue request (`0x00000004`) requests that a previous message which received the Continuation response be continued.
+
+A continue request looks like this:
+
+----
+{
+  id: u32,
+  kind: u32,
+  message: Option<T>,
+}
+----
+
+The `id` field refers to the ID of the original message, and the `kind` field refers to the message type of the original message.
+Note that if multiple continue requests are sent, all of them refer to the ID and message type of the original message (that is, the first message of the chain) and thus the `kind` field SHALL NOT contain a Continue value.
+The `message`, if present, indicates that a message of the appropriate type as defined by the original message type is included.
+
+This message does not require authentication unless the original message does.
+Typically the authentication check is performed when the first message is sent, but this is not required.
+
+==== Abort
+
+The abort request (`0x00000005`) requests that a previous message which received the Continuation response be aborted.
+This request allows the server to free resources if the client does not wish to continue.
+
+An abort request looks like this:
+
+----
+{
+  id: u32,
+  kind: u32,
+}
+----
+
+The `id` field refers to the ID of the original message, and the `kind` field refers to the message type of the original message.
+Note that if multiple continue requests are sent, all of them refer to the ID and message type of the original message (that is, the first message of the chain) and thus the `kind` field SHALL NOT contain a Continue value.
+
+This message does not require authentication unless the original message does.
+Typically the authentication check is performed when the first message is sent, but this is not required.
+
+==== CloseAlert
+
+The close alert request (`0x00001000`) informs that other side that the side sending the message is closing its connection.
+
+The other side SHOULD acknowledge this with a Success response and then close the connection, optionally sending its own CloseAlert message.
+The implementation receiving this message SHOULD ignore any failure to send a response or its own CloseAlert.
+
+This message does not require authentication.
+
+==== CreateChannel
+
+The create channel request (`0x00010000`) requests that a channel be created.
+
+A channel is a connection that contains one or more selectors.
+Typically, a selector refers to a unidirection (but possibly bidirectional) tunnel, each direction of which consists of a stream of bytes.
+The meaning of this stream of bytes is defined by the channel type.
+
+An implementation MUST NOT send a message requesting a channel type that was not advertised as a capability, and if such a message is received, a ParametersNotSupported response should be sent.
+
+The following channel types are known:
+
+|===
+| Channel Type | Meaning
+
+|  `9p`                 | channels for the 9P2000, 9P2000.u, and 9P2000.L protocols
+|  `clipboard`          | channels for clipboard operations
+|  `command`            | channels for commands
+|  any extension string | Reserved for custom extensions
+
+|===
+
+A create channel request looks like this:
+
+----
+{
+  kind: Bytes,
+  kind-args: Option<Vec<Bytes>>,
+  args: Option<Vec<Bytes>>,
+  env: Option<Map<Bytes, Bytes>>,
+  meta: Option<Map<Bytes, Value>>,
+  selectors: Vec<u32>,
+}
+----
+
+On success, the following response is provided:
+
+----
+{
+  id: u32,
+}
+----
+
+The `id` field refers to the channel ID.
+This ID is used in subsequent messages to indicate the channel message.
+
+All selectors start out as _attached_, meaning that they can be used to read and write data.
+They may be detached, which terminates the ability to read and write data further, by using a DetachChannelSelector message.
+
+This message requires authentication.
+
+===== 9P Channels
+
+A 9P channel is used for sending messages using the 9P2000 file system protocol and its variants.
+The specific variant is negotiated using the 9P protocol itself, but support for 9P2000.L is RECOMMENDED.
+
+In order to crate a channel of this type, the `channel=9p` protocol must be implemented by both sides.
+
+The `kind` field contains `9p`.
+The `selectors` field should indicate the selectors 0 and 1.
+Selector 0 indicates a unidirectional tunnel from 9P client to 9P server and selector 1 indicates a unidirectional tunnel from 9P server to 9P client.
+
+The `kind-args` and `meta` fields are null or absent.
+
+The `args` field should contain a single argument, the name of the file system share to mount.
+The `env` field, if present, should contain the environment variables of the client.
+If the client only supports Unicode environment variables, they MUST be encoded as UTF-8 without a BOM (unless a BOM is part of the data).
+
+===== Clipboard Channels
+
+A clipboard channel is used for sending messages to copy or paste from the clipboard.
+
+In order to crate a channel of this type, the `channel=clipboard` protocol must be implemented by both sides.
+
+The `kind` field should be `clipboard`.
+The `kind-args`, `args`, and `env` fields should be null or absent.
+
+The `meta` field may contain two entries.
+The first entry, which is REQUIRED, should have a key of `operation` and a value of either `copy` or `paste` as a text string.
+The second entry, which is OPTIONAL, should have a key of `target` and a value of either `primary` or `clipboard` as a text string.
+
+If the operation is `copy`, there is a single selector of value 0, which is a unidirectional tunnel from client to server containing the bytes to copy to the clipboard.
+If the operation is `paste`, there is a single selector of value 1, which is a unidirectional tunnel from server to client containing the bytes to paste from the clipboard.
+
+Note that some systems only accept Unicode data to or from the clipboard.
+If so, such data MUST be provided as UTF-8 without a BOM (unless such BOM is part of the text).
+
+===== Command Channels
+
+A command channel is used for executing commands on the server.
+
+In order to crate a channel of this type, the `channel=command` protocol must be implemented by both sides.
+
+The `kind` field should be `command`.
+The `kind-args` and `meta` fields should be null or absent.
+
+The `args` field should contain the name of the command to execute as element 0 and any arguments to the command following that in order.
+The `env` field, if present, should contain the environment variables of the client.
+
+The `selectors` field must contain 0, 1, and 2.
+These selectors are unidirectional (client to server, server to client, and server to client, respectively) and represent the standard POSIX file descriptors for standard input, standard output, and standard error, respectively.
+
+If the client only supports Unicode environment variables or Unicode arguments, they MUST be encoded as UTF-8 without a BOM (unless a BOM is part of the data).
+
+==== DeleteChannel
+
+The create channel request (`0x00010001`) requests that a channel be deleted.
+
+A delete channel request looks like this:
+
+----
+{
+  id: u32,
+  termination: Option<u32>,
+}
+----
+
+The `id` field refers to the channel ID of the channel to be deleted.
+The `termination` value must be null and is reserved for further specificatoin.
+
+This message requires authentication.
+
+==== ReadChannel
+
+The read channel request (`0x00010002`) requests that a read happen on a channel selector.
+
+A read channel request looks like this:
+
+----
+{
+  id: u32,
+  selector: u32,
+  count: u64,
+}
+----
+
+The `id` field is the channel ID and the `selector` field is an attached server-to-client selector on that channel.
+The `count` field indicates the number of bytes to read.
+Note that this must result in a response that is below the maximum message size.
+
+On success, a response looks like this:
+
+----
+{
+  bytes: Bytes,
+}
+----
+
+The `bytes` field contains the bytes read, which may be shorter than desired.
+If the field contains no data, then this means that end-of-file has been reached.
+
+Note that the read is non-blocking.
+If end-of-file has not been reached but there is no data to immediately read, the Errno response will be sent with an error code indicating EAGAIN.
+Other errors may be indicated, either with an Errno response or otherwise.
+
+This message requires authentication.
+
+==== WriteChannel
+
+The write channel request (`0x00010003`) requests that a write happen on a channel selector.
+
+A write channel request looks like this:
+
+----
+{
+  id: u32,
+  selector: u32,
+  bytes: Bytes,
+}
+----
+
+The `id` field is the channel ID and the `selector` field is an attached client-to-server selector on that channel.
+`bytes` is the data to write.
+
+On success, the response looks like this:
+
+----
+{
+  count: u64,
+}
+----
+
+Note that the write is non-blocking, and short writes may occur.
+If the data cannot be immediately written, the Errno response will be sent with an error code indicating EAGAIN.
+Other errors may be indicated, either with an Errno response or otherwise.
+
+This message requires authentication.
+
+==== PollChannel
+
+The poll channel request (`0x00010004`) requests information about a specific set of selectors.
+
+A poll channel request looks like this:
+
+----
+{
+  id: u32,
+  selectors: Vec<u32>,
+  milliseconds: Option<u32>,
+  wanted: Option<Vec<u64>>,
+}
+----
+
+The `id` field indicates the channel ID, and `selectors` is the selectors to query.
+The `milliseconds` field, if specified, is the number of milliseconds to wait until an event occurs.
+
+If `wanted` is provided and not null, it must contain exactly as many elements as the `selectors` field.
+Each entry is a set of bits that indicate what events to wait for.
+The values are as follows:
+
+|===
+| Value | Bit | Meaning
+
+| Input   | 0x00000001 | the selector is ready for reading
+| Output  | 0x00000002 | the selector is ready for writing
+| Error   | 0x00000004 | the selector has encountered an error
+| Hangup  | 0x00000008 | the file descriptor connected to the selector has been closed
+| Invalid | 0x00000010 | the selector is not valid or has been detached
+| Gone    | 0x00000020 | the service for the channel has ended (e.g., the command exited)
+|===
+
+If `wanted` is not specified, all items are implicitly requested if valid.
+
+The response will occur when any requested event occurs for any selector, or if the timeout is reached.
+Note that in some cases, a flag that was not requested can be sent and the caller should be prepared for this.
+
+A successful response looks like:
+
+----
+{
+  id: u32,
+  selectors: Map<u32, u64>,
+}
+----
+
+The `id` field reflects the channel ID and the `selectors` maps selectors to events.
+
+This message requires authentication.
+
+==== DetachChannelSelector
+
+The detach channel selector request (`0x00010011`) requests that a channel selector be detached.
+
+For command and clipboard channels, this closes the file descriptor on the pipe to the command.
+
+A detach channel selector request looks like this:
+
+----
+{
+  id: u32,
+  selector: u32,
+}
+----
+
+The `id` field refers to the channel ID and `selector` refers to the selector.
+
+On success, an empty response is returned.
+
+This message requires authentication.
+
+==== ChannelMetadataNotification
+
+The channel metadata notification request (`0x00010011`) indicates that a metadata change has occurred with a channel.
+This message is almost always sent from the server to the client.
+
+A request looks like this:
+
+----
+{
+  id: u32,
+  kind: u32,
+  status: Option<u32>,
+  status-kind: Option<u32>,
+  meta: Option<Map<Bytes, Value>>,
+}
+----
+
+The `id` field contains the channel ID.
+The `kind` field indicates a status kind as follows:
+
+|===
+| Name | Value | Meaning
+
+| Exited            | 0x00000000 | the process exited normally
+| Signalled         | 0x00000001 | the process exited with a signal
+| SignalledWithCore | 0x00000002 | the process exited with a signal and dumped core
+| Stopped           | 0x00000003 | the process stopped due to a signel
+| Unknown           | 0x7fffffff | the process exited in an unknown way
+|===
+
+Values starting with the top byte of `0xff` are reserved for extension and are dynamically allocated with `extension=allocate`.
+
+If the `status` code is present and non-null, it is the exit code (if the `kind` field is `Exited`) and the signal (if the `kind` field is `Signalled` or `SignalledWithCore`).
+
+The `meta` field should be absent or null and is reserved for future use.
+
+==== CreateExtensionRange
+
+The create extension range request (`0x00020000`) requests that a set of extension values be associated with an extension.
+
+Certain protocol elements permit extension values, including message types, response codes, and the `kind` field of ChannelMetadataNotification requests.
+These protocol elements are all allocated with the top byte set to 0xff.
+These values as allocated with this request, and once a range has been
+allocated, the values may be used for any protocol element where they are valid.
+
+The meaning of these values is specific to the extension, and the meaning should be specified in terms of an offset from the base value.
+For example, if an extension requires two message values, Foo and Bar, and the returned range is [0xff000100, 0xff000102), then the first message, Foo, is 0xff000100 and the second, Bar, is 0xff000101.
+If multiple response codes were also needed, those would also be 0xff000100 and 0xff000101, respectively.
+
+Note that an extension may assign completely different meanings to different protocol elements with the same code point. For example, the first message type allocated by this request may be completely unrelated to the first response code, and similarly unrelated to the first channel metadata kind value.
+The extension may assign these values as it sees fit based on an offset from the base value.
+
+An extension may allocate at most one range; if a larger range is needed, the first must be deallocated and the range reallocated.
+
+An implementation may limit the number of extensions and the size of the range.
+In the current reference implementation, these are limited to approximately 4096 extensions with approximately 4096 values in each range, which is expected to be suitable for most practical uses.
+
+A request looks like this:
+
+----
+{
+  extension: (Bytes, Option<Bytes>),
+  count: u32,
+}
+----
+
+The `extension` field indicates the enabled extension and the `count` field indicates the number of codes to allocate.
+
+If an enabled extension is given different values for client and server (say, because it negotiates some sort of size or other value), the extension value is the one sent in the `enable` by the client.
+
+On success, a response looks like this:
+
+----
+{
+  range: (u32, u32),
+}
+----
+
+The `range` value is half-open; the first value is the lowest valid value, and the second value is one more then the largest valid value.
+Thus the code 0xffffffff is not allocatable, and it is reserved.
+
+This message does not require authentication.
+It can only be used if the `extension=allocate` capability has been enabled.
+
+==== DeleteExtensionRange
+
+The delete extension range request (`0x00020001`) requests that a set of extension values be no longer associated with an extension.
+
+If an extension range allocated with CreateExtensionRange is no longer needed, this request should be used to deallocate it.
+
+A request looks like this:
+
+----
+{
+  extension: (Bytes, Option<Bytes>),
+  range: (u32, u32),
+}
+----
+
+The `extension` is an enabled extension and `range` is a half-open range returned from the CreateExtensionRange request.
+The first value is the first item in the range and the second is one more than the top value allocated.
+
+If an enabled extension is given different values for client and server (say, because it negotiates some sort of size or other value), the extension value is the one sent in the `enable` by the client.
+
+On success, an empty response is returned.
+
+This message does not require authentication.
+It can only be used if the `extension=allocate` capability has been enabled.
+
+==== ListExtensionRanges
+
+The list extension ranges request (`0x00020002`) requests that the set of extension ranges be listed.
+
+The request contains no body.
+
+On success, a response, whether initial or continuation, looks like this:
+
+----
+{
+  ranges: Vec<ExtensionRange>,
+}
+----
+
+The `ExtensionRange` structure looks like this:
+
+----
+{
+  extension: (Bytes, Option<Bytes>),
+  range: (u32, u32),
+}
+----
+
+The `extension` is exactly as specified in the CreateExtensionRange request, and the `range` is exactly as specified in the response; it is half-open.
+
+If an enabled extension is given different values for client and server (say, because it negotiates some sort of size or other value), the extension value is the one sent in the `enable` by the client.
+
+This message requires authentication and is paginated.
+
+=== Responses
+
+Response codes are grouped by category by their first sixteen bits.
+A response code with a category of 0 is considered to be successful or provisionally successful (that is, the operation may continue and be successful or unsuccessful at a later time).
+A response code with a category of 1 is considered to be unsuccessful and the semantics are considered equivalent to an IMAP4rev1 `NO` response, which roughly means that the request was understood, but not completed.
+A response code with a category of 2 is considered to be unsuccessful and the semantics are considered equivalent to an IMAP4rev1 `BAD` response, which roughly means that the request was not understood.
+All response codes dynamically allocated to extensions using the `extension=allocate` capability have the top bits set to 0xff and these are referred to as extension responses.
+
+==== Success
+
+The success response (`0x00000000`) indicates that the request is successful.
+
+Whether this response contains a body is dependent on the request.
+
+==== Continuation
+
+The continuation response (`0x00000001`) indicates that the request is so far successful, but incomplete.
+The client should continue the operation with a Continue request or abort the in-progress operation with an Abort request, referencing the first request.
+
+Whether this response contains a body is dependent on the request, but it will usually contain one.
+
+==== NeedsAuthentication
+
+The needs authentication response (`0x00010000`) indicates that the request required authentication, but authentication had not been performed.
+
+The semantics of this response are similar to those of an HTTP 401 response.
+
+==== Forbidden
+
+The forbidden response (`0x00010001`) indicates that the request required authentication, but authentication had been performed and was not sufficient to perform the request.
+
+The semantics of this response are similar to those of an HTTP 403 response.
+
+==== Closing
+
+The closing response (`0x00010002`) indicates that the other side cannot complete this request because it is shutting down.
+
+==== Errno
+
+The errno response (`0x00010003`) indicates that the response failed because of a system error.
+Note that this is typically only useful when reading from or writing to a channel, although it may be suitable in other situations as well.
+If the reason that the system error occurred can be mapped to another error that more adequately logically expresses the semantics (e.g., NotFound if the command requested was not found), that error should be used instead.
+
+A response looks like this:
+
+----
+{
+  errno: u32,
+}
+----
+
+The `errno` value is a Linux errno value for the x86-64 architecture.
+Note that this means that `EAGAIN` and `EWOULDBLOCK` are not distinguished, and that an attempt to open a symlink with `O_NOFOLLOW` should return `ELOOP` as specified by POSIX.
+(These are called out because they are a common source of portability problems across operating systems, but implementers should take heed of all relevant portability problems.)
+If a system uses other error codes that don't have a map to Linux error codes, it is RECOMMENDED to map them to `EINVAL` or the nearest suitable error code.
+
+The mapping is as follows:
+
+|===
+| Name | Value
+
+| EPERM | 1
+| ENOENT | 2
+| ESRCH | 3
+| EINTR | 4
+| EIO | 5
+| ENXIO | 6
+| E2BIG | 7
+| ENOEXEC | 8
+| EBADF | 9
+| ECHILD | 10
+| EAGAIN | 11
+| ENOMEM | 12
+| EACCES | 13
+| EFAULT | 14
+| ENOTBLK | 15
+| EBUSY | 16
+| EEXIST | 17
+| EXDEV | 18
+| ENODEV | 19
+| ENOTDIR | 20
+| EISDIR | 21
+| EINVAL | 22
+| ENFILE | 23
+| EMFILE | 24
+| ENOTTY | 25
+| ETXTBSY | 26
+| EFBIG | 27
+| ENOSPC | 28
+| ESPIPE | 29
+| EROFS | 30
+| EMLINK | 31
+| EPIPE | 32
+| EDOM | 33
+| ERANGE | 34
+| EDEADLK | 35
+| ENAMETOOLONG | 36
+| ENOLCK | 37
+| ENOSYS | 38
+| ENOTEMPTY | 39
+| ELOOP | 40
+| ENOMSG | 42
+| EIDRM | 43
+| ECHRNG | 44
+| EL2NSYNC | 45
+| EL3HLT | 46
+| EL3RST | 47
+| ELNRNG | 48
+| EUNATCH | 49
+| ENOCSI | 50
+| EL2HLT | 51
+| EBADE | 52
+| EBADR | 53
+| EXFULL | 54
+| ENOANO | 55
+| EBADRQC | 56
+| EBADSLT | 57
+| EBFONT | 59
+| ENOSTR | 60
+| ENODATA | 61
+| ETIME | 62
+| ENOSR | 63
+| ENONET | 64
+| ENOPKG | 65
+| EREMOTE | 66
+| ENOLINK | 67
+| EADV | 68
+| ESRMNT | 69
+| ECOMM | 70
+| EPROTO | 71
+| EMULTIHOP | 72
+| EDOTDOT | 73
+| EBADMSG | 74
+| EOVERFLOW | 75
+| ENOTUNIQ | 76
+| EBADFD | 77
+| EREMCHG | 78
+| ELIBACC | 79
+| ELIBBAD | 80
+| ELIBSCN | 81
+| ELIBMAX | 82
+| ELIBEXEC | 83
+| EILSEQ | 84
+| ERESTART | 85
+| ESTRPIPE | 86
+| EUSERS | 87
+| ENOTSOCK | 88
+| EDESTADDRREQ | 89
+| EMSGSIZE | 90
+| EPROTOTYPE | 91
+| ENOPROTOOPT | 92
+| EPROTONOSUPPORT | 93
+| ESOCKTNOSUPPORT | 94
+| EOPNOTSUPP | 95
+| EPFNOSUPPORT | 96
+| EAFNOSUPPORT | 97
+| EADDRINUSE | 98
+| EADDRNOTAVAIL | 99
+| ENETDOWN | 100
+| ENETUNREACH | 101
+| ENETRESET | 102
+| ECONNABORTED | 103
+| ECONNRESET | 104
+| ENOBUFS | 105
+| EISCONN | 106
+| ENOTCONN | 107
+| ESHUTDOWN | 108
+| ETOOMANYREFS | 109
+| ETIMEDOUT | 110
+| ECONNREFUSED | 111
+| EHOSTDOWN | 112
+| EHOSTUNREACH | 113
+| EALREADY | 114
+| EINPROGRESS | 115
+| ESTALE | 116
+| EUCLEAN | 117
+| ENOTNAM | 118
+| ENAVAIL | 119
+| EISNAM | 120
+| EREMOTEIO | 121
+| EDQUOT | 122
+| ENOMEDIUM | 123
+| EMEDIUMTYPE | 124
+| ECANCELED | 125
+| ENOKEY | 126
+| EKEYEXPIRED | 127
+| EKEYREVOKED | 128
+| EKEYREJECTED | 129
+| EOWNERDEAD | 130
+| ENOTRECOVERABLE | 131
+| ERFKILL | 132
+| EHWPOISON | 133
+|===
+
+==== AuthenticationFailed
+
+The authentication failed response (`0x00010004`) indicates that authentication failed.
+A more specific error code may be sent instead.
+
+==== Gone
+
+The gone response (`0x00010005`) indicates that the other end of the channel has disappeared and that future operation on this channel will not succeed.
+
+==== NotFound
+
+The not found response (`0x00010006`) indicates that the requested object is not found.
+
+This has the semantics of an HTTP 404 response.
+
+==== InternalError
+
+The internal error response (`0x00010007`) indicates that the client or server has encountered an internal error.
+This problem should be reported to those responsible for the implementation.
+
+==== ChannelDead
+
+The channel dead response (`0x00010008`) indicates that the channel is unable to produce new data and thus the operation cannot complete.
+
+==== Aborted
+
+The aborted response (`0x00010009`) indicates that the request was aborted, whether by request or otherwise.
+
+This response has no body.
+
+==== ContinuationNotFound
+
+The continuation not found response (`0x0001000a`) indicates that the continuation specified by the `kind` and `id` fields in a Continue response was not found.
+It's likely that the values were invalid.
+
+This response has no body.
+
+==== OutOfRange
+
+The out of range response (`0x0001000b`) indicates that value specified was not in range.
+For example, the value might be too large or too small, or simply not within the range of acceptable values for the type.
+
+==== NoSpace
+
+The no space response (`0x0001000c`) indicates that there is no more space for the requested operation.
+This could be due to any sort of resource exhaustion: memory, disk, or any server-internal resource.
+
+==== Conflict
+
+The conflict response (`0x0001000d`) indicates that the requested operation would conflict with some operation that either has already completed or is in progress.
+
+The semantics of this value are those of an HTTP 409 response.
+
+==== NotEnabled
+
+The not enabled response (`0x00020000`) indicates that the message type or parameter value was not enabled.
+For example, this response could be sent if a message type for a capability was used without enabling the capability.
+
+==== NotSupported
+
+The not supported response (`0x00020001`) indicates that the message type was not supported.
+
+==== ParameterNotSupported
+
+The parameter not supported response (`0x00020002`) indicates that the parameter value was not supported.
+
+==== Invalid
+
+The invalid response (`0x00020003`) indicates that the message type was understood, but is not valid.
+
+==== TooLarge
+
+The too large response (`0x00020004`) indicates that the message was too large.
+The maximum size field value is 2^24^.
+
+==== TooManyMessages
+
+The too many messages response (`0x00020005`) indicates that too many messages or continuations are in flight at once and the server considers this an error.
+
+==== InvalidParameters
+
+The invalid parameters response (`0x00020006`) indicates that the parameters are supported, but incorrect.
+For example, if a selector is not valid for a channel, this response may be sent.
