@@ -319,6 +319,7 @@ pub enum Capability {
     AuthKeyboardInteractive,
     AuthPlain,
     ChannelCommand,
+    ChannelCommandTTY,
     Channel9P,
     ChannelSFTP,
     ChannelClipboard,
@@ -384,6 +385,10 @@ impl From<Capability> for (Bytes, Option<Bytes>) {
                 (b"channel" as &[u8]).into(),
                 Some((b"command" as &[u8]).into()),
             ),
+            Capability::ChannelCommandTTY => (
+                (b"channel" as &[u8]).into(),
+                Some((b"command/tty" as &[u8]).into()),
+            ),
             Capability::Channel9P => ((b"channel" as &[u8]).into(), Some((b"9p" as &[u8]).into())),
             Capability::ChannelSFTP => (
                 (b"channel" as &[u8]).into(),
@@ -421,6 +426,7 @@ impl From<(&[u8], Option<&[u8]>)> for Capability {
             (b"auth", Some(b"PLAIN")) => Capability::AuthPlain,
             (b"auth", Some(b"keyboard-interactive")) => Capability::AuthKeyboardInteractive,
             (b"channel", Some(b"command")) => Capability::ChannelCommand,
+            (b"channel", Some(b"command/tty")) => Capability::ChannelCommandTTY,
             (b"channel", Some(b"9p")) => Capability::Channel9P,
             (b"channel", Some(b"sftp")) => Capability::ChannelSFTP,
             (b"channel", Some(b"clipboard")) => Capability::ChannelClipboard,
