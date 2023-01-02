@@ -46,6 +46,7 @@ mod template;
 #[cfg(not(miri))]
 #[cfg(test)]
 mod tests;
+mod tty;
 mod unix;
 
 use error::{Error, ErrorKind};
