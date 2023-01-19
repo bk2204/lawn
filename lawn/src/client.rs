@@ -376,7 +376,7 @@ impl Connection {
             }
         });
         let logger = self.config.logger();
-        let mut buf = [0u8; 65536];
+        let mut buf = vec![0u8; 65536];
         loop {
             select! {
                 res = finalrx.recv() => {
@@ -651,7 +651,7 @@ impl Connection {
             trace!(logger, "channel {}: closed selector {}", id, selector);
             return st.clone();
         }
-        let mut buf = [0; 65536];
+        let mut buf = vec![0; 65536];
         let data = match &st.data {
             Some(data) => data,
             None => {

@@ -152,8 +152,8 @@ impl Proxy {
         let mut interval = tokio::time::interval(Duration::from_millis(100));
         let mut ours_read = self.ours_read.lock().await;
         let logger = self.config.logger();
+        let mut buf = vec![0u8; 65536];
         loop {
-            let mut buf = [0u8; 65536];
             select! {
                 res = ours_read.read(&mut buf) => {
                     trace!(logger, "proxy client: read: {:?}", res);
@@ -232,7 +232,7 @@ impl Proxy {
                         let mut ours_write = self.ours_write.lock().await;
                         ours_write.write_all(&ours).await?;
                         trace!(logger, "proxy: relayed message");
-                        let mut buf = [0u8; 65536];
+                        let mut buf = vec![0u8; 65536];
                         match ours_read.try_read(&mut buf) {
                             // We have a message from the server to send.
                             Ok(n) => {
@@ -262,7 +262,7 @@ impl Proxy {
                     // see if there's any server data.
                     Some(None) => {
                         trace!(logger, "proxy: found extension message without data");
-                        let mut buf = [0u8; 65536];
+                        let mut buf = vec![0u8; 65536];
                         match ours_read.try_read(&mut buf) {
                             // We have a message from the server to send.
                             Ok(n) => {
