@@ -308,6 +308,12 @@ fn dispatch_query_test_connection(
             }
             Err(e) => logger.message(&format!("Capability: FAILED: {}", e)),
         }
+        match conn.negotiate_default_version().await {
+            Ok(_) => {
+                logger.message("Version negotiation: ok");
+            }
+            Err(e) => logger.message(&format!("Version negotiation: FAILED: {}", e)),
+        }
         match conn.auth_external().await {
             Ok(_) => {
                 logger.message("Authenticate EXTERNAL: ok");
