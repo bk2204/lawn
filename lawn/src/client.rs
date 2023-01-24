@@ -152,7 +152,10 @@ impl Connection {
             .cloned()
             .filter_map(|c| c.try_into().ok())
             .collect();
-        let intersection = ours.union(&theirs).map(|x| (*x).clone().into()).collect();
+        let intersection = ours
+            .intersection(&theirs)
+            .map(|x| (*x).clone().into())
+            .collect();
         trace!(
             self.config.logger(),
             "client: version: versions {:?} ours {:?} theirs {:?} intersection {:?}",
