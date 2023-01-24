@@ -152,9 +152,18 @@ impl Connection {
             .cloned()
             .filter_map(|c| c.try_into().ok())
             .collect();
+        let intersection = ours.union(&theirs).map(|x| (*x).clone().into()).collect();
+        trace!(
+            self.config.logger(),
+            "client: version: versions {:?} ours {:?} theirs {:?} intersection {:?}",
+            resp.version,
+            ours,
+            theirs,
+            intersection
+        );
         let req = VersionRequest {
             version: 0,
-            enable: ours.union(&theirs).map(|x| (*x).clone().into()).collect(),
+            enable: intersection,
             id: None,
             user_agent: Some(crate::config::VERSION.into()),
         };
