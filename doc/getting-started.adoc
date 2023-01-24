@@ -6,11 +6,11 @@ This can be useful to spawn a graphical editor, copy and paste to and from the c
 == Building and Installation
 
 The easiest way to build Lawn is by using the Cargo package manager.
-After cloning the repository and installing Rust and Cargo from your OS, run the following command:
+After installing Rust and Cargo from your OS, run the following command:
 
 [source,shell]
 ----
-$ cargo install --path lawn --locked --root ~
+$ cargo install --root ~ lawn
 ----
 
 That will install the binary in your `~/bin` directory.
