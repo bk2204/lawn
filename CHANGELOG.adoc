@@ -1,6 +1,31 @@
 = Changelog
 
-== v0.1.1 (2022-02-14)
+== v0.2.0 (2023-03-02)
+
+=== Binary
+
+* Avoid a failure to connect when using an older server with a newer client.
+* Avoid a stack overflow by minimizing on-stack allocations.
+
+=== Tests
+
+* Updated CI to latest version of Actions.
+* Add some basic integration tests in Rust.
+
+=== Documentation
+
+* Correct install instructions.
+* Add targets to make HTML and XHTML docs.
+* Add protocol documentation.
+
+=== Protocol and Internals
+
+* Implement extension mapping to allow codepoints for extension purposes.
+* Allow implementing arbitrary capability types with the internal code.
+* Implement continuations and pagination.
+* Implement a builder for configuration objects.
+
+== v0.1.1 (2022-12-14)
 
 === Binary
 
