@@ -1,6 +1,6 @@
 [package]
 name = "lawn-9p"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2018"
 license = "MIT"
 license-file = "../LICENSE"
@@ -16,7 +16,7 @@ include = [
 rust-version = "1.48.0"
 
 [dependencies]
-lawn-constants = { path = "../lawn-constants", version = "0.1.1" }
+lawn-constants = { path = "../lawn-constants", version = "0.2.0" }
 hex = "0.4"
 flurry = "0.3"
 libc = "0.2"
