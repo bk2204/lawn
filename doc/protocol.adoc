@@ -162,6 +162,16 @@ An implementation supporting the `extension=allocate` capability must support th
 * DeleteExtensionRange
 * ListExtensionRange
 
+=== Major Concepts
+
+==== Channels
+
+A channel provides a connection to pass one or more related streams of bytes, plus optional channel metadata, between the client and the server.
+Each independent stream of bytes is referred to by a selector, and can be read and written independently, depending on whether it is open for reading or writing.
+The selector can be thought of in many ways like a Unix file descriptor.
+
+Channels can be used for invoking commands, where the selectors 0, 1, and 2 refer to the streams normally associated with those file descriptors, and they can also be used for streaming various protocols, such as the 9P2000 protocol.
+
 === Requests
 
 Request codes are grouped by category by their first sixteen bits.
