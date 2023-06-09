@@ -242,6 +242,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lawn-fs"
+version = "0.3.0"
+dependencies = [
+ "bitflags",
+ "lawn-constants",
+ "num-derive",
+ "num-traits",
+]
+
+[[package]]
 name = "lawn-protocol"
 version = "0.2.0"
 dependencies = [

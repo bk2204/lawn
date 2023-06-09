@@ -3,5 +3,6 @@ members = [
     "lawn-9p",
     "lawn",
     "lawn-constants",
+    "lawn-fs",
     "lawn-protocol",
 ]
