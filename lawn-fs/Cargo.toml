@@ -16,7 +16,7 @@ include = [
 rust-version = "1.48.0"
 
 [dependencies]
-lawn-constants = { path = "../lawn-constants", version = "0.2.0" }
+lawn-constants = { path = "../lawn-constants", version = "0.2.0", features = ["rustix"] }
 bitflags = "1.3"
 num-traits = "0.2"
 num-derive = "0.3"
