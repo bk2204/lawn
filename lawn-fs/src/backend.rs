@@ -362,8 +362,8 @@ impl FileType {
 
     #[allow(dead_code)]
     #[cfg(feature = "unix")]
-    fn to_unix(&self) -> rustix::fs::RawMode {
-        let ft = match *self & Self::S_IFMT {
+    fn to_unix(self) -> rustix::fs::RawMode {
+        let ft = match self & Self::S_IFMT {
             Self::S_IFSOCK => rustix::fs::FileType::Socket,
             Self::S_IFLNK => rustix::fs::FileType::Symlink,
             Self::S_IFBLK => rustix::fs::FileType::BlockDevice,

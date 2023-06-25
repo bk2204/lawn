@@ -3,9 +3,10 @@ use crate::server::{
     LockStatus, Metadata, SimpleOpenMode, Stat, Tag, FID, QID,
 };
 use lawn_constants::Error;
+use lawn_fs::backend as fsbackend;
 use std::collections::BTreeMap;
 use std::fs;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::SystemTime;
 
@@ -177,30 +178,6 @@ pub enum FIDKind<AH: ToIdentifier, FH: ToIdentifier, DH: ToIdentifier, SH: ToIde
     Special(SH),
 }
 
-impl<AH: ToIdentifier, FH: ToIdentifier, DH: ToIdentifier, SH: ToIdentifier>
-    FIDKind<AH, FH, DH, SH>
-{
-    fn file_kind(&self) -> FileKind {
-        match self {
-            FIDKind::Auth(_) => FileKind::Auth,
-            FIDKind::File(_) => FileKind::File,
-            FIDKind::Dir(_) => FileKind::Dir,
-            FIDKind::Symlink(_) => FileKind::Symlink,
-            FIDKind::Special(_) => FileKind::Special,
-        }
-    }
-
-    fn identifier(&self) -> Vec<u8> {
-        match self {
-            FIDKind::Auth(a) => a.to_identifier(),
-            FIDKind::File(f) => f.to_identifier(),
-            FIDKind::Dir(d) => d.to_identifier(),
-            FIDKind::Symlink(s) => s.to_identifier(),
-            FIDKind::Special(s) => s.to_identifier(),
-        }
-    }
-}
-
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug, Hash)]
 pub enum FileKind {
     Auth = 0x08,
@@ -208,6 +185,22 @@ pub enum FileKind {
     Dir = 0x80,
     Symlink = 0x02,
     Special = 0xff,
+}
+
+impl From<fsbackend::QIDKind> for FileKind {
+    fn from(k: fsbackend::QIDKind) -> FileKind {
+        match k {
+            fsbackend::QIDKind::Directory => FileKind::Dir,
+            fsbackend::QIDKind::Regular => FileKind::File,
+            fsbackend::QIDKind::FIFO => FileKind::Special,
+            fsbackend::QIDKind::Symlink => FileKind::Symlink,
+            fsbackend::QIDKind::BlockDevice => FileKind::Special,
+            fsbackend::QIDKind::CharacterDevice => FileKind::Special,
+            fsbackend::QIDKind::Socket => FileKind::Special,
+            fsbackend::QIDKind::Authentication => FileKind::Auth,
+            fsbackend::QIDKind::Unknown => FileKind::Special,
+        }
+    }
 }
 
 impl FileKind {
@@ -228,51 +221,29 @@ impl FileKind {
     }
 }
 
-#[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
-struct QIDStorage {
-    kind: FileKind,
-    data: Vec<u8>,
-}
-
 #[derive(Default)]
 pub struct QIDMapper {
-    next: AtomicU64,
-    tree: Mutex<BTreeMap<QIDStorage, u64>>,
+    next: AtomicU32,
+    tree: Mutex<BTreeMap<u64, u32>>,
 }
 
 impl QIDMapper {
     pub fn new() -> QIDMapper {
         Self {
-            next: AtomicU64::new(0),
+            next: AtomicU32::new(0),
             tree: Mutex::new(BTreeMap::new()),
         }
     }
-
-    pub fn qid<AH: ToIdentifier, FH: ToIdentifier, DH: ToIdentifier, SH: ToIdentifier>(
-        &self,
-        fid: &FIDKind<AH, FH, DH, SH>,
-    ) -> QID {
-        self.qid_from_vec(fid.file_kind(), fid.identifier())
-    }
-
-    pub fn qid_from_value<T: ToIdentifier>(&self, kind: FileKind, fid: &T) -> QID {
-        self.qid_from_vec(kind, fid.to_identifier())
-    }
-
-    pub fn qid_from_id(&self, kind: FileKind, id: &[u8]) -> QID {
-        self.qid_from_vec(kind, id.to_vec())
-    }
-
-    pub fn qid_from_vec(&self, kind: FileKind, id: Vec<u8>) -> QID {
-        let storage = QIDStorage { kind, data: id };
+    pub fn qid(&self, q: fsbackend::QID) -> QID {
         let id = {
             let mut g = self.tree.lock().unwrap();
-            *g.entry(storage)
+            *g.entry(q.dev())
                 .or_insert_with(|| self.next.fetch_add(1, Ordering::AcqRel))
         };
-        let mut qid = QID([0u8; 13]);
-        qid.0[0] = kind as u8;
-        qid.0[5..13].copy_from_slice(&id.to_le_bytes());
-        qid
+        let mut data = [0u8; 13];
+        data[0] = FileKind::from(q.kind()) as u8;
+        data[1..5].copy_from_slice(&id.to_le_bytes());
+        data[5..].copy_from_slice(&q.ino().to_le_bytes());
+        QID(data)
     }
 }

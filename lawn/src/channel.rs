@@ -4,9 +4,9 @@ use crate::config::Logger;
 use crate::task::block_on_async;
 use crate::unix;
 use bytes::Bytes;
-use lawn_9p::auth::{AuthenticationInfo, Authenticator};
+use lawn_fs::auth::{AuthenticationInfo, Authenticator, AuthenticatorHandle};
+use lawn_fs::backend::Metadata;
 use lawn_9p::backend::libc::LibcBackend;
-use lawn_9p::backend::ToIdentifier;
 use lawn_9p::server::Server as Server9P;
 use lawn_constants::error::Error as Errno;
 use lawn_protocol::protocol;
@@ -669,16 +669,25 @@ pub struct Server9PSessionHandle {
     valid: bool,
 }
 
-impl ToIdentifier for Server9PSessionHandle {
-    fn to_identifier(&self) -> Vec<u8> {
-        let mut v = Vec::new();
-        v.extend(&(self.target.len() as u64).to_le_bytes());
-        v.extend(&(self.location.len() as u64).to_le_bytes());
-        v.extend(&(self.user.len() as u64).to_le_bytes());
-        v.extend(&self.target);
-        v.extend(&self.location);
-        v.extend(&self.user);
-        v
+impl AuthenticatorHandle for Server9PSessionHandle {
+    fn read(&self, _data: &mut [u8]) -> Result<u32, Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+
+    fn write(&self, _data: &[u8]) -> Result<u32, Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+
+    fn info(&self) -> Option<AuthenticationInfo<'_>> {
+        if !self.valid {
+            return None;
+        }
+        Some(AuthenticationInfo::new(
+            self.nuname,
+            &self.user,
+            &self.target,
+            &self.location,
+        ))
     }
 }
 
@@ -699,9 +708,7 @@ impl Server9PAuthenticator {
 }
 
 impl Authenticator for Server9PAuthenticator {
-    type SessionHandle = Server9PSessionHandle;
-
-    fn create(&self, uname: &[u8], aname: &[u8], nuname: Option<u32>) -> Self::SessionHandle {
+    fn create(&self, _meta: &Metadata, uname: &[u8], aname: &[u8], nuname: Option<u32>) -> Box<dyn AuthenticatorHandle + Send + Sync> {
         // TODO: implement logging trait
         trace!(
             self.logger,
@@ -713,33 +720,13 @@ impl Authenticator for Server9PAuthenticator {
             hex::encode(aname),
             aname == self.target
         );
-        Server9PSessionHandle {
+        Box::new(Server9PSessionHandle {
             user: uname.to_vec().into(),
             location: self.location.to_vec().into(),
             target: self.target.to_vec().into(),
             nuname,
             valid: aname == self.target || aname.is_empty(),
-        }
-    }
-
-    fn read(&self, _handle: &mut Self::SessionHandle, _data: &mut [u8]) -> Result<u32, Errno> {
-        Err(Errno::EOPNOTSUPP)
-    }
-
-    fn write(&self, _handle: &mut Self::SessionHandle, _data: &[u8]) -> Result<u32, Errno> {
-        Err(Errno::EOPNOTSUPP)
-    }
-
-    fn info<'a>(&self, handle: &'a Self::SessionHandle) -> Option<AuthenticationInfo<'a>> {
-        if !handle.valid {
-            return None;
-        }
-        Some(AuthenticationInfo::new(
-            handle.nuname,
-            &handle.user,
-            &handle.target,
-            &handle.location,
-        ))
+        })
     }
 }
 
@@ -771,7 +758,7 @@ impl Server9PChannel {
             logger.clone(),
             LibcBackend::new(
                 logger.clone(),
-                Server9PAuthenticator::new(target, location, logger.clone()),
+                Arc::new(lawn_fs::backend::libc::LibcBackend::new(logger.clone(), Arc::new(Server9PAuthenticator::new(target, location, logger.clone())), BUFFER_SIZE as u32)),
                 BUFFER_SIZE as u32,
             ),
             rd1,
