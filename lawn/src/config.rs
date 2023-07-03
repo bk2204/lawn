@@ -367,9 +367,6 @@ impl Config {
     pub fn p9p_enabled(&self, name: &str) -> Result<bool, Error> {
         let val = {
             let g = self.data.read().unwrap();
-            if let Some(val) = g.clipboard_enabled {
-                return Ok(val);
-            }
             match g
                 .config_file
                 .v0
