@@ -319,6 +319,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "lawn-sftp"
+version = "0.3.0"
+dependencies = [
+ "bitflags",
+ "flurry",
+ "hex",
+ "lawn-constants",
+ "lawn-fs",
+ "num-derive",
+ "num-traits",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

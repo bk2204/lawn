@@ -5,4 +5,5 @@ members = [
     "lawn-constants",
     "lawn-fs",
     "lawn-protocol",
+    "lawn-sftp",
 ]
