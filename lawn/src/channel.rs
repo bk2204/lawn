@@ -784,15 +784,55 @@ impl Server9PChannel {
     }
 }
 
-impl Channel for Server9PChannel {
-    fn id(&self) -> ChannelID {
+impl FSChannel for Server9PChannel {
+    fn rd(&self) -> Arc<sync::Mutex<Option<OwnedReadHalf>>> {
+        self.rd.clone()
+    }
+
+    fn wr(&self) -> Arc<sync::Mutex<Option<OwnedWriteHalf>>> {
+        self.wr.clone()
+    }
+
+    fn fd(&self) -> RawFd {
+        self.rdwr
+    }
+
+    fn alive(&self) -> &AtomicBool {
+        &self.alive
+    }
+
+    fn exit_status(&self) -> Arc<Mutex<Option<i32>>> {
+        self.exit_status.clone()
+    }
+
+    fn channel_id(&self) -> ChannelID {
         self.id
     }
 
+    fn logger(&self) -> Arc<Logger> {
+        self.logger.clone()
+    }
+}
+
+pub trait FSChannel {
+    fn rd(&self) -> Arc<sync::Mutex<Option<OwnedReadHalf>>>;
+    fn wr(&self) -> Arc<sync::Mutex<Option<OwnedWriteHalf>>>;
+    fn fd(&self) -> RawFd;
+    fn alive(&self) -> &AtomicBool;
+    fn exit_status(&self) -> Arc<Mutex<Option<i32>>>;
+    fn channel_id(&self) -> ChannelID;
+    fn logger(&self) -> Arc<Logger>;
+}
+
+impl<T: FSChannel> Channel for T {
+    fn id(&self) -> ChannelID {
+        self.channel_id()
+    }
+
     fn read(&self, selector: u32) -> Result<Bytes, protocol::Error> {
-        let fd = self.rd.clone();
-        let logger = self.logger.clone();
-        let id = self.id;
+        let fd = self.rd();
+        let logger = self.logger();
+        let id = self.channel_id();
         block_on_async(async move {
             let mut g = fd.lock().await;
             match (selector, &mut *g) {
@@ -833,9 +873,9 @@ impl Channel for Server9PChannel {
     }
 
     fn write(&self, selector: u32, data: Bytes) -> Result<u64, protocol::Error> {
-        let fd = self.wr.clone();
-        let logger = self.logger.clone();
-        let id = self.id;
+        let fd = self.wr();
+        let logger = self.logger();
+        let id = self.channel_id();
         block_on_async(async move {
             let mut g = fd.lock().await;
             match (selector, &mut *g) {
@@ -887,7 +927,8 @@ impl Channel for Server9PChannel {
         ch: oneshot::Sender<Result<Vec<protocol::PollChannelFlags>, protocol::Error>>,
     ) {
         let base_flags = {
-            let g = self.exit_status.lock().unwrap();
+            let exit_status = self.exit_status();
+            let g = exit_status.lock().unwrap();
             if g.is_some() {
                 protocol::PollChannelFlags::Gone
             } else {
@@ -895,23 +936,23 @@ impl Channel for Server9PChannel {
             }
         };
         trace!(
-            self.logger,
+            self.logger(),
             "channel {}: poll: flags {:?}",
-            self.id,
+            self.channel_id(),
             base_flags
         );
-        let id = self.id;
+        let id = self.channel_id();
         let mut fds = Vec::new();
         for sel in &selectors {
             let f = match sel {
-                0 => self.wr.blocking_lock().as_ref().map(|_| self.rdwr),
-                1 => self.rd.blocking_lock().as_ref().map(|_| self.rdwr),
+                0 => self.wr().blocking_lock().as_ref().map(|_| self.fd()),
+                1 => self.rd().blocking_lock().as_ref().map(|_| self.fd()),
                 _ => None,
             };
             fds.push(f.unwrap_or(-1));
         }
         poll(
-            self.logger.clone(),
+            self.logger(),
             selectors,
             flags,
             fds,
@@ -924,7 +965,8 @@ impl Channel for Server9PChannel {
 
     fn ping(&self) -> Result<(), protocol::Error> {
         {
-            let g = self.exit_status.lock().unwrap();
+            let exit_status = self.exit_status();
+            let g = exit_status.lock().unwrap();
             if let Some(st) = *g {
                 return Err(protocol::Error {
                     code: ResponseCode::Gone,
@@ -936,8 +978,8 @@ impl Channel for Server9PChannel {
     }
 
     fn detach_selector(&self, selector: u32) -> Result<(), protocol::Error> {
-        let rd = self.rd.clone();
-        let wr = self.wr.clone();
+        let rd = self.rd();
+        let wr = self.wr();
         block_on_async(async move {
             match selector {
                 0 => {
@@ -955,10 +997,10 @@ impl Channel for Server9PChannel {
     }
 
     fn is_alive(&self) -> bool {
-        self.alive.load(Ordering::Acquire)
+        self.alive().load(Ordering::Acquire)
     }
 
     fn set_dead(&self) {
-        self.alive.store(false, Ordering::Release);
+        self.alive().store(false, Ordering::Release);
     }
 }
