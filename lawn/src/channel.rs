@@ -661,7 +661,7 @@ impl Channel for ServerClipboardChannel {
 }
 
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq)]
-pub struct Server9PSessionHandle {
+pub struct ServerFSSessionHandle {
     target: Bytes,
     location: Bytes,
     user: Bytes,
@@ -669,7 +669,7 @@ pub struct Server9PSessionHandle {
     valid: bool,
 }
 
-impl AuthenticatorHandle for Server9PSessionHandle {
+impl AuthenticatorHandle for ServerFSSessionHandle {
     fn read(&self, _data: &mut [u8]) -> Result<u32, Errno> {
         Err(Errno::EOPNOTSUPP)
     }
@@ -691,13 +691,13 @@ impl AuthenticatorHandle for Server9PSessionHandle {
     }
 }
 
-pub struct Server9PAuthenticator {
+pub struct ServerFSAuthenticator {
     target: Bytes,
     location: Bytes,
     logger: Arc<Logger>,
 }
 
-impl Server9PAuthenticator {
+impl ServerFSAuthenticator {
     pub fn new(target: Bytes, location: Bytes, logger: Arc<Logger>) -> Self {
         Self {
             target,
@@ -707,12 +707,12 @@ impl Server9PAuthenticator {
     }
 }
 
-impl Authenticator for Server9PAuthenticator {
+impl Authenticator for ServerFSAuthenticator {
     fn create(&self, _meta: &Metadata, uname: &[u8], aname: &[u8], nuname: Option<u32>) -> Box<dyn AuthenticatorHandle + Send + Sync> {
         // TODO: implement logging trait
         trace!(
             self.logger,
-            "9P authenticator: user {} location {} target {} nuname {:?} aname {} valid {}",
+            "FS authenticator: user {} location {} target {} nuname {:?} aname {} valid {}",
             hex::encode(uname),
             hex::encode(&self.location),
             hex::encode(&self.target),
@@ -720,7 +720,7 @@ impl Authenticator for Server9PAuthenticator {
             hex::encode(aname),
             aname == self.target
         );
-        Box::new(Server9PSessionHandle {
+        Box::new(ServerFSSessionHandle {
             user: uname.to_vec().into(),
             location: self.location.to_vec().into(),
             target: self.target.to_vec().into(),
@@ -758,7 +758,7 @@ impl Server9PChannel {
             logger.clone(),
             LibcBackend::new(
                 logger.clone(),
-                Arc::new(lawn_fs::backend::libc::LibcBackend::new(logger.clone(), Arc::new(Server9PAuthenticator::new(target, location, logger.clone())), BUFFER_SIZE as u32)),
+                Arc::new(lawn_fs::backend::libc::LibcBackend::new(logger.clone(), Arc::new(ServerFSAuthenticator::new(target, location, logger.clone())), BUFFER_SIZE as u32)),
                 BUFFER_SIZE as u32,
             ),
             rd1,
