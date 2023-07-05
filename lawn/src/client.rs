@@ -317,6 +317,24 @@ impl Connection {
             .await
     }
 
+    pub async fn run_sftp<I: AsyncReadExt + Unpin, O: AsyncWriteExt + Unpin>(
+        &self,
+        stdin: I,
+        stdout: O,
+        target: Bytes,
+    ) -> Result<i32, Error> {
+        let devnull = tokio::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/null")
+            .await
+            .unwrap();
+        let id = self.create_sftp_channel(target).await?;
+        let mut fd_status = [FDStatus::default(), FDStatus::default()];
+        self.run_channel(stdin, stdout, devnull, id, &mut fd_status)
+            .await
+    }
+
     pub async fn run_command<
         I: AsyncReadExt + Unpin,
         O: AsyncWriteExt + Unpin,
@@ -931,12 +949,20 @@ impl Connection {
     }
 
     async fn create_9p_channel(&self, target: Bytes) -> Result<ChannelID, Error> {
+        self.create_fs_channel(target, b"9p").await
+    }
+
+    async fn create_sftp_channel(&self, target: Bytes) -> Result<ChannelID, Error> {
+        self.create_fs_channel(target, b"sftp").await
+    }
+
+    async fn create_fs_channel(&self, target: Bytes, kind: &[u8]) -> Result<ChannelID, Error> {
         let handler = match self.handler.as_ref() {
             Some(handler) => handler,
             None => return Err(Error::new(ErrorKind::NotConnected)),
         };
         let req = CreateChannelRequest {
-            kind: (b"9p" as &'static [u8]).into(),
+            kind: kind.to_owned().into(),
             kind_args: None,
             args: Some(vec![target]),
             env: Some(self.config.env_vars().clone()),

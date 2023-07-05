@@ -160,6 +160,7 @@ pub enum ErrorKind {
     CommandFailure,
     TemplateError,
     UnknownCommandType,
+    UnknownProtocolType,
     MissingArguments,
     IncompatibleArguments,
     NotRootMachine,

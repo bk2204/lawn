@@ -37,12 +37,20 @@ impl From<crate::error::Error> for Error {
     }
 }
 
+#[allow(clippy::upper_case_acronyms)]
+#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
+pub enum ProxyProtocol {
+    P9P,
+    SFTP,
+}
+
 /// Implements a server-side proxy listener.
 pub struct ProxyListener {
     ours: PathBuf,
     agent: UnixListener,
     config: Arc<Config>,
     target: Bytes,
+    protocol: ProxyProtocol,
 }
 
 impl ProxyListener {
@@ -51,13 +59,15 @@ impl ProxyListener {
         p9p: PathBuf,
         ours: PathBuf,
         target: Bytes,
+        protocol: ProxyProtocol,
     ) -> Result<Self, Error> {
-        let agent = UnixListener::bind(&p9p)?;
+        let agent = UnixListener::bind(p9p)?;
         Ok(ProxyListener {
             ours,
             agent,
             config,
             target,
+            protocol,
         })
     }
 
@@ -68,8 +78,9 @@ impl ProxyListener {
                 if let Ok(ours) = UnixStream::connect(&self.ours).await {
                     let config = self.config.clone();
                     let target = self.target.clone();
+                    let protocol = self.protocol;
                     tokio::spawn(async move {
-                        let mut p = Proxy::new(config, conn, ours, target);
+                        let mut p = Proxy::new(config, conn, ours, target, protocol);
                         let _ = p.run_server().await;
                     });
                 }
@@ -84,7 +95,7 @@ impl ProxyListener {
                 if let Ok(ours) = UnixStream::connect(&self.ours).await {
                     let config = self.config.clone();
                     let target = self.target.clone();
-                    let mut p = Proxy::new(config, conn, ours, target);
+                    let mut p = Proxy::new(config, conn, ours, target, self.protocol);
                     let _ = p.run_server().await;
                     return Ok(());
                 }
@@ -98,16 +109,24 @@ pub struct Proxy {
     p9p_wr: OwnedWriteHalf,
     conn: Arc<Connection>,
     target: Bytes,
+    protocol: ProxyProtocol,
 }
 
 impl Proxy {
-    pub fn new(config: Arc<Config>, p9p: UnixStream, ours: UnixStream, target: Bytes) -> Proxy {
+    pub fn new(
+        config: Arc<Config>,
+        p9p: UnixStream,
+        ours: UnixStream,
+        target: Bytes,
+        protocol: ProxyProtocol,
+    ) -> Proxy {
         let (rd, wr) = p9p.into_split();
         Proxy {
             conn: Arc::new(Connection::new(config, None, ours, false)),
             p9p_rd: rd,
             p9p_wr: wr,
             target,
+            protocol,
         }
     }
 
@@ -116,6 +135,7 @@ impl Proxy {
         p9p: UnixStream,
         conn: Arc<Connection>,
         target: Bytes,
+        protocol: ProxyProtocol,
     ) -> Proxy {
         let (rd, wr) = p9p.into_split();
         Proxy {
@@ -123,6 +143,7 @@ impl Proxy {
             p9p_rd: rd,
             p9p_wr: wr,
             target,
+            protocol,
         }
     }
 
@@ -130,9 +151,18 @@ impl Proxy {
         self.conn.ping().await?;
         self.conn.negotiate_default_version().await?;
         self.conn.auth_external().await?;
-        self.conn
-            .run_9p(&mut self.p9p_rd, &mut self.p9p_wr, self.target.clone())
-            .await?;
+        match self.protocol {
+            ProxyProtocol::P9P => {
+                self.conn
+                    .run_9p(&mut self.p9p_rd, &mut self.p9p_wr, self.target.clone())
+                    .await?
+            }
+            ProxyProtocol::SFTP => {
+                self.conn
+                    .run_sftp(&mut self.p9p_rd, &mut self.p9p_wr, self.target.clone())
+                    .await?
+            }
+        };
         Ok(())
     }
 }
