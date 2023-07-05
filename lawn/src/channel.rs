@@ -4,13 +4,15 @@ use crate::config::Logger;
 use crate::task::block_on_async;
 use crate::unix;
 use bytes::Bytes;
-use lawn_fs::auth::{AuthenticationInfo, Authenticator, AuthenticatorHandle};
-use lawn_fs::backend::Metadata;
 use lawn_9p::backend::libc::LibcBackend;
 use lawn_9p::server::Server as Server9P;
 use lawn_constants::error::Error as Errno;
+use lawn_fs::auth::{AuthenticationInfo, Authenticator, AuthenticatorHandle};
+use lawn_fs::backend::Metadata;
 use lawn_protocol::protocol;
 use lawn_protocol::protocol::{ChannelID, ClipboardChannelOperation, ErrorBody, ResponseCode};
+use lawn_sftp::backend::Backend as SFTPBackend;
+use lawn_sftp::server::Server as ServerSFTP;
 use std::collections::HashMap;
 use std::io;
 use std::os::raw::c_int;
@@ -708,7 +710,13 @@ impl ServerFSAuthenticator {
 }
 
 impl Authenticator for ServerFSAuthenticator {
-    fn create(&self, _meta: &Metadata, uname: &[u8], aname: &[u8], nuname: Option<u32>) -> Box<dyn AuthenticatorHandle + Send + Sync> {
+    fn create(
+        &self,
+        _meta: &Metadata,
+        uname: &[u8],
+        aname: &[u8],
+        nuname: Option<u32>,
+    ) -> Box<dyn AuthenticatorHandle + Send + Sync> {
         // TODO: implement logging trait
         trace!(
             self.logger,
@@ -758,7 +766,11 @@ impl Server9PChannel {
             logger.clone(),
             LibcBackend::new(
                 logger.clone(),
-                Arc::new(lawn_fs::backend::libc::LibcBackend::new(logger.clone(), Arc::new(ServerFSAuthenticator::new(target, location, logger.clone())), BUFFER_SIZE as u32)),
+                Arc::new(lawn_fs::backend::libc::LibcBackend::new(
+                    logger.clone(),
+                    Arc::new(ServerFSAuthenticator::new(target, location, logger.clone())),
+                    BUFFER_SIZE as u32,
+                )),
                 BUFFER_SIZE as u32,
             ),
             rd1,
@@ -785,6 +797,96 @@ impl Server9PChannel {
 }
 
 impl FSChannel for Server9PChannel {
+    fn rd(&self) -> Arc<sync::Mutex<Option<OwnedReadHalf>>> {
+        self.rd.clone()
+    }
+
+    fn wr(&self) -> Arc<sync::Mutex<Option<OwnedWriteHalf>>> {
+        self.wr.clone()
+    }
+
+    fn fd(&self) -> RawFd {
+        self.rdwr
+    }
+
+    fn alive(&self) -> &AtomicBool {
+        &self.alive
+    }
+
+    fn exit_status(&self) -> Arc<Mutex<Option<i32>>> {
+        self.exit_status.clone()
+    }
+
+    fn channel_id(&self) -> ChannelID {
+        self.id
+    }
+
+    fn logger(&self) -> Arc<Logger> {
+        self.logger.clone()
+    }
+}
+
+pub struct ServerSFTPChannel {
+    rd: Arc<sync::Mutex<Option<OwnedReadHalf>>>,
+    wr: Arc<sync::Mutex<Option<OwnedWriteHalf>>>,
+    rdwr: RawFd,
+    alive: AtomicBool,
+    exit_status: Arc<Mutex<Option<i32>>>,
+    id: ChannelID,
+    logger: Arc<Logger>,
+}
+
+impl ServerSFTPChannel {
+    pub fn new(
+        logger: Arc<Logger>,
+        id: ChannelID,
+        target: Bytes,
+        location: Bytes,
+    ) -> Result<ServerSFTPChannel, protocol::Error> {
+        const BUFFER_SIZE: usize = 128 * 1024;
+        let (str1, str2) = UnixStream::pair()?;
+        let rdwr = str2.as_raw_fd();
+        let (rd1, wr1) = str1.into_split();
+        let (rd2, wr2) = str2.into_split();
+        let exit_status = Arc::new(Mutex::new(None));
+        let es = exit_status.clone();
+        let serv_logger = logger.clone();
+        let backend = SFTPBackend::new(
+            logger.clone(),
+            Arc::new(lawn_fs::backend::libc::LibcBackend::new(
+                logger.clone(),
+                Arc::new(ServerFSAuthenticator::new(
+                    target.clone(),
+                    location,
+                    logger.clone(),
+                )),
+                BUFFER_SIZE as u32,
+            )),
+            None,
+            &target,
+        );
+        let backend = backend.map_err(io::Error::from)?;
+        let serv = ServerSFTP::new(logger.clone(), backend, rd1, wr1);
+        tokio::spawn(async move {
+            let mut serv = serv;
+            let r = serv.run().await;
+            trace!(serv_logger, "channel {}: SFTP server exiting: {:?}", id, &r);
+            let mut g = es.lock().unwrap();
+            *g = Some(if r.is_ok() { 0 } else { 3 });
+        });
+        Ok(Self {
+            logger,
+            id,
+            rdwr,
+            exit_status,
+            alive: AtomicBool::new(true),
+            rd: Arc::new(sync::Mutex::new(Some(rd2))),
+            wr: Arc::new(sync::Mutex::new(Some(wr2))),
+        })
+    }
+}
+
+impl FSChannel for ServerSFTPChannel {
     fn rd(&self) -> Arc<sync::Mutex<Option<OwnedReadHalf>>> {
         self.rd.clone()
     }

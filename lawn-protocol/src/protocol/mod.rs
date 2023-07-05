@@ -268,6 +268,7 @@ pub enum Capability {
     AuthExternal,
     ChannelCommand,
     Channel9P,
+    ChannelSFTP,
     ChannelClipboard,
     ExtensionAllocate,
     Other(Bytes, Option<Bytes>),
@@ -281,6 +282,7 @@ impl Capability {
             Self::ChannelCommand,
             Self::ChannelClipboard,
             Self::Channel9P,
+            Self::ChannelSFTP,
             Self::ExtensionAllocate,
         ]
         .iter()
@@ -295,6 +297,7 @@ impl Capability {
                 | Self::ChannelCommand
                 | Self::ChannelClipboard
                 | Self::Channel9P
+                | Self::ChannelSFTP
                 | Self::ExtensionAllocate
         )
     }
@@ -312,6 +315,10 @@ impl From<Capability> for (Bytes, Option<Bytes>) {
                 Some((b"command" as &[u8]).into()),
             ),
             Capability::Channel9P => ((b"channel" as &[u8]).into(), Some((b"9p" as &[u8]).into())),
+            Capability::ChannelSFTP => (
+                (b"channel" as &[u8]).into(),
+                Some((b"sftp" as &[u8]).into()),
+            ),
             Capability::ChannelClipboard => (
                 (b"channel" as &[u8]).into(),
                 Some((b"clipboard" as &[u8]).into()),
@@ -331,6 +338,7 @@ impl From<(&[u8], Option<&[u8]>)> for Capability {
             (b"auth", Some(b"EXTERNAL")) => Capability::AuthExternal,
             (b"channel", Some(b"command")) => Capability::ChannelCommand,
             (b"channel", Some(b"9p")) => Capability::Channel9P,
+            (b"channel", Some(b"sftp")) => Capability::ChannelSFTP,
             (b"channel", Some(b"clipboard")) => Capability::ChannelClipboard,
             (b"extension", Some(b"allocate")) => Capability::ExtensionAllocate,
             (name, subtype) => {

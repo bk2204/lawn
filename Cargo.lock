@@ -250,6 +250,7 @@ dependencies = [
  "lawn-constants",
  "lawn-fs",
  "lawn-protocol",
+ "lawn-sftp",
  "libc",
  "num-derive",
  "num-traits",

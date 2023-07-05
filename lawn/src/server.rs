@@ -1,5 +1,6 @@
 use crate::channel::{
-    ChannelManager, Server9PChannel, ServerClipboardChannel, ServerCommandChannel,
+    Channel, ChannelManager, Server9PChannel, ServerClipboardChannel, ServerCommandChannel,
+    ServerSFTPChannel,
 };
 use crate::config;
 use crate::config::{Config, Logger};
@@ -698,6 +699,13 @@ impl Server {
                     {
                         Self::create_9p_channel(id, state.clone(), &m).await
                     }
+                    b"sftp"
+                        if handler
+                            .has_capability(&protocol::Capability::ChannelSFTP)
+                            .await =>
+                    {
+                        Self::create_sftp_channel(id, state.clone(), &m).await
+                    }
                     _ => return Err(ResponseCode::ParametersNotSupported.into()),
                 };
                 match res {
@@ -1045,10 +1053,25 @@ impl Server {
         Ok(cid)
     }
 
-    async fn create_9p_channel<T: AsyncRead + Unpin, U: AsyncWrite + Unpin>(
+    async fn create_fs_channel<
+        T: AsyncRead + Unpin,
+        U: AsyncWrite + Unpin,
+        FE: Fn(Arc<Config>, &str) -> Result<bool, Error>,
+        FL: Fn(Arc<Config>, &str) -> Result<Option<String>, Error>,
+        FS: Fn(
+            Arc<Logger>,
+            protocol::ChannelID,
+            Bytes,
+            Bytes,
+        ) -> Result<Arc<dyn Channel + Send + Sync>, protocol::Error>,
+    >(
         id: u64,
         state: Arc<ServerState<T, U>>,
         m: &protocol::CreateChannelRequest,
+        proto_name: &str,
+        enabled: FE,
+        location: FL,
+        start: FS,
     ) -> Result<protocol::ChannelID, handler::Error> {
         let allowed: HashSet<u32> = vec![0, 1].iter().cloned().collect();
         let requested: HashSet<u32> = m.selectors.iter().cloned().collect();
@@ -1068,43 +1091,58 @@ impl Server {
         };
         let config = state.config();
         let logger = config.logger();
-        match config.p9p_enabled(mount) {
+        match enabled(config.clone(), mount) {
             Ok(true) => (),
             Ok(false) => {
-                trace!(logger, "server: {}: 9P disabled for mount {}", id, mount);
+                trace!(
+                    logger,
+                    "server: {}: {} disabled for mount {}",
+                    id,
+                    proto_name,
+                    mount
+                );
                 return Err(ResponseCode::NotFound.into());
             }
             Err(e) => {
                 trace!(
                     logger,
-                    "server: {}: 9P error checking if enabled for mount {}: {}",
+                    "server: {}: {} error checking if enabled for mount {}: {}",
                     id,
+                    proto_name,
                     mount,
                     e
                 );
                 return Err(ResponseCode::NotFound.into());
             }
         }
-        let location = match config.p9p_location(mount) {
+        let location = match location(config, mount) {
             Ok(Some(loc)) => {
                 trace!(
                     logger,
-                    "server: {}: 9P mount {} points to {}",
+                    "server: {}: {} mount {} points to {}",
                     id,
+                    proto_name,
                     mount,
                     loc
                 );
                 loc
             }
             Ok(None) => {
-                trace!(logger, "server: {}: 9P mount {} does not exist", id, mount);
+                trace!(
+                    logger,
+                    "server: {}: {} mount {} does not exist",
+                    id,
+                    proto_name,
+                    mount
+                );
                 return Err(ResponseCode::NotFound.into());
             }
             Err(e) => {
                 trace!(
                     logger,
-                    "server: {}: 9P error checking if mount {} exists: {}",
+                    "server: {}: {} error checking if mount {} exists: {}",
                     id,
+                    proto_name,
                     mount,
                     e
                 );
@@ -1114,14 +1152,51 @@ impl Server {
         let logger = state.logger();
         let channels = state.channels();
         let cid = channels.next_id();
-        let ch = Arc::new(Server9PChannel::new(
-            logger,
-            cid,
-            mount.to_string().into(),
-            location.into(),
-        )?);
+        let ch = start(logger, cid, mount.to_string().into(), location.into())?;
         channels.insert(cid, ch);
         Ok(cid)
+    }
+
+    async fn create_9p_channel<T: AsyncRead + Unpin, U: AsyncWrite + Unpin>(
+        id: u64,
+        state: Arc<ServerState<T, U>>,
+        m: &protocol::CreateChannelRequest,
+    ) -> Result<protocol::ChannelID, handler::Error> {
+        Self::create_fs_channel(
+            id,
+            state,
+            m,
+            "9P",
+            |config, mount| config.p9p_enabled(mount),
+            |config, mount| config.p9p_location(mount),
+            |logger, cid, mount, location| {
+                Ok(Arc::new(Server9PChannel::new(
+                    logger, cid, mount, location,
+                )?))
+            },
+        )
+        .await
+    }
+
+    async fn create_sftp_channel<T: AsyncRead + Unpin, U: AsyncWrite + Unpin>(
+        id: u64,
+        state: Arc<ServerState<T, U>>,
+        m: &protocol::CreateChannelRequest,
+    ) -> Result<protocol::ChannelID, handler::Error> {
+        Self::create_fs_channel(
+            id,
+            state,
+            m,
+            "SFTP",
+            |config, mount| config.fs_enabled(mount),
+            |config, mount| config.fs_location(mount),
+            |logger, cid, mount, location| {
+                Ok(Arc::new(ServerSFTPChannel::new(
+                    logger, cid, mount, location,
+                )?))
+            },
+        )
+        .await
     }
 
     fn daemonize(&self, fdrd: Option<File>) -> Result<(), Error> {

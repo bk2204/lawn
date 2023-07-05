@@ -367,10 +367,23 @@ impl Config {
     pub fn p9p_enabled(&self, name: &str) -> Result<bool, Error> {
         let val = {
             let g = self.data.read().unwrap();
+            let p9p_value = g.config_file.v0.p9p.as_ref().and_then(|p| p.get(name));
+            match p9p_value {
+                Some(v) => v.if_value.clone(),
+                None => return self.fs_enabled(name),
+            }
+        };
+        let ctx = self.template_context(None, None);
+        ConfigValue::new(val, &ctx)?.into_bool()
+    }
+
+    pub fn fs_enabled(&self, name: &str) -> Result<bool, Error> {
+        let val = {
+            let g = self.data.read().unwrap();
             match g
                 .config_file
                 .v0
-                .p9p
+                .fs
                 .as_ref()
                 .and_then(|p| p.get(name))
                 .map(|x| x.if_value.clone())
@@ -386,10 +399,29 @@ impl Config {
     pub fn p9p_location(&self, name: &str) -> Result<Option<String>, Error> {
         let val = {
             let g = self.data.read().unwrap();
+            let p9p_value = g.config_file.v0.p9p.as_ref().and_then(|p| p.get(name));
+            let p9pcfg = match p9p_value {
+                Some(c) => c,
+                None => return self.fs_location(name),
+            };
+            match p9pcfg.location.clone() {
+                Some(Value::String(ref s)) => s.clone(),
+                None => return Ok(None),
+                _ => return Err(Error::new(ErrorKind::InvalidConfigurationValue)),
+            }
+        };
+        let ctx = self.template_context(None, None);
+        let val = Value::String(val);
+        Ok(Some(ConfigValue::new(val, &ctx)?.into_string()?))
+    }
+
+    pub fn fs_location(&self, name: &str) -> Result<Option<String>, Error> {
+        let val = {
+            let g = self.data.read().unwrap();
             match g
                 .config_file
                 .v0
-                .p9p
+                .fs
                 .as_ref()
                 .and_then(|p| p.get(name))
                 .and_then(|x| x.location.clone())
@@ -996,6 +1028,7 @@ impl ConfigFile {
                 socket: None,
                 commands: None,
                 p9p: None,
+                fs: None,
             },
         }
     }
@@ -1009,6 +1042,7 @@ struct ConfigFileV0 {
     commands: Option<BTreeMap<String, ConfigCommand>>,
     #[serde(rename = "9p")]
     p9p: Option<BTreeMap<String, Config9P>>,
+    fs: Option<BTreeMap<String, ConfigFS>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -1036,6 +1070,13 @@ pub struct ConfigCommand {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Config9P {
+    #[serde(rename = "if")]
+    if_value: Value,
+    location: Option<Value>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ConfigFS {
     #[serde(rename = "if")]
     if_value: Value,
     location: Option<Value>,
