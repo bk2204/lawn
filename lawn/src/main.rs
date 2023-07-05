@@ -28,7 +28,7 @@ mod client;
 mod config;
 mod encoding;
 mod error;
-mod p9p_proxy;
+mod fs_proxy;
 mod server;
 mod ssh_proxy;
 mod task;
@@ -405,7 +405,7 @@ fn dispatch_proxy(
 }
 
 enum ProxyType {
-    Listener(p9p_proxy::ProxyListener),
+    Listener(fs_proxy::ProxyListener),
     ProxyFromBoundSocket(tokio::net::UnixListener),
 }
 
@@ -444,7 +444,7 @@ fn dispatch_mount(
         let dest: Bytes = target_9p.as_bytes().to_vec().into();
         let proxy = match ours {
             Some(ours) => ProxyType::Listener(
-                p9p_proxy::ProxyListener::new(
+                fs_proxy::ProxyListener::new(
                     config.clone(),
                     p9p_sock.clone(),
                     ours.into(),
@@ -478,7 +478,7 @@ fn dispatch_mount(
                     ));
                     loop {
                         if let Ok((req, _)) = psock.accept().await {
-                            let mut proxy = p9p_proxy::Proxy::new_from_connection(
+                            let mut proxy = fs_proxy::Proxy::new_from_connection(
                                 config.clone(),
                                 req,
                                 conn.clone(),
