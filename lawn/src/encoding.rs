@@ -64,7 +64,7 @@ pub fn escape<T: AsRef<[u8]>>(data: T) -> String {
                     })
                     .collect::<Vec<_>>()
             } else if c > 0x7f {
-                let _ = hex::encode_to_slice(&[c], &mut buf);
+                let _ = hex::encode_to_slice([c], &mut buf);
                 let mut v = "\\x".to_string();
                 unsafe {
                     let s = std::str::from_utf8_unchecked(&buf);

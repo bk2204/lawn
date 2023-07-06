@@ -86,7 +86,7 @@ fn find_server_socket(
     let logger = config.logger();
     if let Some(socket) = socket {
         debug!(logger, "trying specified socket {}", escape(osstr(socket)));
-        return match UnixStream::connect(&socket) {
+        return match UnixStream::connect(socket) {
             Ok(sock) => Some(sock),
             Err(_) => None,
         };

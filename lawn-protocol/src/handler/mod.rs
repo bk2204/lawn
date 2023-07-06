@@ -135,7 +135,7 @@ impl ExtensionMap {
             None => {
                 let base = (0..=0xfff)
                     .map(|bits| 0xff000000 | (bits << 12))
-                    .find(|bottom| !self.map.contains_key(&bottom));
+                    .find(|bottom| !self.map.contains_key(bottom));
                 match base {
                     Some(base) => base,
                     None => return Err(ExtensionError::NoSpace),
