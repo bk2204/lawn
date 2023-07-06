@@ -885,7 +885,7 @@ impl Server {
         state: Arc<ServerState<T, U>>,
         m: &protocol::CreateChannelRequest,
     ) -> Result<protocol::ChannelID, handler::Error> {
-        let allowed: HashSet<u32> = vec![0, 1, 2].iter().cloned().collect();
+        let allowed: HashSet<u32> = [0, 1, 2].iter().cloned().collect();
         let requested: HashSet<u32> = m.selectors.iter().cloned().collect();
         // TODO: allow requesting a subset of file descriptors.
         if allowed != requested {
@@ -996,8 +996,8 @@ impl Server {
             _ => return Err(ResponseCode::InvalidParameters.into()),
         };
         let allowed: HashSet<u32> = match op {
-            protocol::ClipboardChannelOperation::Copy => vec![0].iter().cloned().collect(),
-            protocol::ClipboardChannelOperation::Paste => vec![1].iter().cloned().collect(),
+            protocol::ClipboardChannelOperation::Copy => [0].iter().cloned().collect(),
+            protocol::ClipboardChannelOperation::Paste => [1].iter().cloned().collect(),
         };
         let requested: HashSet<u32> = m.selectors.iter().cloned().collect();
         // TODO: allow requesting a subset of file descriptors.
@@ -1073,7 +1073,7 @@ impl Server {
         location: FL,
         start: FS,
     ) -> Result<protocol::ChannelID, handler::Error> {
-        let allowed: HashSet<u32> = vec![0, 1].iter().cloned().collect();
+        let allowed: HashSet<u32> = [0, 1].iter().cloned().collect();
         let requested: HashSet<u32> = m.selectors.iter().cloned().collect();
         if allowed != requested {
             return Err(ResponseCode::ParametersNotSupported.into());
