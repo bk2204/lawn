@@ -614,6 +614,7 @@ impl ServerClipboardChannel {
         })
     }
 
+    #[allow(clippy::arc_with_non_send_sync)]
     fn file_from_command<F: FromRawFd, T: IntoRawFd>(io: Option<T>) -> Option<Arc<sync::Mutex<F>>> {
         let io = io?;
         Some(Arc::new(sync::Mutex::new(unsafe {
