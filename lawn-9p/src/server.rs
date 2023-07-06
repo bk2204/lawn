@@ -756,8 +756,8 @@ pub struct DirEntry {
     pub metadata: fs::Metadata,
 }
 
+#[allow(clippy::len_without_is_empty)]
 impl DirEntry {
-    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         13 + 8 + 1 + 2 + self.name.len()
     }
