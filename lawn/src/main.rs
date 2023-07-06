@@ -39,6 +39,7 @@ mod unix;
 
 use error::{Error, ErrorKind};
 
+#[allow(clippy::redundant_closure)]
 fn config(verbosity: i32) -> Result<Arc<config::Config>, Error> {
     let config: Option<PathBuf> = std::env::var_os("XDG_CONFIG_HOME")
         .map(|x| x.into())
