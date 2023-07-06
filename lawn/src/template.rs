@@ -29,7 +29,7 @@ impl fmt::Display for Error {
             Self::InvalidCharacter(off) => {
                 write!(f, "invalid character in template at byte {}", off)
             }
-            Self::UnknownPattern(pattern) => write!(f, "unknown pattern '{}'", escape(&pattern)),
+            Self::UnknownPattern(pattern) => write!(f, "unknown pattern '{}'", escape(pattern)),
         }
     }
 }

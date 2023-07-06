@@ -1,4 +1,4 @@
-use crate::p9p_proxy;
+use crate::fs_proxy;
 use lawn_protocol::{handler, protocol};
 use std::convert::TryFrom;
 use std::fmt;
@@ -87,11 +87,11 @@ impl std::error::Error for Error {
     }
 }
 
-impl From<p9p_proxy::Error> for Error {
-    fn from(err: p9p_proxy::Error) -> Error {
+impl From<fs_proxy::Error> for Error {
+    fn from(err: fs_proxy::Error) -> Error {
         match err {
-            p9p_proxy::Error::IOError(e) => Error::new_with_cause(ErrorKind::P9PProxyError, e),
-            p9p_proxy::Error::LawnError(e) => e,
+            fs_proxy::Error::IOError(e) => Error::new_with_cause(ErrorKind::FSProxyError, e),
+            fs_proxy::Error::LawnError(e) => e,
         }
     }
 }
@@ -160,12 +160,13 @@ pub enum ErrorKind {
     CommandFailure,
     TemplateError,
     UnknownCommandType,
+    UnknownProtocolType,
     MissingArguments,
     IncompatibleArguments,
     NotRootMachine,
     InvalidConfigurationValue,
     ConfigurationSpawnError,
-    P9PProxyError,
+    FSProxyError,
 }
 
 impl From<ErrorKind> for i32 {

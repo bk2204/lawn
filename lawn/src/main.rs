@@ -28,7 +28,7 @@ mod client;
 mod config;
 mod encoding;
 mod error;
-mod p9p_proxy;
+mod fs_proxy;
 mod server;
 mod ssh_proxy;
 mod task;
@@ -39,6 +39,7 @@ mod unix;
 
 use error::{Error, ErrorKind};
 
+#[allow(clippy::redundant_closure)]
 fn config(verbosity: i32) -> Result<Arc<config::Config>, Error> {
     let config: Option<PathBuf> = std::env::var_os("XDG_CONFIG_HOME")
         .map(|x| x.into())
@@ -86,7 +87,7 @@ fn find_server_socket(
     let logger = config.logger();
     if let Some(socket) = socket {
         debug!(logger, "trying specified socket {}", escape(osstr(socket)));
-        return match UnixStream::connect(&socket) {
+        return match UnixStream::connect(socket) {
             Ok(sock) => Some(sock),
             Err(_) => None,
         };
@@ -405,7 +406,7 @@ fn dispatch_proxy(
 }
 
 enum ProxyType {
-    Listener(p9p_proxy::ProxyListener),
+    Listener(fs_proxy::ProxyListener),
     ProxyFromBoundSocket(tokio::net::UnixListener),
 }
 
@@ -427,12 +428,27 @@ fn dispatch_mount(
     let socket =
         find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
     let res: Result<i32, Error> = runtime.block_on(async move {
-        let target_9p = m.value_of_os("9p").unwrap();
+        let target = m.value_of_os("target").unwrap();
+        let (prefix, desc, pproto) = match m.value_of("type") {
+            Some("9p") | None => ("9p", "9P", fs_proxy::ProxyProtocol::P9P),
+            Some("sftp") => ("sftp", "SFTP", fs_proxy::ProxyProtocol::SFTP),
+            Some(p) => {
+                return Err(Error::new_with_message(
+                    ErrorKind::UnknownProtocolType,
+                    format!("unknown protocol {}", p),
+                ))
+            }
+        };
         let addr = socket.peer_addr().unwrap();
         let ours = addr.as_pathname();
-        let p9p_sock = find_vacant_socket(config.clone(), "9p")?;
-        let p9p_sock_loc = p9p_sock.clone();
-        trace!(logger, "using {} as 9P socket", escape(path(&*p9p_sock)));
+        let fs_sock = find_vacant_socket(config.clone(), prefix)?;
+        let fs_sock_loc = fs_sock.clone();
+        trace!(
+            logger,
+            "using {} as {} socket",
+            escape(path(&*fs_sock)),
+            desc
+        );
         let want_socket = if m.is_present("socket") {
             true
         } else if m.is_present("fd") {
@@ -441,19 +457,20 @@ fn dispatch_mount(
             error!(logger, "one of --socket or --fd is required");
             return Err(Error::new(ErrorKind::MissingArguments));
         };
-        let dest: Bytes = target_9p.as_bytes().to_vec().into();
+        let dest: Bytes = target.as_bytes().to_vec().into();
         let proxy = match ours {
             Some(ours) => ProxyType::Listener(
-                p9p_proxy::ProxyListener::new(
+                fs_proxy::ProxyListener::new(
                     config.clone(),
-                    p9p_sock.clone(),
+                    fs_sock.clone(),
                     ours.into(),
                     dest.clone(),
+                    pproto,
                 )
                 .map_err(|_| Error::new(ErrorKind::SocketConnectionFailure))?,
             ),
             None => {
-                let psock = tokio::net::UnixListener::bind(&p9p_sock).map_err(|e| {
+                let psock = tokio::net::UnixListener::bind(&fs_sock).map_err(|e| {
                     Error::new_full(ErrorKind::SocketBindFailure, e, "unable to bind 9P socket")
                 })?;
                 ProxyType::ProxyFromBoundSocket(psock)
@@ -478,11 +495,12 @@ fn dispatch_mount(
                     ));
                     loop {
                         if let Ok((req, _)) = psock.accept().await {
-                            let mut proxy = p9p_proxy::Proxy::new_from_connection(
+                            let mut proxy = fs_proxy::Proxy::new_from_connection(
                                 config.clone(),
                                 req,
                                 conn.clone(),
                                 dest.clone(),
+                                pproto,
                             );
                             let _ = proxy.run_server().await;
                             if !want_socket {
@@ -499,11 +517,16 @@ fn dispatch_mount(
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::inherit());
             if want_socket {
-                res.env("P9P_SOCK", OsString::from(&p9p_sock));
+                match pproto {
+                    fs_proxy::ProxyProtocol::P9P => res.env("P9P_SOCK", OsString::from(&fs_sock)),
+                    fs_proxy::ProxyProtocol::SFTP => {
+                        res.env("LAWN_SFTP_SOCK", OsString::from(&fs_sock))
+                    }
+                };
             } else {
                 use std::os::unix::io::{FromRawFd, IntoRawFd};
 
-                let sock = match std::os::unix::net::UnixStream::connect(p9p_sock) {
+                let sock = match std::os::unix::net::UnixStream::connect(fs_sock) {
                     Ok(sock) => sock,
                     Err(e) => {
                         error!(logger, "failed to connect to socket: {}", e);
@@ -525,7 +548,7 @@ fn dispatch_mount(
         });
         let _ = handle.await;
         let res = join.await.unwrap();
-        let _ = std::fs::remove_file(&p9p_sock_loc);
+        let _ = std::fs::remove_file(&fs_sock_loc);
         Ok(res)
     });
     std::process::exit(res?);
@@ -654,7 +677,13 @@ fn dispatch(verbosity: &mut i32) -> Result<(), Error> {
             App::new("mount")
                 .arg(Arg::with_name("socket").long("socket"))
                 .arg(Arg::with_name("fd").long("fd"))
-                .arg(Arg::with_name("9p").required(true))
+                .arg(
+                    Arg::with_name("type")
+                        .long("type")
+                        .takes_value(true)
+                        .value_name("PROTOCOL"),
+                )
+                .arg(Arg::with_name("target").required(true))
                 .arg(Arg::with_name("arg").multiple(true).required(true)),
         )
         .subcommand(App::new("run").arg(Arg::with_name("arg").multiple(true)))

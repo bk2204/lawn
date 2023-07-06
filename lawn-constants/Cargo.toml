@@ -17,5 +17,6 @@ rust-version = "1.48.0"
 
 [dependencies]
 libc = "0.2"
+rustix = { version = "0.37", optional = true }
 num-derive = "0.3"
 num-traits = "0.2"

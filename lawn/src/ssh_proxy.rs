@@ -64,7 +64,7 @@ impl ProxyListener {
         ours: PathBuf,
         multiplex: PathBuf,
     ) -> Result<Self, Error> {
-        let agent = UnixListener::bind(&multiplex)?;
+        let agent = UnixListener::bind(multiplex)?;
         Ok(ProxyListener {
             ssh,
             ours,

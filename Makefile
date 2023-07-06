@@ -123,7 +123,7 @@ ci-freebsd:
 	vagrant up
 	vagrant ssh -- sudo pkg install -y curl git gmake rubygem-asciidoctor rubygem-rspec rust
 	vagrant ssh -- git init /home/vagrant/lawn
-	GIT_SSH_COMMAND='f() { shift; vagrant ssh -- "$$@"; };f' git push vagrant@localhost:/home/vagrant/lawn
+	GIT_SSH_COMMAND='f() { shift; vagrant ssh -- "$$@"; };f' git push vagrant@localhost:/home/vagrant/lawn HEAD:refs/heads/dev
 	vagrant ssh -- "cd /home/vagrant/lawn && git checkout $$(git rev-parse HEAD) && gmake test-full FEATURES=$(FEATURES)"
 
 ci-netbsd:
@@ -132,7 +132,7 @@ ci-netbsd:
 	vagrant ssh -- sudo /usr/pkg/bin/pkgin update
 	vagrant ssh -- sudo /usr/pkg/bin/pkgin -y install mozilla-rootcerts-openssl curl git gmake ruby31-asciidoctor ruby31-rspec rust
 	vagrant ssh -- git init /home/vagrant/lawn
-	GIT_SSH_COMMAND='f() { shift; vagrant ssh -- "$$@"; };f' git push vagrant@localhost:/home/vagrant/lawn
+	GIT_SSH_COMMAND='f() { shift; vagrant ssh -- "$$@"; };f' git push vagrant@localhost:/home/vagrant/lawn HEAD:refs/heads/dev
 	vagrant ssh -- "cd /home/vagrant/lawn && git checkout $$(git rev-parse HEAD) && gmake test-full ASCIIDOCTOR=asciidoctor31  CARGO_HTTP_MULTIPLEXING=false FEATURES=$(FEATURES)"
 
 test-full:
@@ -150,7 +150,7 @@ test/Dockerfile.%: test/Dockerfile.%.erb $(INCLUDES)
 
 clippy:
 	rm -rf target/debug target/release
-	cargo clippy $(FEATURE_ARG) -- -A clippy::unknown-clippy-lints -A clippy::needless_borrow -D warnings
+	cargo clippy $(FEATURE_ARG) -- -A clippy::unknown-clippy-lints -A clippy::needless_borrow -A clippy::bad_bit_mask -D warnings
 
 fmt:
 	if rustfmt --help | grep -qse --check; \

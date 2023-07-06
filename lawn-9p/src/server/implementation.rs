@@ -109,7 +109,7 @@ impl<
             "9P: message {:?} {:?} {}",
             msg,
             meta.protocol,
-            hex::encode(&tag.0)
+            hex::encode(tag.0)
         );
         match (msg, meta.protocol, tag) {
             (ProtocolTag::Tversion, _, _) => {

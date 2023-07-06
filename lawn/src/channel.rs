@@ -4,13 +4,15 @@ use crate::config::Logger;
 use crate::task::block_on_async;
 use crate::unix;
 use bytes::Bytes;
-use lawn_9p::auth::{AuthenticationInfo, Authenticator};
 use lawn_9p::backend::libc::LibcBackend;
-use lawn_9p::backend::ToIdentifier;
 use lawn_9p::server::Server as Server9P;
 use lawn_constants::error::Error as Errno;
+use lawn_fs::auth::{AuthenticationInfo, Authenticator, AuthenticatorHandle};
+use lawn_fs::backend::Metadata;
 use lawn_protocol::protocol;
 use lawn_protocol::protocol::{ChannelID, ClipboardChannelOperation, ErrorBody, ResponseCode};
+use lawn_sftp::backend::Backend as SFTPBackend;
+use lawn_sftp::server::Server as ServerSFTP;
 use std::collections::HashMap;
 use std::io;
 use std::os::raw::c_int;
@@ -612,6 +614,7 @@ impl ServerClipboardChannel {
         })
     }
 
+    #[allow(clippy::arc_with_non_send_sync)]
     fn file_from_command<F: FromRawFd, T: IntoRawFd>(io: Option<T>) -> Option<Arc<sync::Mutex<F>>> {
         let io = io?;
         Some(Arc::new(sync::Mutex::new(unsafe {
@@ -661,7 +664,7 @@ impl Channel for ServerClipboardChannel {
 }
 
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq)]
-pub struct Server9PSessionHandle {
+pub struct ServerFSSessionHandle {
     target: Bytes,
     location: Bytes,
     user: Bytes,
@@ -669,26 +672,35 @@ pub struct Server9PSessionHandle {
     valid: bool,
 }
 
-impl ToIdentifier for Server9PSessionHandle {
-    fn to_identifier(&self) -> Vec<u8> {
-        let mut v = Vec::new();
-        v.extend(&(self.target.len() as u64).to_le_bytes());
-        v.extend(&(self.location.len() as u64).to_le_bytes());
-        v.extend(&(self.user.len() as u64).to_le_bytes());
-        v.extend(&self.target);
-        v.extend(&self.location);
-        v.extend(&self.user);
-        v
+impl AuthenticatorHandle for ServerFSSessionHandle {
+    fn read(&self, _data: &mut [u8]) -> Result<u32, Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+
+    fn write(&self, _data: &[u8]) -> Result<u32, Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+
+    fn info(&self) -> Option<AuthenticationInfo<'_>> {
+        if !self.valid {
+            return None;
+        }
+        Some(AuthenticationInfo::new(
+            self.nuname,
+            &self.user,
+            &self.target,
+            &self.location,
+        ))
     }
 }
 
-pub struct Server9PAuthenticator {
+pub struct ServerFSAuthenticator {
     target: Bytes,
     location: Bytes,
     logger: Arc<Logger>,
 }
 
-impl Server9PAuthenticator {
+impl ServerFSAuthenticator {
     pub fn new(target: Bytes, location: Bytes, logger: Arc<Logger>) -> Self {
         Self {
             target,
@@ -698,14 +710,18 @@ impl Server9PAuthenticator {
     }
 }
 
-impl Authenticator for Server9PAuthenticator {
-    type SessionHandle = Server9PSessionHandle;
-
-    fn create(&self, uname: &[u8], aname: &[u8], nuname: Option<u32>) -> Self::SessionHandle {
+impl Authenticator for ServerFSAuthenticator {
+    fn create(
+        &self,
+        _meta: &Metadata,
+        uname: &[u8],
+        aname: &[u8],
+        nuname: Option<u32>,
+    ) -> Box<dyn AuthenticatorHandle + Send + Sync> {
         // TODO: implement logging trait
         trace!(
             self.logger,
-            "9P authenticator: user {} location {} target {} nuname {:?} aname {} valid {}",
+            "FS authenticator: user {} location {} target {} nuname {:?} aname {} valid {}",
             hex::encode(uname),
             hex::encode(&self.location),
             hex::encode(&self.target),
@@ -713,33 +729,13 @@ impl Authenticator for Server9PAuthenticator {
             hex::encode(aname),
             aname == self.target
         );
-        Server9PSessionHandle {
+        Box::new(ServerFSSessionHandle {
             user: uname.to_vec().into(),
             location: self.location.to_vec().into(),
             target: self.target.to_vec().into(),
             nuname,
             valid: aname == self.target || aname.is_empty(),
-        }
-    }
-
-    fn read(&self, _handle: &mut Self::SessionHandle, _data: &mut [u8]) -> Result<u32, Errno> {
-        Err(Errno::EOPNOTSUPP)
-    }
-
-    fn write(&self, _handle: &mut Self::SessionHandle, _data: &[u8]) -> Result<u32, Errno> {
-        Err(Errno::EOPNOTSUPP)
-    }
-
-    fn info<'a>(&self, handle: &'a Self::SessionHandle) -> Option<AuthenticationInfo<'a>> {
-        if !handle.valid {
-            return None;
-        }
-        Some(AuthenticationInfo::new(
-            handle.nuname,
-            &handle.user,
-            &handle.target,
-            &handle.location,
-        ))
+        })
     }
 }
 
@@ -771,7 +767,11 @@ impl Server9PChannel {
             logger.clone(),
             LibcBackend::new(
                 logger.clone(),
-                Server9PAuthenticator::new(target, location, logger.clone()),
+                Arc::new(lawn_fs::backend::libc::LibcBackend::new(
+                    logger.clone(),
+                    Arc::new(ServerFSAuthenticator::new(target, location, logger.clone())),
+                    BUFFER_SIZE as u32,
+                )),
                 BUFFER_SIZE as u32,
             ),
             rd1,
@@ -797,15 +797,145 @@ impl Server9PChannel {
     }
 }
 
-impl Channel for Server9PChannel {
-    fn id(&self) -> ChannelID {
+impl FSChannel for Server9PChannel {
+    fn rd(&self) -> Arc<sync::Mutex<Option<OwnedReadHalf>>> {
+        self.rd.clone()
+    }
+
+    fn wr(&self) -> Arc<sync::Mutex<Option<OwnedWriteHalf>>> {
+        self.wr.clone()
+    }
+
+    fn fd(&self) -> RawFd {
+        self.rdwr
+    }
+
+    fn alive(&self) -> &AtomicBool {
+        &self.alive
+    }
+
+    fn exit_status(&self) -> Arc<Mutex<Option<i32>>> {
+        self.exit_status.clone()
+    }
+
+    fn channel_id(&self) -> ChannelID {
         self.id
     }
 
+    fn logger(&self) -> Arc<Logger> {
+        self.logger.clone()
+    }
+}
+
+pub struct ServerSFTPChannel {
+    rd: Arc<sync::Mutex<Option<OwnedReadHalf>>>,
+    wr: Arc<sync::Mutex<Option<OwnedWriteHalf>>>,
+    rdwr: RawFd,
+    alive: AtomicBool,
+    exit_status: Arc<Mutex<Option<i32>>>,
+    id: ChannelID,
+    logger: Arc<Logger>,
+}
+
+impl ServerSFTPChannel {
+    pub fn new(
+        logger: Arc<Logger>,
+        id: ChannelID,
+        target: Bytes,
+        location: Bytes,
+    ) -> Result<ServerSFTPChannel, protocol::Error> {
+        const BUFFER_SIZE: usize = 128 * 1024;
+        let (str1, str2) = UnixStream::pair()?;
+        let rdwr = str2.as_raw_fd();
+        let (rd1, wr1) = str1.into_split();
+        let (rd2, wr2) = str2.into_split();
+        let exit_status = Arc::new(Mutex::new(None));
+        let es = exit_status.clone();
+        let serv_logger = logger.clone();
+        let backend = SFTPBackend::new(
+            logger.clone(),
+            Arc::new(lawn_fs::backend::libc::LibcBackend::new(
+                logger.clone(),
+                Arc::new(ServerFSAuthenticator::new(
+                    target.clone(),
+                    location,
+                    logger.clone(),
+                )),
+                BUFFER_SIZE as u32,
+            )),
+            None,
+            &target,
+        );
+        let backend = backend.map_err(io::Error::from)?;
+        let serv = ServerSFTP::new(logger.clone(), backend, rd1, wr1);
+        tokio::spawn(async move {
+            let mut serv = serv;
+            let r = serv.run().await;
+            trace!(serv_logger, "channel {}: SFTP server exiting: {:?}", id, &r);
+            let mut g = es.lock().unwrap();
+            *g = Some(if r.is_ok() { 0 } else { 3 });
+        });
+        Ok(Self {
+            logger,
+            id,
+            rdwr,
+            exit_status,
+            alive: AtomicBool::new(true),
+            rd: Arc::new(sync::Mutex::new(Some(rd2))),
+            wr: Arc::new(sync::Mutex::new(Some(wr2))),
+        })
+    }
+}
+
+impl FSChannel for ServerSFTPChannel {
+    fn rd(&self) -> Arc<sync::Mutex<Option<OwnedReadHalf>>> {
+        self.rd.clone()
+    }
+
+    fn wr(&self) -> Arc<sync::Mutex<Option<OwnedWriteHalf>>> {
+        self.wr.clone()
+    }
+
+    fn fd(&self) -> RawFd {
+        self.rdwr
+    }
+
+    fn alive(&self) -> &AtomicBool {
+        &self.alive
+    }
+
+    fn exit_status(&self) -> Arc<Mutex<Option<i32>>> {
+        self.exit_status.clone()
+    }
+
+    fn channel_id(&self) -> ChannelID {
+        self.id
+    }
+
+    fn logger(&self) -> Arc<Logger> {
+        self.logger.clone()
+    }
+}
+
+pub trait FSChannel {
+    fn rd(&self) -> Arc<sync::Mutex<Option<OwnedReadHalf>>>;
+    fn wr(&self) -> Arc<sync::Mutex<Option<OwnedWriteHalf>>>;
+    fn fd(&self) -> RawFd;
+    fn alive(&self) -> &AtomicBool;
+    fn exit_status(&self) -> Arc<Mutex<Option<i32>>>;
+    fn channel_id(&self) -> ChannelID;
+    fn logger(&self) -> Arc<Logger>;
+}
+
+impl<T: FSChannel> Channel for T {
+    fn id(&self) -> ChannelID {
+        self.channel_id()
+    }
+
     fn read(&self, selector: u32) -> Result<Bytes, protocol::Error> {
-        let fd = self.rd.clone();
-        let logger = self.logger.clone();
-        let id = self.id;
+        let fd = self.rd();
+        let logger = self.logger();
+        let id = self.channel_id();
         block_on_async(async move {
             let mut g = fd.lock().await;
             match (selector, &mut *g) {
@@ -846,9 +976,9 @@ impl Channel for Server9PChannel {
     }
 
     fn write(&self, selector: u32, data: Bytes) -> Result<u64, protocol::Error> {
-        let fd = self.wr.clone();
-        let logger = self.logger.clone();
-        let id = self.id;
+        let fd = self.wr();
+        let logger = self.logger();
+        let id = self.channel_id();
         block_on_async(async move {
             let mut g = fd.lock().await;
             match (selector, &mut *g) {
@@ -900,7 +1030,8 @@ impl Channel for Server9PChannel {
         ch: oneshot::Sender<Result<Vec<protocol::PollChannelFlags>, protocol::Error>>,
     ) {
         let base_flags = {
-            let g = self.exit_status.lock().unwrap();
+            let exit_status = self.exit_status();
+            let g = exit_status.lock().unwrap();
             if g.is_some() {
                 protocol::PollChannelFlags::Gone
             } else {
@@ -908,23 +1039,23 @@ impl Channel for Server9PChannel {
             }
         };
         trace!(
-            self.logger,
+            self.logger(),
             "channel {}: poll: flags {:?}",
-            self.id,
+            self.channel_id(),
             base_flags
         );
-        let id = self.id;
+        let id = self.channel_id();
         let mut fds = Vec::new();
         for sel in &selectors {
             let f = match sel {
-                0 => self.wr.blocking_lock().as_ref().map(|_| self.rdwr),
-                1 => self.rd.blocking_lock().as_ref().map(|_| self.rdwr),
+                0 => self.wr().blocking_lock().as_ref().map(|_| self.fd()),
+                1 => self.rd().blocking_lock().as_ref().map(|_| self.fd()),
                 _ => None,
             };
             fds.push(f.unwrap_or(-1));
         }
         poll(
-            self.logger.clone(),
+            self.logger(),
             selectors,
             flags,
             fds,
@@ -937,7 +1068,8 @@ impl Channel for Server9PChannel {
 
     fn ping(&self) -> Result<(), protocol::Error> {
         {
-            let g = self.exit_status.lock().unwrap();
+            let exit_status = self.exit_status();
+            let g = exit_status.lock().unwrap();
             if let Some(st) = *g {
                 return Err(protocol::Error {
                     code: ResponseCode::Gone,
@@ -949,8 +1081,8 @@ impl Channel for Server9PChannel {
     }
 
     fn detach_selector(&self, selector: u32) -> Result<(), protocol::Error> {
-        let rd = self.rd.clone();
-        let wr = self.wr.clone();
+        let rd = self.rd();
+        let wr = self.wr();
         block_on_async(async move {
             match selector {
                 0 => {
@@ -968,10 +1100,10 @@ impl Channel for Server9PChannel {
     }
 
     fn is_alive(&self) -> bool {
-        self.alive.load(Ordering::Acquire)
+        self.alive().load(Ordering::Acquire)
     }
 
     fn set_dead(&self) {
-        self.alive.store(false, Ordering::Release);
+        self.alive().store(false, Ordering::Release);
     }
 }

@@ -10,20 +10,30 @@ lawn mount - provide access to a 9P file share
 
 == Description
 
-`lawn mount` provides access to the 9P file share specified by `<share>`, which is listed in the configuration file, to the specified command.
+`lawn mount` provides access to a 9P or SFTP file share specified by `<share>`, which is listed in the configuration file, to the specified command.
 This access can either via standard input and standard output or via a Unix socket.
 
-The protocol used may be the original 9P2000, the Unix variant 9P2000.u, or the Linux variant 9P2000.L, and is negotiated over the protocol connection itself.
+The protocol used may be the original 9P2000, the Unix variant 9P2000.u, the Linux variant 9P2000.L, or SFTP version 3.
+
+If 9P is used, the variant is negotiated over the protocol itself.
+The Linux variant is recommended.
 No authentication is required except the socket or pipes and any username and resource name (`uname` and `aname` fields) are accepted.
 
+For SFTP, version 3 is provided and the hardlink, POSIX rename, and fsync OpenSSH extensions are supported.
+These extensions and protocol version are supported by OpenSSH and sshfs.
+
 == Options
+
+`--type=<protocol>`::
+  Use the specified protocol, which should be either `9p` for any variant of 9P, or `sftp` for any supported SFTP version.
+  The default, if not specified, is `9p`.
 
 `--fd`::
   Provide access to the 9P protocol via the standard input and output of the specified command.
   The file descriptors are destroyed when the command exits.
 
 `--socket`::
-  Create a Unix socket to provide access and expose it to the command via the environment variable `P9P_SOCKET`.
+  Create a Unix socket to provide access and expose it to the command via the environment variable `P9P_SOCKET` (for 9P) or `LAWN_SFTP_SOCKET` (for SFTP).
   The socket is destroyed when the command exits.
 
 == Examples
@@ -33,7 +43,7 @@ Assume we have the following configuration file:
 [source,yaml]
 ----
 v0:
-  9p:
+  fs:
     temp:
       if: true
       location: /tmp
@@ -42,6 +52,8 @@ v0:
       command: '!printf "%s" "$HOME"'
 ----
 
-Running `lawn mount --socket temp -- sh -c '9pfuse "unix!$P9P_SOCKET" ~/mnt/foo; sleep 2d'` will mount the `temp` file share, which is located on the root machine at `/tmp`, to this machine at `~/mnt/foo`.
+Running `lawn mount --socket temp -- sh -c '9pfuse "unix!$P9P_SOCKET" ~/mnt/foo; sleep 2d'` will mount the `temp` file share, which is located on the root machine at `/tmp`, to this machine at `~/mnt/foo` using 9P.
 
-Running `lawn mount --fd home -- sudo mount -t 9p -o trans=fd,rdfno=0,wfdno=1 home ~/mnt/home` on Linux will mount the `home` file share, which is located on the root machine at `$HOME`, to this machine at `~/mnt/home`.
+Running `lawn mount --fd home -- sudo mount -t 9p -o trans=fd,rdfno=0,wfdno=1 home ~/mnt/home` on Linux will mount the `home` file share, which is located on the root machine at `$HOME`, to this machine at `~/mnt/home` using 9P.
+
+Running `lawn mount --fd --type=sftp home -- sshfs -o passive :/ ~/mnt/home` on Linux will mount the `home` file share, which is located on the root machine at `$HOME`, to this machine at `~/mnt/home` using SFTP.

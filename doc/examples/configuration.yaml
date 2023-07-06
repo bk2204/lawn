@@ -77,8 +77,35 @@ v0:
   # A list of 9P mount point names.
   #
   # The name of each mount point is an argument to the "mount" subcommand.
+  #
+  # Note that it is preferred to specify filesystem mounts under `fs`, which
+  # works for both 9P and SFTP.
   9p:
     # An example mount point called "default".  This name has no special meaning.
+    #
+    # Because this mount point shares an identical name with the corresponding
+    # `fs` mountpoint below, this version is preferred over the `fs` version
+    # below for 9P, and the below is preferred for SFTP.
+    default:
+      # A boolean expression determining whether to permit the mounting of this mount point.
+      if: true
+      # A string shell expression specifying the location to use for mounting on the local side.
+      location: /tmp/9p
+    # An example mount point called "9p-dotfiles".
+    9p-dotfiles:
+      # A boolean expression determining whether to permit the mounting of this mount point.
+      if: true
+      # A string shell expression specifying the location to use for mounting on the local side.
+      location: '!printf "%%s/.local/share/remote-files" "$HOME"'
+  # A list of remote filesystem mount point names for both 9P and SFTP.
+  #
+  # The name of each mount point is an argument to the "mount" subcommand.
+  fs:
+    # An example mount point called "default".  This name has no special meaning.
+    #
+    # Because this mount point shares an identical name with the corresponding
+    # `9p` mountpoint below, this version is preferred over the `9p` version
+    # above for 9P, and this one is preferred for SFTP.
     default:
       # A boolean expression determining whether to permit the mounting of this mount point.
       if: true

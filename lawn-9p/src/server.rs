@@ -1,5 +1,6 @@
 use crate::backend::Backend;
 use lawn_constants::Error;
+use lawn_fs::backend as fsbackend;
 use num_derive::FromPrimitive;
 use std::convert::TryInto;
 use std::fmt;
@@ -10,6 +11,8 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
+
+pub use lawn_fs::backend::OpenMode as LinuxOpenMode;
 
 mod implementation;
 
@@ -28,6 +31,12 @@ impl fmt::Display for Tag {
     }
 }
 
+impl From<Tag> for fsbackend::Tag {
+    fn from(t: Tag) -> fsbackend::Tag {
+        fsbackend::Tag::new(u16::from_le_bytes(t.0) as u64)
+    }
+}
+
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 pub struct FID(pub [u8; 4]);
 
@@ -38,6 +47,12 @@ impl fmt::Display for FID {
             write!(f, "{:02x}", b)?;
         }
         write!(f, ")")
+    }
+}
+
+impl From<FID> for fsbackend::FID {
+    fn from(f: FID) -> fsbackend::FID {
+        fsbackend::FID::new(u32::from_le_bytes(f.0) as u64)
     }
 }
 
@@ -95,6 +110,18 @@ impl IsFlush for Vec<u8> {
 pub struct Metadata {
     pub protocol: ProtocolVersion,
     pub tag: Tag,
+}
+
+impl<'a> From<&'a Metadata> for fsbackend::Metadata<'a> {
+    fn from(m: &'a Metadata) -> fsbackend::Metadata<'a> {
+        fsbackend::Metadata::new(
+            m.tag.into(),
+            0,
+            fsbackend::ProtocolType::Plan9(m.protocol.into()),
+            None,
+            false,
+        )
+    }
 }
 
 pub trait Stat: IsFlush {
@@ -479,6 +506,30 @@ pub struct LinuxStat {
 }
 
 impl LinuxStat {
+    pub fn from_fs(st: &fsbackend::Stat, qid: QID) -> Self {
+        LinuxStat {
+            qid,
+            mode: st.mode,
+            uid: st.uid,
+            gid: st.gid,
+            nlink: st.nlink,
+            rdev: st.rdev,
+            length: st.length,
+            blksize: st.blksize,
+            blocks: st.blocks,
+            atime_sec: st.atime_sec,
+            atime_nsec: st.atime_nsec,
+            mtime_sec: st.mtime_sec,
+            mtime_nsec: st.mtime_nsec,
+            ctime_sec: st.ctime_sec,
+            ctime_nsec: st.ctime_nsec,
+            btime_sec: st.btime_sec,
+            btime_nsec: st.btime_nsec,
+            gen: st.gen,
+            data_version: st.data_version,
+        }
+    }
+
     pub fn from_bytes(data: &[u8]) -> Option<Self> {
         let d = Deserializer::new(data);
         let validity = LinuxStatValidity::from_bits(d.read_u64().ok()?)?;
@@ -705,10 +756,23 @@ pub struct DirEntry {
     pub metadata: fs::Metadata,
 }
 
+#[allow(clippy::len_without_is_empty)]
 impl DirEntry {
-    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         13 + 8 + 1 + 2 + self.name.len()
+    }
+
+    pub fn from_fs(de: &fsbackend::DirEntry, qid: QID) -> DirEntry {
+        Self {
+            qid,
+            offset: de.offset,
+            kind: de.kind,
+            name: de.name.clone(),
+            extension: de.extension.clone(),
+            file_type: LinuxFileType::from_bits(de.file_type.bits()).unwrap(),
+            size: de.size,
+            metadata: de.metadata.clone(),
+        }
     }
 }
 
@@ -730,6 +794,34 @@ impl From<LockKind> for LockCommand {
         match kind {
             LockKind::Read => Self::ReadLock,
             LockKind::Write => Self::WriteLock,
+        }
+    }
+}
+
+impl From<LockKind> for fsbackend::LockKind {
+    fn from(kind: LockKind) -> Self {
+        match kind {
+            LockKind::Read => Self::Read,
+            LockKind::Write => Self::Write,
+        }
+    }
+}
+
+impl From<fsbackend::LockKind> for LockKind {
+    fn from(kind: fsbackend::LockKind) -> Self {
+        match kind {
+            fsbackend::LockKind::Read => Self::Read,
+            fsbackend::LockKind::Write => Self::Write,
+        }
+    }
+}
+
+impl From<LockCommand> for fsbackend::LockCommand {
+    fn from(kind: LockCommand) -> Self {
+        match kind {
+            LockCommand::ReadLock => Self::ReadLock,
+            LockCommand::WriteLock => Self::WriteLock,
+            LockCommand::Unlock => Self::Unlock,
         }
     }
 }
@@ -812,12 +904,35 @@ pub enum LockStatus {
     Grace = 3,
 }
 
+impl From<fsbackend::LockStatus> for LockStatus {
+    fn from(kind: fsbackend::LockStatus) -> Self {
+        match kind {
+            fsbackend::LockStatus::Ok => Self::Ok,
+            fsbackend::LockStatus::Blocked => Self::Blocked,
+            fsbackend::LockStatus::Error => Self::Error,
+            fsbackend::LockStatus::Grace => Self::Grace,
+        }
+    }
+}
+
 pub struct Lock {
     pub kind: LockKind,
     pub start: u64,
     pub length: u64,
     pub proc_id: u32,
     pub client_id: Vec<u8>,
+}
+
+impl From<fsbackend::Lock> for Lock {
+    fn from(lock: fsbackend::Lock) -> Self {
+        Self {
+            kind: lock.kind.into(),
+            start: lock.start,
+            length: lock.length,
+            proc_id: lock.proc_id,
+            client_id: lock.client_id,
+        }
+    }
 }
 
 pub struct UnknownProtocolError;
@@ -841,6 +956,16 @@ impl FromStr for ProtocolVersion {
     }
 }
 
+impl From<ProtocolVersion> for fsbackend::Plan9Type {
+    fn from(p: ProtocolVersion) -> fsbackend::Plan9Type {
+        match p {
+            ProtocolVersion::Original => fsbackend::Plan9Type::Original,
+            ProtocolVersion::Unix => fsbackend::Plan9Type::Unix,
+            ProtocolVersion::Linux => fsbackend::Plan9Type::Linux,
+        }
+    }
+}
+
 impl ProtocolVersion {
     pub fn to_str(&self) -> &'static str {
         match self {
@@ -859,22 +984,6 @@ bitflags! {
         const O_EXEC = 0x03;
         const O_ACCMODE = 0x03;
         const O_TRUNC = 0x10;
-    }
-
-    pub struct LinuxOpenMode: u32 {
-        const O_RDONLY = 0x00;
-        const O_WRONLY = 0x01;
-        const O_RDWR = 0x02;
-        const O_ACCMODE = 0x03;
-        const O_CREAT = 0o100;
-        const O_EXCL = 0o200;
-        const O_NOCTTY = 0o400;
-        const O_TRUNC = 0o1000;
-        const O_APPEND = 0o2000;
-        const O_NONBLOCK = 0o4000;
-        const O_LARGEFILE = 0o100000;
-        const O_DIRECTORY = 0o200000;
-        const O_NOFOLLOW = 0o400000;
     }
 
     pub struct FileType: u32 {
@@ -975,39 +1084,19 @@ impl SimpleOpenMode {
     }
 }
 
-impl LinuxOpenMode {
-    #[cfg(feature = "unix")]
-    pub fn to_unix(&self) -> Option<i32> {
-        let mut mode = match *self & Self::O_ACCMODE {
-            Self::O_RDONLY => libc::O_RDONLY,
-            Self::O_WRONLY => libc::O_WRONLY,
-            Self::O_RDWR => libc::O_RDWR,
-            _ => return None,
+impl From<SimpleOpenMode> for fsbackend::OpenMode {
+    fn from(s: SimpleOpenMode) -> fsbackend::OpenMode {
+        let mut m = fsbackend::OpenMode::empty();
+        m |= match s & SimpleOpenMode::O_ACCMODE {
+            SimpleOpenMode::O_READ => fsbackend::OpenMode::O_RDONLY,
+            SimpleOpenMode::O_WRITE => fsbackend::OpenMode::O_WRONLY,
+            SimpleOpenMode::O_RDWR => fsbackend::OpenMode::O_RDWR,
+            _ => fsbackend::OpenMode::O_RDONLY,
         };
-        if self.contains(Self::O_EXCL) {
-            mode |= libc::O_EXCL;
+        if s.contains(SimpleOpenMode::O_TRUNC) {
+            m |= fsbackend::OpenMode::O_TRUNC;
         }
-        if self.contains(Self::O_NOCTTY) {
-            mode |= libc::O_NOCTTY;
-        }
-        if self.contains(Self::O_TRUNC) {
-            mode |= libc::O_TRUNC;
-        }
-        if self.contains(Self::O_APPEND) {
-            mode |= libc::O_APPEND;
-        }
-        if self.contains(Self::O_NOFOLLOW) {
-            mode |= libc::O_NOFOLLOW;
-        }
-        if self.contains(Self::O_DIRECTORY) {
-            mode |= libc::O_DIRECTORY;
-        }
-        if self.contains(Self::O_NONBLOCK) {
-            mode |= libc::O_NONBLOCK;
-        }
-        // We specifically don't handle O_LARGEFILE here because we assume our binary has been
-        // compiled with suitable 64-bit file offset support, even on 32-bit systems.
-        Some(mode)
+        m
     }
 }
 
