@@ -237,12 +237,12 @@ impl Connection {
             let msgid = match resp {
                 Ok(Some(ResponseValue::Success(v))) => {
                     let v: U = v;
-                    data.extend(v.into_iter());
+                    data.extend(v);
                     return Ok(Some(data));
                 }
                 Ok(Some(ResponseValue::Continuation((id, v)))) => {
                     let v: U = v;
-                    data.extend(v.into_iter());
+                    data.extend(v);
                     id
                 }
                 Ok(None) => return Ok(None),
