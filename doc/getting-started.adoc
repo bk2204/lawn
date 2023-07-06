@@ -36,7 +36,7 @@ v0:
     browser:
       if: true
       command: "!$BROWSER"
-  9p:
+  fs:
     default:
       if: true
       location: '!printf "%%s/.local/share/remote-files" "$HOME"'
@@ -57,8 +57,8 @@ user@remote:~ $ echo 'Hello, world!' | lawn clip -i
 # Paste something from the clipboard.
 user@remote:~ $ lawn clip -o
 Hello, world!
-# Mount the 9P mount default on ~/mnt/lawn.
-user@remote:~ $ lawn mount --fd default -- sudo mount -t 9p -o trans=fd,rfdno=0,wfdno=1,uname=bmc default ~/mnt/lawn &
+# Mount the SFTP mount default on ~/mnt/lawn (requires sshfs).
+user@remote:~ $ lawn mount --type=sftp --auto default ~/mnt/lawn &
 # Create a file that will be persisted to ~/.local/share/remote-files/hello on the local machine.
 user@remote:~ $ echo 'Hello, world!' > ~/mnt/lawn/hello
 ----
@@ -137,7 +137,8 @@ If you're using X11, you can also specify `-b` for the `CLIPBOARD` selection (wh
 
 Let's also consider one final thing we might want to set up: a file system mount.
 Perhaps we'd like to save our shell history across machines.
-We can do this using the 9P protocol, which was originally developed for the operating system Plan 9.
+We can do this using the 9P protocol, which was originally developed for the operating system Plan 9, or the SFTP protocol.
+The SFTP protocol is usually easier to work with and only requires FUSE access instead of root privileges, so it's preferred.
 
 First, let's create a space for our files on the local machine with `mkdir -p ~/.local/share/remote-files`.
 Then, we can create a place to mount our data with `mkdir -p ~/mnt/lawn`.
@@ -155,7 +156,7 @@ v0:
     browser:
       if: true
       command: "!$BROWSER"
-  9p:
+  fs:
     default:
       if: true
       location: '!printf "%%s/.local/share/remote-files" "$HOME"'
@@ -177,6 +178,20 @@ Lawn knows how to offer a Unix socket, but the Linux 9P implementation doesn't s
 Since the mount process will block until we unmount it, we run it in the background.
 
 We can now access `~/mnt/lawn` as if it were `~/.local/share/remote-files`.
+
+If we'd like to use the SFTP mount with `sshfs` instead, we can first unmount our 9P mount like so:
+
+[source,shell]
+----
+$ sudo umount ~/mnt/lawn
+----
+
+We can then mount using SSHFS automatically, with the following command:
+
+[source,shell]
+----
+$ nohup lawn mount --auto --type=sftp default ~/mnt/lawn &
+----
 
 Now that we've run these commands successfully on our local machine, we can also run them on a remote machine if we prefer.
 There are two ways to do this.

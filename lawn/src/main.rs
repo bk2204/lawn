@@ -415,8 +415,47 @@ fn dispatch_mount(
     main: &ArgMatches,
     m: &ArgMatches,
 ) -> Result<(), Error> {
-    let args: Vec<OsString> = match m.values_of_os("arg") {
-        Some(args) => args.map(|x| x.to_owned()).collect(),
+    let (prefix, desc, pproto, autoargs): (_, _, _, Option<&[&str]>) = match m.value_of("type") {
+        Some("9p") | None => ("9p", "9P", fs_proxy::ProxyProtocol::P9P, None),
+        Some("sftp") => (
+            "sftp",
+            "SFTP",
+            fs_proxy::ProxyProtocol::SFTP,
+            Some(&["sshfs", "-o", "passive", ":/"]),
+        ),
+        Some(p) => {
+            return Err(Error::new_with_message(
+                ErrorKind::UnknownProtocolType,
+                format!("unknown protocol {}", p),
+            ))
+        }
+    };
+    let args: Vec<OsString> = match (m.is_present("auto"), autoargs, m.values_of_os("arg")) {
+        (true, Some(autoargs), Some(args)) if args.len() == 1 => autoargs
+            .iter()
+            .cloned()
+            .map(|arg| OsString::from(arg.to_owned()))
+            .chain(args.map(|x| x.to_owned()))
+            .collect(),
+        (true, None, _) => {
+            return Err(Error::new_with_message(
+                ErrorKind::IncompatibleArguments,
+                format!("--auto cannot be used with mountpoints of type {}", prefix),
+            ))
+        }
+        (true, _, None) => {
+            return Err(Error::new_with_message(
+                ErrorKind::MissingArguments,
+                "a destination mountpoint is required",
+            ))
+        }
+        (true, _, Some(_)) => {
+            return Err(Error::new_with_message(
+                ErrorKind::IncompatibleArguments,
+                "only a single argument (a destination mountpoint) may be provided",
+            ));
+        }
+        (false, _, Some(args)) => args.map(|x| x.to_owned()).collect(),
         _ => return Err(Error::new(ErrorKind::MissingArguments)),
     };
     if args.is_empty() {
@@ -429,16 +468,6 @@ fn dispatch_mount(
         find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
     let res: Result<i32, Error> = runtime.block_on(async move {
         let target = m.value_of_os("target").unwrap();
-        let (prefix, desc, pproto) = match m.value_of("type") {
-            Some("9p") | None => ("9p", "9P", fs_proxy::ProxyProtocol::P9P),
-            Some("sftp") => ("sftp", "SFTP", fs_proxy::ProxyProtocol::SFTP),
-            Some(p) => {
-                return Err(Error::new_with_message(
-                    ErrorKind::UnknownProtocolType,
-                    format!("unknown protocol {}", p),
-                ))
-            }
-        };
         let addr = socket.peer_addr().unwrap();
         let ours = addr.as_pathname();
         let fs_sock = find_vacant_socket(config.clone(), prefix)?;
@@ -451,7 +480,7 @@ fn dispatch_mount(
         );
         let want_socket = if m.is_present("socket") {
             true
-        } else if m.is_present("fd") {
+        } else if m.is_present("fd") || autoargs.is_some() {
             false
         } else {
             error!(logger, "one of --socket or --fd is required");
@@ -683,6 +712,7 @@ fn dispatch(verbosity: &mut i32) -> Result<(), Error> {
                         .takes_value(true)
                         .value_name("PROTOCOL"),
                 )
+                .arg(Arg::with_name("auto").long("auto"))
                 .arg(Arg::with_name("target").required(true))
                 .arg(Arg::with_name("arg").multiple(true).required(true)),
         )

@@ -6,7 +6,8 @@ lawn mount - provide access to a 9P file share
 
 == Synopsis
 
-'lawn mount' (--fd | --socket) <share>  -- <command> [<arg>…]
+'lawn mount' (--fd | --socket) [--type=<protocol>] <share>  -- <command> [<arg>…]
+'lawn mount' [--type=<protocol>] --auto <share> <mountpoint>
 
 == Description
 
@@ -36,6 +37,10 @@ These extensions and protocol version are supported by OpenSSH and sshfs.
   Create a Unix socket to provide access and expose it to the command via the environment variable `P9P_SOCKET` (for 9P) or `LAWN_SFTP_SOCKET` (for SFTP).
   The socket is destroyed when the command exits.
 
+`--auto`::
+  Automatically mount the share at the given mountpoint by invoking the proper program automatically.
+  This currently only works for SFTP mounts and requires a version of `sshfs` supporting `-o passive`.
+
 == Examples
 
 Assume we have the following configuration file:
@@ -57,3 +62,4 @@ Running `lawn mount --socket temp -- sh -c '9pfuse "unix!$P9P_SOCKET" ~/mnt/foo;
 Running `lawn mount --fd home -- sudo mount -t 9p -o trans=fd,rdfno=0,wfdno=1 home ~/mnt/home` on Linux will mount the `home` file share, which is located on the root machine at `$HOME`, to this machine at `~/mnt/home` using 9P.
 
 Running `lawn mount --fd --type=sftp home -- sshfs -o passive :/ ~/mnt/home` on Linux will mount the `home` file share, which is located on the root machine at `$HOME`, to this machine at `~/mnt/home` using SFTP.
+Exactly the same behaviour can be obtained with `lawn mount --type=sftp --auto home ~/mnt/home`.
