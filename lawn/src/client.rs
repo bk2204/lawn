@@ -80,7 +80,7 @@ impl Default for FDStatus {
 pub struct Connection {
     config: Arc<Config>,
     path: Option<PathBuf>,
-    handler: Arc<Option<ProtocolHandler<OwnedReadHalf, OwnedWriteHalf>>>,
+    handler: Arc<ProtocolHandler<OwnedReadHalf, OwnedWriteHalf>>,
 }
 
 impl Connection {
@@ -93,7 +93,7 @@ impl Connection {
         let logger = config.logger();
         let cfg = Arc::new(lawn_protocol::config::Config::new(false, logger));
         let (sread, swrite) = socket.into_split();
-        let handler = Arc::new(Some(ProtocolHandler::new(cfg, sread, swrite, synchronous)));
+        let handler = Arc::new(ProtocolHandler::new(cfg, sread, swrite, synchronous));
         Self {
             config,
             path: path.map(|p| p.into()),
@@ -102,22 +102,15 @@ impl Connection {
     }
 
     pub async fn ping(&self) -> Result<(), Error> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
-        handler
+        self.handler
             .send_message_simple::<Empty, Empty>(MessageKind::Ping, Some(true))
             .await?;
         Ok(())
     }
 
     pub async fn capability(&self) -> Result<CapabilityResponse, Error> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
-        match handler
+        match self
+            .handler
             .send_message_simple::<_, Empty>(MessageKind::Capability, Some(true))
             .await?
         {
@@ -131,11 +124,8 @@ impl Connection {
 
     #[allow(clippy::mutable_key_type)]
     pub async fn negotiate_default_version(&self) -> Result<CapabilityResponse, Error> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
-        let resp: CapabilityResponse = match handler
+        let resp: CapabilityResponse = match self
+            .handler
             .send_message_simple::<_, Empty>(MessageKind::Capability, Some(true))
             .await?
         {
@@ -170,23 +160,20 @@ impl Connection {
             id: None,
             user_agent: Some(crate::config::VERSION.into()),
         };
-        handler
+        self.handler
             .send_message::<_, Empty, Empty>(MessageKind::Version, &req, Some(true))
             .await?;
         Ok(resp)
     }
 
     pub async fn auth_external(&self) -> Result<AuthenticateResponse, Error> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
         let req = AuthenticateRequest {
             last_id: None,
             method: "EXTERNAL".into(),
             message: None,
         };
-        match handler
+        match self
+            .handler
             .send_message::<_, _, Empty>(MessageKind::Authenticate, &req, Some(true))
             .await?
         {
@@ -203,13 +190,17 @@ impl Connection {
         message: MessageKind,
         body: Option<T>,
     ) -> Result<Option<ResponseValue<U, V>>, Error> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
         let resp = match body {
-            Some(body) => handler.send_message(message, &body, Some(true)).await?,
-            None => handler.send_message_simple(message, Some(true)).await?,
+            Some(body) => {
+                self.handler
+                    .send_message(message, &body, Some(true))
+                    .await?
+            }
+            None => {
+                self.handler
+                    .send_message_simple(message, Some(true))
+                    .await?
+            }
         };
         Ok(resp)
     }
@@ -223,13 +214,9 @@ impl Connection {
         message: MessageKind,
         body: Option<T>,
     ) -> Result<Option<Vec<I>>, Error> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
         let mut resp = match body {
-            Some(body) => handler.send_message(message, &body, Some(true)).await,
-            None => handler.send_message_simple(message, Some(true)).await,
+            Some(body) => self.handler.send_message(message, &body, Some(true)).await,
+            None => self.handler.send_message_simple(message, Some(true)).await,
         };
         let mut data = vec![];
         let mut id = None;
@@ -259,7 +246,8 @@ impl Connection {
                 kind: message as u32,
                 id: reqid,
             };
-            resp = handler
+            resp = self
+                .handler
                 .send_message(MessageKind::Continue, &req, Some(true))
                 .await;
         }
@@ -389,16 +377,12 @@ impl Connection {
         let (finaltx, mut finalrx) = tokio::sync::mpsc::channel(1);
         let logger = self.config.logger();
         tokio::spawn(async move {
-            let handler = match rhandler.as_ref() {
-                Some(handler) => handler,
-                None => return,
-            };
             loop {
-                let msg = handler.recv().await;
+                let msg = rhandler.recv().await;
                 trace!(logger, "received packet");
                 if let Ok(Some(msg)) = msg {
                     trace!(logger, "received async response");
-                    if let Some(code) = Self::handle_async_run_message(handler, &msg) {
+                    if let Some(code) = Self::handle_async_run_message(&rhandler, &msg) {
                         trace!(logger, "sending final message");
                         finaltx.send(Ok(code)).await.unwrap();
                     }
@@ -506,14 +490,10 @@ impl Connection {
 
     async fn poll_channel(
         config: Arc<Config>,
-        handler: Arc<Option<ProtocolHandler<OwnedReadHalf, OwnedWriteHalf>>>,
+        handler: Arc<ProtocolHandler<OwnedReadHalf, OwnedWriteHalf>>,
         id: ChannelID,
         selectors: &BTreeMap<u32, protocol::PollChannelFlags>,
     ) -> Result<BTreeMap<u32, u64>, Error> {
-        let handler = match handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
         let logger = config.logger();
         let wanted = selectors.values().cloned().map(|f| f.bits()).collect();
         let fds = selectors.keys().cloned().collect();
@@ -799,16 +779,13 @@ impl Connection {
     }
 
     async fn read_channel(&self, id: ChannelID, selector: u32) -> Result<Bytes, Error> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
         let req = ReadChannelRequest {
             id,
             selector,
             count: 65536,
         };
-        let resp: ReadChannelResponse = match handler
+        let resp: ReadChannelResponse = match self
+            .handler
             .send_message::<_, _, Empty>(MessageKind::ReadChannel, &req, Some(false))
             .await?
         {
@@ -822,16 +799,13 @@ impl Connection {
     }
 
     async fn write_channel(&self, id: ChannelID, selector: u32, data: &[u8]) -> Result<u64, Error> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
         let req = WriteChannelRequest {
             id,
             selector,
             bytes: data.to_vec().into(),
         };
-        let resp: WriteChannelResponse = match handler
+        let resp: WriteChannelResponse = match self
+            .handler
             .send_message::<_, _, Empty>(MessageKind::WriteChannel, &req, Some(false))
             .await?
         {
@@ -845,12 +819,9 @@ impl Connection {
     }
 
     async fn detach_channel_selector(&self, id: ChannelID, selector: u32) {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return,
-        };
         let req = DetachChannelSelectorRequest { id, selector };
-        let res = handler
+        let res = self
+            .handler
             .send_message::<_, Empty, Empty>(MessageKind::DetachChannelSelector, &req, Some(false))
             .await;
         trace!(
@@ -863,10 +834,6 @@ impl Connection {
     }
 
     async fn create_command_channel(&self, args: &[Bytes]) -> Result<ChannelID, Error> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
         let config = self.config.clone();
         let req = CreateChannelRequest {
             kind: (b"command" as &'static [u8]).into(),
@@ -876,7 +843,8 @@ impl Connection {
             meta: None,
             selectors: vec![0, 1, 2],
         };
-        let resp: CreateChannelResponse = match handler
+        let resp: CreateChannelResponse = match self
+            .handler
             .send_message::<_, _, Empty>(MessageKind::CreateChannel, &req, Some(true))
             .await?
         {
@@ -895,10 +863,6 @@ impl Connection {
         op: ClipboardChannelOperation,
         target: Option<ClipboardChannelTarget>,
     ) -> Result<ChannelID, Error> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
         let mut meta = BTreeMap::new();
         let selectors = match op {
             ClipboardChannelOperation::Copy => {
@@ -935,7 +899,8 @@ impl Connection {
             meta: Some(meta),
             selectors,
         };
-        let resp: CreateChannelResponse = match handler
+        let resp: CreateChannelResponse = match self
+            .handler
             .send_message::<_, _, Empty>(MessageKind::CreateChannel, &req, Some(true))
             .await?
         {
@@ -957,10 +922,6 @@ impl Connection {
     }
 
     async fn create_fs_channel(&self, target: Bytes, kind: &[u8]) -> Result<ChannelID, Error> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
         let req = CreateChannelRequest {
             kind: kind.to_owned().into(),
             kind_args: None,
@@ -969,7 +930,8 @@ impl Connection {
             meta: None,
             selectors: vec![0, 1],
         };
-        let resp: CreateChannelResponse = match handler
+        let resp: CreateChannelResponse = match self
+            .handler
             .send_message::<_, _, Empty>(MessageKind::CreateChannel, &req, Some(true))
             .await?
         {
@@ -983,15 +945,11 @@ impl Connection {
     }
 
     async fn delete_channel(&self, id: ChannelID) -> Result<(), Error> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
         let req = DeleteChannelRequest {
             id,
             termination: None,
         };
-        handler
+        self.handler
             .send_message::<_, Empty, Empty>(MessageKind::DeleteChannel, &req, Some(false))
             .await?;
         Ok(())
