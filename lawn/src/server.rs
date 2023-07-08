@@ -728,7 +728,8 @@ impl Server {
                     None => return Err(ResponseCode::NotFound.into()),
                 };
                 let selector = m.selector;
-                let data = tokio::task::spawn_blocking(move || ch.read(selector))
+                let count = m.count;
+                let data = tokio::task::spawn_blocking(move || ch.read(selector, count))
                     .await
                     .unwrap()?;
                 let resp = protocol::ReadChannelResponse { bytes: data };
