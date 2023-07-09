@@ -1,8 +1,9 @@
 use crate::fs_proxy;
 use lawn_protocol::{handler, protocol};
-use std::convert::TryFrom;
+use std::convert::{TryFrom, TryInto};
 use std::fmt;
 use std::fmt::Display;
+use std::io;
 
 #[derive(Debug)]
 pub struct Error {
@@ -139,6 +140,14 @@ impl TryFrom<Error> for protocol::Error {
             return Ok(e);
         }
         Err(WrongTypeError)
+    }
+}
+
+impl TryFrom<Error> for io::Error {
+    type Error = WrongTypeError;
+    fn try_from(e: Error) -> Result<io::Error, Self::Error> {
+        let err = protocol::Error::try_from(e)?;
+        err.try_into().map_err(|_| WrongTypeError)
     }
 }
 
