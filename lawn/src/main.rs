@@ -524,7 +524,7 @@ fn dispatch_mount(
                     );
                     loop {
                         if let Ok((req, _)) = psock.accept().await {
-                            let mut proxy = fs_proxy::Proxy::new_from_connection(
+                            let proxy = fs_proxy::Proxy::new_from_connection(
                                 config.clone(),
                                 req,
                                 conn.clone(),

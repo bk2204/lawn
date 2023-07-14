@@ -253,7 +253,10 @@ impl Connection {
         }
     }
 
-    pub async fn run_clipboard<I: AsyncReadExt + Unpin, O: AsyncWriteExt + Unpin>(
+    pub async fn run_clipboard<
+        I: AsyncReadExt + Unpin + Send + 'static,
+        O: AsyncWriteExt + Unpin + Send + 'static,
+    >(
         self: Arc<Self>,
         stdin: I,
         stdout: O,
@@ -287,7 +290,10 @@ impl Connection {
         }
     }
 
-    pub async fn run_9p<I: AsyncReadExt + Unpin, O: AsyncWriteExt + Unpin>(
+    pub async fn run_9p<
+        I: AsyncReadExt + Unpin + Send + 'static,
+        O: AsyncWriteExt + Unpin + Send + 'static,
+    >(
         self: Arc<Self>,
         stdin: I,
         stdout: O,
@@ -305,7 +311,10 @@ impl Connection {
             .await
     }
 
-    pub async fn run_sftp<I: AsyncReadExt + Unpin, O: AsyncWriteExt + Unpin>(
+    pub async fn run_sftp<
+        I: AsyncReadExt + Unpin + Send + 'static,
+        O: AsyncWriteExt + Unpin + Send + 'static,
+    >(
         self: Arc<Self>,
         stdin: I,
         stdout: O,
@@ -324,9 +333,9 @@ impl Connection {
     }
 
     pub async fn run_command<
-        I: AsyncReadExt + Unpin,
-        O: AsyncWriteExt + Unpin,
-        E: AsyncWriteExt + Unpin,
+        I: AsyncReadExt + Unpin + Send + 'static,
+        O: AsyncWriteExt + Unpin + Send + 'static,
+        E: AsyncWriteExt + Unpin + Send + 'static,
     >(
         self: Arc<Self>,
         args: &[Bytes],
@@ -345,9 +354,9 @@ impl Connection {
     }
 
     async fn run_channel<
-        I: AsyncReadExt + Unpin,
-        O: AsyncWriteExt + Unpin,
-        E: AsyncWriteExt + Unpin,
+        I: AsyncReadExt + Unpin + Send + 'static,
+        O: AsyncWriteExt + Unpin + Send + 'static,
+        E: AsyncWriteExt + Unpin + Send + 'static,
     >(
         self: Arc<Self>,
         stdin: I,
