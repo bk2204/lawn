@@ -736,33 +736,30 @@ impl ProtocolSerializer {
         self.serialize_response_simple(&m)
     }
 
-    pub fn deserialize_data(&self, config: &Config, data: &[u8]) -> Result<Data, Error> {
+    pub fn deserialize_data(
+        &self,
+        config: &Config,
+        header: &[u8],
+        body: Bytes,
+    ) -> Result<Data, Error> {
         fn is_sender(config: &Config, id: u32) -> bool {
             let sender_mask = if config.is_server() { 0x80000000 } else { 0 };
             (id & 0x80000000) == sender_mask
         }
-        let _size: u32 = u32::from_le_bytes(data[0..4].try_into().unwrap());
-        let id: u32 = u32::from_le_bytes(data[4..8].try_into().unwrap());
-        let arg: u32 = u32::from_le_bytes(data[8..12].try_into().unwrap());
+        let _size: u32 = u32::from_le_bytes(header[0..4].try_into().unwrap());
+        let id: u32 = u32::from_le_bytes(header[4..8].try_into().unwrap());
+        let arg: u32 = u32::from_le_bytes(header[8..12].try_into().unwrap());
         if is_sender(config, id) {
             Ok(Data::Response(Response {
                 id,
                 code: arg,
-                message: if data.len() == 12 {
-                    None
-                } else {
-                    Some(data[12..].to_vec().into())
-                },
+                message: if body.is_empty() { None } else { Some(body) },
             }))
         } else {
             Ok(Data::Message(Message {
                 id,
                 kind: arg,
-                message: if data.len() == 12 {
-                    None
-                } else {
-                    Some(data[12..].to_vec().into())
-                },
+                message: if body.is_empty() { None } else { Some(body) },
             }))
         }
     }

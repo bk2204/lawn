@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::protocol;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -23,6 +23,16 @@ macro_rules! dump_packet {
         use crate::config::LogLevel;
         if $logger.level() <= LogLevel::Dump {
             $logger.trace(&format!("packet: {}", hex::encode($arg)));
+        }
+    }};
+    ($logger:expr, $header:expr, $body:expr) => {{
+        use crate::config::LogLevel;
+        if $logger.level() <= LogLevel::Dump {
+            $logger.trace(&format!(
+                "packet: {}{}",
+                hex::encode($header),
+                hex::encode($body)
+            ));
         }
     }};
 }
@@ -323,28 +333,31 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
         let logger = self.config.logger();
         // Hold the lock for the entire duration of reading the message so we don't read partial
         // messages.
-        let v = {
-            let mut buf = [0u8; 4];
+        let (header, body) = {
+            let mut buf = [0u8; 12];
             let mut g = self.inp.lock().await;
             g.as_mut().read_exact(&mut buf).await?;
-            let size: u32 = u32::from_le_bytes(buf);
+            let size: u32 = u32::from_le_bytes(buf[0..4].try_into().unwrap());
             if !self.serializer.is_valid_size(size) {
                 logger.trace(&format!("received invalid packet: size {:08x}", size));
                 return Err(Error::Undeserializable);
             }
-            let mut v: Vec<u8> = buf.into();
-            v.resize(size as usize + 4, 0);
-            g.as_mut().read_exact(&mut v[4..]).await?;
-            v
+            let mut b = BytesMut::new();
+            b.resize(size as usize - 8, 0);
+            g.as_mut().read_exact(&mut b).await?;
+            (buf, b.into())
         };
         logger.trace(&format!(
             "received packet: size {:08x} id {:08x} next {:08x}",
-            u32::from_le_bytes(v[0..4].try_into().unwrap()),
-            u32::from_le_bytes(v[4..8].try_into().unwrap()),
-            u32::from_le_bytes(v[8..12].try_into().unwrap())
+            u32::from_le_bytes(header[0..4].try_into().unwrap()),
+            u32::from_le_bytes(header[4..8].try_into().unwrap()),
+            u32::from_le_bytes(header[8..12].try_into().unwrap())
         ));
-        dump_packet!(logger, &v);
-        match self.serializer.deserialize_data(&self.config, &v)? {
+        dump_packet!(logger, &header, &body);
+        match self
+            .serializer
+            .deserialize_data(&self.config, &header, body)?
+        {
             protocol::Data::Message(m) => {
                 logger.trace(&format!(
                     "received message: id {:08x} kind {:08x}",
