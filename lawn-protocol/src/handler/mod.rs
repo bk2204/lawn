@@ -329,7 +329,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
     ///
     /// Returns `Ok(Some(msg))` if the item read was a message, `Ok(None)` if it was a response
     /// (which we will handle automatically), and `Err` on error.
-    pub async fn recv(&self) -> Result<Option<protocol::Message>, Error> {
+    pub async fn recv(&self) -> Result<Option<Box<protocol::Message>>, Error> {
         let logger = self.config.logger();
         // Hold the lock for the entire duration of reading the message so we don't read partial
         // messages.
@@ -363,7 +363,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
                     "received message: id {:08x} kind {:08x}",
                     m.id, m.kind
                 ));
-                Ok(Some(m))
+                Ok(Some(Box::new(m)))
             }
             protocol::Data::Response(r) => {
                 logger.trace(&format!(
