@@ -6,9 +6,10 @@ use num_traits::FromPrimitive;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_cbor::Value;
 use std::collections::{BTreeMap, BTreeSet};
-use std::convert::TryInto;
+use std::convert::{TryFrom, TryInto};
 use std::fmt;
 use std::io;
+use std::io::{Seek, SeekFrom};
 
 /// # Overview
 ///
@@ -669,8 +670,20 @@ impl ProtocolSerializer {
         (8..=Self::MAX_MESSAGE_SIZE).contains(&size)
     }
 
+    pub fn serialize_header(&self, id: u32, next: u32, data_len: usize) -> Option<Bytes> {
+        let size = data_len as u64 + 8;
+        if size > Self::MAX_MESSAGE_SIZE as u64 {
+            return None;
+        }
+        let mut b = BytesMut::with_capacity(size as usize);
+        let size = size as u32;
+        b.extend(&size.to_le_bytes());
+        b.extend(&id.to_le_bytes());
+        b.extend(&next.to_le_bytes());
+        Some(b.into())
+    }
+
     pub fn serialize_message_simple(&self, msg: &Message) -> Option<Bytes> {
-        let mut b = BytesMut::new();
         let size = 8 + match &msg.message {
             Some(m) => m.len(),
             None => 0,
@@ -678,6 +691,7 @@ impl ProtocolSerializer {
         if size > Self::MAX_MESSAGE_SIZE as usize {
             return None;
         }
+        let mut b = BytesMut::with_capacity(size);
         let size = size as u32;
         b.extend(&size.to_le_bytes());
         b.extend(&msg.id.to_le_bytes());
@@ -690,13 +704,22 @@ impl ProtocolSerializer {
     }
 
     pub fn serialize_message_typed<S: Serialize>(&self, msg: &Message, obj: &S) -> Option<Bytes> {
-        let mut m = msg.clone();
-        let body = match serde_cbor::to_vec(obj) {
-            Ok(m) => m,
-            Err(_) => return None,
+        let mut v: Vec<u8> = Vec::with_capacity(12);
+        // Write a dummy size that we'll then fill in later.
+        v.extend(&0u32.to_le_bytes());
+        v.extend(&msg.id.to_le_bytes());
+        v.extend(&msg.kind.to_le_bytes());
+        let mut cursor = std::io::Cursor::new(&mut v);
+        let _ = cursor.seek(SeekFrom::End(0));
+        if serde_cbor::to_writer(&mut cursor, obj).is_err() {
+            return None;
+        }
+        let size = match u32::try_from(v.len()) {
+            Ok(sz) if (4..=Self::MAX_MESSAGE_SIZE).contains(&sz) => sz - 4,
+            _ => return None,
         };
-        m.message = Some(body.into());
-        self.serialize_message_simple(&m)
+        v[0..4].copy_from_slice(&size.to_le_bytes());
+        Some(v.into())
     }
 
     pub fn serialize_body<S: Serialize>(&self, obj: &S) -> Option<Bytes> {
@@ -707,7 +730,6 @@ impl ProtocolSerializer {
     }
 
     pub fn serialize_response_simple(&self, resp: &Response) -> Option<Bytes> {
-        let mut b = BytesMut::new();
         let size = 8 + match &resp.message {
             Some(m) => m.len(),
             None => 0,
@@ -715,6 +737,7 @@ impl ProtocolSerializer {
         if size > Self::MAX_MESSAGE_SIZE as usize {
             return None;
         }
+        let mut b = BytesMut::with_capacity(size);
         let size = size as u32;
         b.extend(&size.to_le_bytes());
         b.extend(&resp.id.to_le_bytes());
@@ -727,13 +750,22 @@ impl ProtocolSerializer {
     }
 
     pub fn serialize_response_typed<S: Serialize>(&self, msg: &Response, obj: &S) -> Option<Bytes> {
-        let mut m = msg.clone();
-        let body = match serde_cbor::to_vec(obj) {
-            Ok(m) => m,
-            Err(_) => return None,
+        let mut v: Vec<u8> = Vec::with_capacity(12);
+        // Write a dummy size that we'll then fill in later.
+        v.extend(&0u32.to_le_bytes());
+        v.extend(&msg.id.to_le_bytes());
+        v.extend(&msg.code.to_le_bytes());
+        let mut cursor = std::io::Cursor::new(&mut v);
+        let _ = cursor.seek(SeekFrom::End(0));
+        if serde_cbor::to_writer(&mut cursor, obj).is_err() {
+            return None;
+        }
+        let size = match u32::try_from(v.len()) {
+            Ok(sz) if (4..=Self::MAX_MESSAGE_SIZE).contains(&sz) => sz - 4,
+            _ => return None,
         };
-        m.message = Some(body.into());
-        self.serialize_response_simple(&m)
+        v[0..4].copy_from_slice(&size.to_le_bytes());
+        Some(v.into())
     }
 
     pub fn deserialize_data(

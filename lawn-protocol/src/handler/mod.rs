@@ -391,13 +391,11 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
     }
 
     pub async fn send_success_simple(&self, id: u32) -> Result<(), Error> {
-        let r = protocol::Response {
-            id,
-            code: protocol::ResponseCode::Success as u32,
-            message: None,
-        };
-        match self.serializer.serialize_response_simple(&r) {
-            Some(r) => self.send_response(&r).await,
+        match self
+            .serializer
+            .serialize_header(id, protocol::ResponseCode::Success as u32, 0)
+        {
+            Some(r) => self.send_response(Some(r), None).await,
             None => Err(Error::Unserializable),
         }
     }
@@ -409,40 +407,18 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
             message: None,
         };
         match self.serializer.serialize_response_typed(&r, obj) {
-            Some(r) => self.send_response(&r).await,
+            Some(r) => self.send_response(None, Some(r)).await,
             None => Err(Error::Unserializable),
         }
     }
 
     pub async fn send_success(&self, id: u32, message: Option<Bytes>) -> Result<(), Error> {
         let logger = self.config.logger();
-        let r = protocol::Response {
+        match self.serializer.serialize_header(
             id,
-            code: protocol::ResponseCode::Success as u32,
-            message,
-        };
-        match self.serializer.serialize_response_simple(&r) {
-            Some(r) => {
-                logger.trace(&format!(
-                    "sending response: size {:08x} id {:08x} next {:08x}",
-                    u32::from_le_bytes(r[0..4].try_into().unwrap()),
-                    u32::from_le_bytes(r[4..8].try_into().unwrap()),
-                    u32::from_le_bytes(r[8..12].try_into().unwrap())
-                ));
-                self.send_response(&r).await
-            }
-            None => Err(Error::Unserializable),
-        }
-    }
-
-    pub async fn send_continuation(&self, id: u32, message: Option<Bytes>) -> Result<(), Error> {
-        let logger = self.config.logger();
-        let r = protocol::Response {
-            id,
-            code: protocol::ResponseCode::Continuation as u32,
-            message,
-        };
-        match self.serializer.serialize_response_simple(&r) {
+            protocol::ResponseCode::Success as u32,
+            message.as_ref().map(|m| m.len()).unwrap_or_default(),
+        ) {
             Some(r) => {
                 trace!(
                     logger,
@@ -451,7 +427,28 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
                     u32::from_le_bytes(r[4..8].try_into().unwrap()),
                     u32::from_le_bytes(r[8..12].try_into().unwrap())
                 );
-                self.send_response(&r).await
+                self.send_response(Some(r), message).await
+            }
+            None => Err(Error::Unserializable),
+        }
+    }
+
+    pub async fn send_continuation(&self, id: u32, message: Option<Bytes>) -> Result<(), Error> {
+        let logger = self.config.logger();
+        match self.serializer.serialize_header(
+            id,
+            protocol::ResponseCode::Continuation as u32,
+            message.as_ref().map(|m| m.len()).unwrap_or_default(),
+        ) {
+            Some(r) => {
+                trace!(
+                    logger,
+                    "sending response: size {:08x} id {:08x} next {:08x}",
+                    u32::from_le_bytes(r[0..4].try_into().unwrap()),
+                    u32::from_le_bytes(r[4..8].try_into().unwrap()),
+                    u32::from_le_bytes(r[8..12].try_into().unwrap())
+                );
+                self.send_response(Some(r), message).await
             }
             None => Err(Error::Unserializable),
         }
@@ -462,13 +459,8 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
         id: u32,
         kind: protocol::ResponseCode,
     ) -> Result<(), Error> {
-        let r = protocol::Response {
-            id,
-            code: kind as u32,
-            message: None,
-        };
-        match self.serializer.serialize_response_simple(&r) {
-            Some(r) => self.send_response(&r).await,
+        match self.serializer.serialize_header(id, kind as u32, 0) {
+            Some(r) => self.send_response(Some(r), None).await,
             None => Err(Error::Unserializable),
         }
     }
@@ -485,7 +477,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
             message: None,
         };
         match self.serializer.serialize_response_typed(&r, obj) {
-            Some(r) => self.send_response(&r).await,
+            Some(r) => self.send_response(None, Some(r)).await,
             None => Err(Error::Unserializable),
         }
     }
@@ -496,21 +488,25 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
         kind: protocol::ResponseCode,
         message: Option<Bytes>,
     ) -> Result<(), Error> {
-        let r = protocol::Response {
+        match self.serializer.serialize_header(
             id,
-            code: kind as u32,
-            message,
-        };
-        match self.serializer.serialize_response_simple(&r) {
-            Some(r) => self.send_response(&r).await,
+            kind as u32,
+            message.as_ref().map(|m| m.len()).unwrap_or_default(),
+        ) {
+            Some(r) => self.send_response(Some(r), message).await,
             None => Err(Error::Unserializable),
         }
     }
 
-    async fn send_response(&self, resp: &Bytes) -> Result<(), Error> {
+    async fn send_response(&self, header: Option<Bytes>, resp: Option<Bytes>) -> Result<(), Error> {
         {
             let mut g = self.outp.lock().await;
-            g.as_mut().write_all(resp).await?
+            if let Some(b) = header {
+                g.as_mut().write_all(&b).await?;
+            }
+            if let Some(r) = resp {
+                g.as_mut().write_all(&r).await?;
+            }
         }
         Ok(())
     }
