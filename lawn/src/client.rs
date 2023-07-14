@@ -20,7 +20,8 @@ use num_traits::FromPrimitive;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_cbor::Value;
 use std::collections::{BTreeMap, BTreeSet};
-use std::convert::TryInto;
+use std::convert::{TryFrom, TryInto};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,6 +29,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::UnixStream;
 use tokio::select;
+use tokio::task::JoinHandle;
 use tokio::time;
 
 #[derive(Clone)]
@@ -363,25 +365,8 @@ impl Connection {
         stdout: O,
         stderr: E,
         id: ChannelID,
-        fd_status: &mut [FDStatus],
+        _fd_status: &mut [FDStatus],
     ) -> Result<i32, Error> {
-        let mut stdin = stdin;
-        let mut stdout = stdout;
-        let mut stderr = stderr;
-        let (polltx, mut pollrx) = tokio::sync::mpsc::unbounded_channel();
-        let (cfg, chandler) = (self.config.clone(), self.handler.clone());
-        let mut selectors = BTreeMap::new();
-        selectors.insert(1, PollChannelFlags::Input | PollChannelFlags::Hangup);
-        if fd_status.len() > 2 {
-            selectors.insert(2, PollChannelFlags::Input | PollChannelFlags::Hangup);
-        }
-        tokio::spawn(async move {
-            loop {
-                let results =
-                    Self::poll_channel(cfg.clone(), chandler.clone(), id, &selectors).await;
-                let _ = polltx.send(results);
-            }
-        });
         let rhandler = self.handler.clone();
         let (finaltx, mut finalrx) = tokio::sync::mpsc::channel(1);
         let logger = self.config.logger();
@@ -398,72 +383,138 @@ impl Connection {
                 }
             }
         });
-        let logger = self.config.logger();
-        let mut buf = vec![0u8; 65536];
-        loop {
-            select! {
-                res = finalrx.recv() => {
-                    trace!(logger, "processing final message");
-                    fd_status[0] = self.clone().read_command_fd(id, 0, &fd_status[0], &mut stdin).await;
-                    fd_status[1] = self.clone().write_command_fd(id, 1, &fd_status[1], &mut stdout).await;
-                    if fd_status.len() > 2 {
-                        fd_status[2] = self.clone().write_command_fd(id, 2, &fd_status[2], &mut stderr).await;
-                    }
+        self.clone().io_channel_write_task(id, 0, stdin);
+        let stdout_task = self.clone().io_channel_read_task(id, 1, stdout);
+        let stderr_task = self.clone().io_channel_read_task(id, 2, stderr);
+        let res = finalrx.recv().await;
+        let _ = tokio::join!(stdout_task, stderr_task);
+        let _ = self.delete_channel(id).await;
+        trace!(self.config.logger(), "returning value");
+        res.unwrap()
+    }
 
-                    while fd_status[0].needs_final_read() {
-                        fd_status[0] = self.clone().read_command_fd(id, 0, &fd_status[0], &mut stdin).await;
+    fn io_channel_write_task<R: AsyncReadExt + Unpin + Send + 'static>(
+        self: Arc<Self>,
+        id: ChannelID,
+        selector: u32,
+        r: R,
+    ) -> JoinHandle<Result<u64, Error>> {
+        tokio::task::spawn(async move {
+            let r = self.clone().write_copy_command_fd(id, selector, r).await;
+            self.detach_channel_selector(id, selector).await;
+            r
+        })
+    }
+
+    fn io_channel_read_task<W: AsyncWriteExt + Unpin + Send + 'static>(
+        self: Arc<Self>,
+        id: ChannelID,
+        selector: u32,
+        w: W,
+    ) -> JoinHandle<Result<u64, Error>> {
+        tokio::task::spawn(async move {
+            let r = self.clone().read_copy_command_fd(id, selector, w).await;
+            self.detach_channel_selector(id, selector).await;
+            r
+        })
+    }
+
+    async fn write_copy_command_fd<R: AsyncReadExt + Unpin>(
+        self: Arc<Self>,
+        id: ChannelID,
+        selector: u32,
+        r: R,
+    ) -> Result<u64, Error> {
+        let mut r = r;
+        let mut total = 0u64;
+        let mut buf = [0u8; 65536];
+        let mut off = 0;
+        let mut last = 0;
+        loop {
+            let (start, end) = if off == 0 {
+                let sz = match r.read(&mut buf).await {
+                    Ok(0) => {
+                        return Ok(total);
                     }
-                    while fd_status[1].needs_final_write() {
-                        fd_status[1] = self.clone().write_command_fd(id, 1, &fd_status[1], &mut stdout).await;
-                    }
-                    while fd_status.len() > 2 && fd_status[2].needs_final_write() {
-                        fd_status[2] = self.clone().write_command_fd(id, 2, &fd_status[2], &mut stderr).await;
-                    }
-                    let _ = self.delete_channel(id).await;
-                    trace!(logger, "returning value");
-                    return res.unwrap();
+                    Ok(sz) => sz,
+                    Err(e) => return Err(handler::Error::from(protocol::Error::from(e)).into()),
+                };
+                (0, sz)
+            } else {
+                (off, last)
+            };
+            match self
+                .clone()
+                .write_channel(id, selector, &buf[start..end])
+                .await
+            {
+                Ok(written) if written as usize == end - start => {
+                    off = 0;
+                    last = 0;
+                    total += written;
                 }
-                res = stdin.read(&mut buf), if fd_status[0].open => {
-                    match res {
-                        Ok(x) if x != 0 => {
-                            match &mut fd_status[0].data {
-                                Some(data) => data.extend(&buf[0..x]),
-                                None => fd_status[0].data = Some(buf[0..x].into()),
-                            }
-                            fd_status[0] = self.clone().read_command_fd(id, 0, &fd_status[0], &mut stdin).await;
-                        },
-                        Ok(0) => fd_status[0] = self.clone().read_command_fd(id, 0, &fd_status[0], &mut stdin).await,
-                        _ => (),
-                    }
+                Ok(written) => {
+                    off += written as usize;
+                    last = end;
+                    total += written;
                 }
-                results = pollrx.recv() => {
-                    trace!(logger, "channel {}: poll: results {:?}", id, results);
-                    let results = results.unwrap();
-                    if let Ok(results) = results {
-                        if let Some(flags) = results.get(&0) {
-                            let mask = (PollChannelFlags::Output | PollChannelFlags::Hangup | PollChannelFlags::Invalid).bits();
-                            if (flags & mask) != 0 {
-                                trace!(logger, "channel {}: selector 0: reading", id);
-                                fd_status[0] = self.clone().read_command_fd(id, 0, &fd_status[0], &mut stdin).await;
-                            }
-                        }
-                        if let Some(flags) = results.get(&1) {
-                            let mask = (PollChannelFlags::Input | PollChannelFlags::Hangup | PollChannelFlags::Invalid).bits();
-                            if (flags & mask) != 0 {
-                                trace!(logger, "channel {}: selector 1: writing", id);
-                                fd_status[1] = self.clone().write_command_fd(id, 1, &fd_status[1], &mut stdout).await;
-                            }
-                        }
-                        if let Some(flags) = results.get(&2) {
-                            let mask = (PollChannelFlags::Input | PollChannelFlags::Hangup | PollChannelFlags::Invalid).bits();
-                            if (flags & mask) != 0 && fd_status.len() > 2 {
-                                trace!(logger, "channel {}: selector 2: writing", id);
-                                fd_status[2] = self.clone().write_command_fd(id, 2, &fd_status[2], &mut stderr).await;
-                            }
-                        }
+                Err(e) => match io::Error::try_from(e) {
+                    Ok(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        off = start;
+                        last = end;
+                        let mut selectors = BTreeMap::new();
+                        selectors.insert(1, PollChannelFlags::Output | PollChannelFlags::Hangup);
+                        let _ = Self::poll_channel(
+                            self.config.clone(),
+                            self.handler.clone(),
+                            id,
+                            &selectors,
+                        )
+                        .await;
+                        continue;
                     }
-                }
+                    Ok(e) => return Err(handler::Error::from(protocol::Error::from(e)).into()),
+                    Err(e) => return Err(e.0),
+                },
             }
+        }
+    }
+
+    async fn read_copy_command_fd<W: AsyncWriteExt + Unpin>(
+        self: Arc<Self>,
+        id: ChannelID,
+        selector: u32,
+        w: W,
+    ) -> Result<u64, Error> {
+        let mut w = w;
+        let mut total = 0u64;
+        loop {
+            let data = match self.clone().read_channel(id, selector).await {
+                Ok(data) if data.is_empty() => return Ok(total),
+                Ok(data) => data,
+                Err(e) => match io::Error::try_from(e) {
+                    Ok(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        let mut selectors = BTreeMap::new();
+                        selectors.insert(1, PollChannelFlags::Output | PollChannelFlags::Hangup);
+                        let _ = Self::poll_channel(
+                            self.config.clone(),
+                            self.handler.clone(),
+                            id,
+                            &selectors,
+                        )
+                        .await;
+                        continue;
+                    }
+                    Ok(e) => return Err(handler::Error::from(protocol::Error::from(e)).into()),
+                    Err(e) => return Err(e.0),
+                },
+            };
+            match w.write_all(&data).await {
+                Ok(()) => {
+                    total += data.len() as u64;
+                }
+                Err(e) => return Err(handler::Error::from(protocol::Error::from(e)).into()),
+            };
         }
     }
 
