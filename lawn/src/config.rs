@@ -19,6 +19,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::SystemTime;
 
 pub const VERSION: &str = concat!("Lawn/", env!("CARGO_PKG_VERSION"));
 
@@ -703,7 +704,14 @@ impl lawn_protocol::config::Logger for Logger {
     }
 
     fn trace(&self, msg: &str) {
-        self.write(3, &self.error, &format!("trace: {}\n", msg));
+        let time = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_else(|e| e.duration());
+        self.write(
+            3,
+            &self.error,
+            &format!("trace: {:09.9}: {}\n", time.as_secs_f64(), msg),
+        );
     }
 }
 
