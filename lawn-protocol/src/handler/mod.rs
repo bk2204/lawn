@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::protocol;
 use bytes::{Bytes, BytesMut};
+use lawn_constants::trace;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -339,7 +340,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
             g.as_mut().read_exact(&mut buf).await?;
             let size: u32 = u32::from_le_bytes(buf[0..4].try_into().unwrap());
             if !self.serializer.is_valid_size(size) {
-                logger.trace(&format!("received invalid packet: size {:08x}", size));
+                trace!(logger, "received invalid packet: size {:08x}", size);
                 return Err(Error::Undeserializable);
             }
             let mut b = BytesMut::new();
@@ -359,26 +360,30 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
             .deserialize_data(&self.config, &header, body)?
         {
             protocol::Data::Message(m) => {
-                logger.trace(&format!(
+                trace!(
+                    logger,
                     "received message: id {:08x} kind {:08x}",
-                    m.id, m.kind
-                ));
+                    m.id,
+                    m.kind
+                );
                 Ok(Some(Box::new(m)))
             }
             protocol::Data::Response(r) => {
-                logger.trace(&format!(
+                trace!(
+                    logger,
                     "received response: id {:08x} code {:08x}",
-                    r.id, r.code
-                ));
+                    r.id,
+                    r.code
+                );
                 let channel = {
                     let mut g = self.requests.lock().await;
                     g.remove(&r.id)
                 };
                 if let Some(ch) = channel {
-                    logger.trace(&format!("sending response id {:08x} to channel", r.id));
+                    trace!(logger, "sending response id {:08x} to channel", r.id);
                     let _ = ch.send(Ok(r)).await;
                 } else {
-                    logger.trace(&format!("nobody waiting on response id {:08x}", r.id));
+                    trace!(logger, "nobody waiting on response id {:08x}", r.id);
                 }
                 Ok(None)
             }
@@ -439,12 +444,13 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
         };
         match self.serializer.serialize_response_simple(&r) {
             Some(r) => {
-                logger.trace(&format!(
+                trace!(
+                    logger,
                     "sending response: size {:08x} id {:08x} next {:08x}",
                     u32::from_le_bytes(r[0..4].try_into().unwrap()),
                     u32::from_le_bytes(r[4..8].try_into().unwrap()),
                     u32::from_le_bytes(r[8..12].try_into().unwrap())
-                ));
+                );
                 self.send_response(&r).await
             }
             None => Err(Error::Unserializable),
@@ -556,16 +562,18 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
             v
         };
         let logger = self.config.logger();
-        logger.trace(&format!("simple message: id {:08x} kind {:?}", id, kind));
+        trace!(logger, "simple message: id {:08x} kind {:?}", id, kind);
         let m = protocol::Message {
             id,
             kind: kind as u32,
             message: None,
         };
-        logger.trace(&format!(
+        trace!(
+            logger,
             "simple message: id {:08x} kind {:08x}",
-            m.id, m.kind
-        ));
+            m.id,
+            m.kind
+        );
         let msg = match self.serializer.serialize_message_simple(&m) {
             Some(m) => m,
             None => return Err(Error::Unserializable),
@@ -617,19 +625,19 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
             g.as_mut().write_all(data).await?;
         }
         if synchronous {
-            logger.trace("synchronous mode: waiting for response");
+            trace!(logger, "synchronous mode: waiting for response");
             loop {
                 match self.recv().await {
                     Ok(None) => {
-                        logger.trace("synchronous mode: got response");
+                        trace!(logger, "synchronous mode: got response");
                         break;
                     }
                     Err(e) => {
-                        logger.trace(&format!("synchronous mode: got error {}", e));
+                        trace!(logger, "synchronous mode: got error {}", e);
                         return Err(e);
                     }
                     Ok(Some(m)) => {
-                        logger.trace(&format!("synchronous mode: got unrelated message {:?}", m));
+                        trace!(logger, "synchronous mode: got unrelated message {:?}", m);
                     }
                 }
             }
