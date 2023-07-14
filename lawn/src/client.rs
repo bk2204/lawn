@@ -1156,7 +1156,7 @@ impl AsyncRead for ChannelReader {
                         buf.initialize_unfilled_to(count)
                             .copy_from_slice(&nself.extra[0..count]);
                         buf.set_filled(count);
-                        nself.extra.remove(count);
+                        nself.extra.drain(0..count);
                         trace!(
                             config.logger(),
                             "client: {}: {}: copied {} extra elements ({} remaining)",
