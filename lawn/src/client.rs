@@ -89,16 +89,16 @@ impl Connection {
         path: Option<&Path>,
         socket: UnixStream,
         synchronous: bool,
-    ) -> Self {
+    ) -> Arc<Self> {
         let logger = config.logger();
         let cfg = Arc::new(lawn_protocol::config::Config::new(false, logger));
         let (sread, swrite) = socket.into_split();
         let handler = Arc::new(ProtocolHandler::new(cfg, sread, swrite, synchronous));
-        Self {
+        Arc::new(Self {
             config,
             path: path.map(|p| p.into()),
             handler,
-        }
+        })
     }
 
     pub async fn ping(&self) -> Result<(), Error> {
@@ -254,7 +254,7 @@ impl Connection {
     }
 
     pub async fn run_clipboard<I: AsyncReadExt + Unpin, O: AsyncWriteExt + Unpin>(
-        &self,
+        self: Arc<Self>,
         stdin: I,
         stdout: O,
         op: ClipboardChannelOperation,
@@ -288,7 +288,7 @@ impl Connection {
     }
 
     pub async fn run_9p<I: AsyncReadExt + Unpin, O: AsyncWriteExt + Unpin>(
-        &self,
+        self: Arc<Self>,
         stdin: I,
         stdout: O,
         target: Bytes,
@@ -306,7 +306,7 @@ impl Connection {
     }
 
     pub async fn run_sftp<I: AsyncReadExt + Unpin, O: AsyncWriteExt + Unpin>(
-        &self,
+        self: Arc<Self>,
         stdin: I,
         stdout: O,
         target: Bytes,
@@ -328,7 +328,7 @@ impl Connection {
         O: AsyncWriteExt + Unpin,
         E: AsyncWriteExt + Unpin,
     >(
-        &self,
+        self: Arc<Self>,
         args: &[Bytes],
         stdin: I,
         stdout: O,
@@ -349,7 +349,7 @@ impl Connection {
         O: AsyncWriteExt + Unpin,
         E: AsyncWriteExt + Unpin,
     >(
-        &self,
+        self: Arc<Self>,
         stdin: I,
         stdout: O,
         stderr: E,
@@ -395,20 +395,20 @@ impl Connection {
             select! {
                 res = finalrx.recv() => {
                     trace!(logger, "processing final message");
-                    fd_status[0] = self.read_command_fd(id, 0, &fd_status[0], &mut stdin).await;
-                    fd_status[1] = self.write_command_fd(id, 1, &fd_status[1], &mut stdout).await;
+                    fd_status[0] = self.clone().read_command_fd(id, 0, &fd_status[0], &mut stdin).await;
+                    fd_status[1] = self.clone().write_command_fd(id, 1, &fd_status[1], &mut stdout).await;
                     if fd_status.len() > 2 {
-                        fd_status[2] = self.write_command_fd(id, 2, &fd_status[2], &mut stderr).await;
+                        fd_status[2] = self.clone().write_command_fd(id, 2, &fd_status[2], &mut stderr).await;
                     }
 
                     while fd_status[0].needs_final_read() {
-                        fd_status[0] = self.read_command_fd(id, 0, &fd_status[0], &mut stdin).await;
+                        fd_status[0] = self.clone().read_command_fd(id, 0, &fd_status[0], &mut stdin).await;
                     }
                     while fd_status[1].needs_final_write() {
-                        fd_status[1] = self.write_command_fd(id, 1, &fd_status[1], &mut stdout).await;
+                        fd_status[1] = self.clone().write_command_fd(id, 1, &fd_status[1], &mut stdout).await;
                     }
                     while fd_status.len() > 2 && fd_status[2].needs_final_write() {
-                        fd_status[2] = self.write_command_fd(id, 2, &fd_status[2], &mut stderr).await;
+                        fd_status[2] = self.clone().write_command_fd(id, 2, &fd_status[2], &mut stderr).await;
                     }
                     let _ = self.delete_channel(id).await;
                     trace!(logger, "returning value");
@@ -421,9 +421,9 @@ impl Connection {
                                 Some(data) => data.extend(&buf[0..x]),
                                 None => fd_status[0].data = Some(buf[0..x].into()),
                             }
-                            fd_status[0] = self.read_command_fd(id, 0, &fd_status[0], &mut stdin).await;
+                            fd_status[0] = self.clone().read_command_fd(id, 0, &fd_status[0], &mut stdin).await;
                         },
-                        Ok(0) => fd_status[0] = self.read_command_fd(id, 0, &fd_status[0], &mut stdin).await,
+                        Ok(0) => fd_status[0] = self.clone().read_command_fd(id, 0, &fd_status[0], &mut stdin).await,
                         _ => (),
                     }
                 }
@@ -435,21 +435,21 @@ impl Connection {
                             let mask = (PollChannelFlags::Output | PollChannelFlags::Hangup | PollChannelFlags::Invalid).bits();
                             if (flags & mask) != 0 {
                                 trace!(logger, "channel {}: selector 0: reading", id);
-                                fd_status[0] = self.read_command_fd(id, 0, &fd_status[0], &mut stdin).await;
+                                fd_status[0] = self.clone().read_command_fd(id, 0, &fd_status[0], &mut stdin).await;
                             }
                         }
                         if let Some(flags) = results.get(&1) {
                             let mask = (PollChannelFlags::Input | PollChannelFlags::Hangup | PollChannelFlags::Invalid).bits();
                             if (flags & mask) != 0 {
                                 trace!(logger, "channel {}: selector 1: writing", id);
-                                fd_status[1] = self.write_command_fd(id, 1, &fd_status[1], &mut stdout).await;
+                                fd_status[1] = self.clone().write_command_fd(id, 1, &fd_status[1], &mut stdout).await;
                             }
                         }
                         if let Some(flags) = results.get(&2) {
                             let mask = (PollChannelFlags::Input | PollChannelFlags::Hangup | PollChannelFlags::Invalid).bits();
                             if (flags & mask) != 0 && fd_status.len() > 2 {
                                 trace!(logger, "channel {}: selector 2: writing", id);
-                                fd_status[2] = self.write_command_fd(id, 2, &fd_status[2], &mut stderr).await;
+                                fd_status[2] = self.clone().write_command_fd(id, 2, &fd_status[2], &mut stderr).await;
                             }
                         }
                     }
@@ -522,7 +522,7 @@ impl Connection {
     }
 
     async fn write_command_fd<T: AsyncWriteExt + Unpin>(
-        &self,
+        self: Arc<Self>,
         id: ChannelID,
         selector: u32,
         st: &FDStatus,
@@ -543,7 +543,7 @@ impl Connection {
                     id,
                     selector
                 );
-                match self.read_channel(id, selector).await {
+                match self.clone().read_channel(id, selector).await {
                     Ok(data) => {
                         trace!(
                             logger,
@@ -598,7 +598,7 @@ impl Connection {
             }
         };
         if data.is_empty() {
-            self.detach_channel_selector(id, selector).await;
+            self.clone().detach_channel_selector(id, selector).await;
             return FDStatus {
                 open: false,
                 last: false,
@@ -625,7 +625,7 @@ impl Connection {
             },
             Err(e) => match e.kind() {
                 std::io::ErrorKind::BrokenPipe => {
-                    self.detach_channel_selector(id, selector).await;
+                    self.clone().detach_channel_selector(id, selector).await;
                     FDStatus {
                         open: false,
                         last: false,
@@ -650,7 +650,7 @@ impl Connection {
     }
 
     async fn read_command_fd<T: AsyncReadExt + Unpin>(
-        &self,
+        self: Arc<Self>,
         id: ChannelID,
         selector: u32,
         st: &FDStatus,
@@ -778,7 +778,7 @@ impl Connection {
         }
     }
 
-    async fn read_channel(&self, id: ChannelID, selector: u32) -> Result<Bytes, Error> {
+    async fn read_channel(self: Arc<Self>, id: ChannelID, selector: u32) -> Result<Bytes, Error> {
         let req = ReadChannelRequest {
             id,
             selector,
@@ -798,7 +798,12 @@ impl Connection {
         Ok(resp.bytes)
     }
 
-    async fn write_channel(&self, id: ChannelID, selector: u32, data: &[u8]) -> Result<u64, Error> {
+    async fn write_channel(
+        self: Arc<Self>,
+        id: ChannelID,
+        selector: u32,
+        data: &[u8],
+    ) -> Result<u64, Error> {
         let req = WriteChannelRequest {
             id,
             selector,
@@ -818,7 +823,7 @@ impl Connection {
         Ok(resp.count)
     }
 
-    async fn detach_channel_selector(&self, id: ChannelID, selector: u32) {
+    async fn detach_channel_selector(self: Arc<Self>, id: ChannelID, selector: u32) {
         let req = DetachChannelSelectorRequest { id, selector };
         let res = self
             .handler
@@ -969,7 +974,7 @@ impl Client {
         &self,
         stream: std::os::unix::net::UnixStream,
         synchronous: bool,
-    ) -> Result<Connection, Error> {
+    ) -> Result<Arc<Connection>, Error> {
         let _ = stream.set_nonblocking(true);
         match UnixStream::from_std(stream) {
             Ok(stream) => Ok(Connection::new(
@@ -991,7 +996,7 @@ impl Client {
         &self,
         location: I,
         synchronous: bool,
-    ) -> Result<Connection, Error> {
+    ) -> Result<Arc<Connection>, Error> {
         match UnixStream::connect(location.as_ref()).await {
             Ok(stream) => Ok(Connection::new(
                 self.config.clone(),

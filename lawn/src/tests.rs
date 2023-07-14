@@ -133,7 +133,7 @@ v0:
         Arc::new(server::Server::new(self.config()))
     }
 
-    pub async fn connection(&self) -> client::Connection {
+    pub async fn connection(&self) -> Arc<client::Connection> {
         let client = Arc::new(client::Client::new(self.config()));
         let mut path = self.dir.path().to_owned();
         path.push("runtime/lawn/server-0.sock");

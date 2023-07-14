@@ -122,7 +122,7 @@ impl Proxy {
     ) -> Proxy {
         let (rd, wr) = p9p.into_split();
         Proxy {
-            conn: Arc::new(Connection::new(config, None, ours, false)),
+            conn: Connection::new(config, None, ours, false),
             p9p_rd: rd,
             p9p_wr: wr,
             target,
@@ -154,11 +154,13 @@ impl Proxy {
         match self.protocol {
             ProxyProtocol::P9P => {
                 self.conn
+                    .clone()
                     .run_9p(&mut self.p9p_rd, &mut self.p9p_wr, self.target.clone())
                     .await?
             }
             ProxyProtocol::SFTP => {
                 self.conn
+                    .clone()
                     .run_sftp(&mut self.p9p_rd, &mut self.p9p_wr, self.target.clone())
                     .await?
             }

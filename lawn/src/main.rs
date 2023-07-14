@@ -516,12 +516,12 @@ fn dispatch_mount(
                 }
                 ProxyType::ProxyFromBoundSocket(psock) => {
                     let _ = socket.set_nonblocking(true);
-                    let conn = Arc::new(Connection::new(
+                    let conn = Connection::new(
                         config.clone(),
                         None,
                         tokio::net::UnixStream::from_std(socket).unwrap(),
                         false,
-                    ));
+                    );
                     loop {
                         if let Ok((req, _)) = psock.accept().await {
                             let mut proxy = fs_proxy::Proxy::new_from_connection(
