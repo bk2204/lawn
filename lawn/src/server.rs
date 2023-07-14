@@ -285,13 +285,13 @@ impl Server {
                     if let Ok((conn, _)) = conn {
                         let id = counter;
                         counter += 1;
-                        logger.trace(&format!("server: accepted connection, spawning handler {}", id));
+                        trace!(logger, "server: accepted connection, spawning handler {}", id);
                         let (tx, rx) = sync::mpsc::channel(1);
                         let config = self.config.clone();
                         let handle = task::spawn(async move {
                             let logger = config.logger();
                             Self::run_job(config, id, rx, conn).await;
-                            logger.trace(&format!("server: exiting handler {}", id));
+                            trace!(logger, "server: exiting handler {}", id);
                             id
                         });
                         {
@@ -314,7 +314,7 @@ impl Server {
                                 }
                             }
                             if ready {
-                                logger.trace(&format!("server: pruning idle handler {}", id));
+                                trace!(logger, "server: pruning idle handler {}", id);
                                 to_delete.insert(*id);
                             }
                         }
@@ -355,7 +355,7 @@ impl Server {
         let handler = state.handler();
         let channels = state.channels();
         let logger = state.logger();
-        logger.trace(&format!("server: {}: starting main loop", id));
+        trace!(logger, "server: {}: starting main loop", id);
         let mut interval = time::interval(Duration::from_millis(100));
         let (msg_tx, mut msg_rx) = sync::mpsc::channel(1);
         let phandler = handler.clone();
@@ -370,17 +370,17 @@ impl Server {
         loop {
             select! {
                 _ = rx.recv() => {
-                    logger.trace(&format!("server: {}: received quit signal from server", id));
+                    trace!(logger, "server: {}: received quit signal from server", id);
                     handler.close(true).await;
                     return;
                 },
                 _ = interval.tick() => {
-                    logger.trace(&format!("server: {}: periodic loop: pinging channels", id));
+                    trace!(logger, "server: {}: periodic loop: pinging channels", id);
                     // Idle loop.
                     channels.ping_channels().await;
                 }
                 res = msg_rx.recv() => {
-                    logger.trace(&format!("server: {}: message received", id));
+                    trace!(logger, "server: {}: message received", id);
                     let state = state.clone();
                     let res = match res {
                         Some(r) => r,
@@ -392,46 +392,46 @@ impl Server {
                             tokio::spawn(async move {
                                 let handler = state.handler();
                                 let logger = state.logger();
-                                logger.trace(&format!("server: {}: processing message {}", id, msg.id));
+                                trace!(logger, "server: {}: processing message {}", id, msg.id);
                                 match Self::process_message(state.clone(), id, &msg).await {
                                     Ok((ResponseType::Close, body)) => {
-                                        logger.trace(&format!("server: {}: message {}: code {:08x} (closing)", id, msg.id, 0));
+                                        trace!(logger, "server: {}: message {}: code {:08x} (closing)", id, msg.id, 0);
                                         let _ = handler.send_success(msg.id, body).await;
                                         handler.close(false).await;
                                     }
                                     Err(handler::Error::ProtocolError(protocol::Error{code, body: Some(body)})) => {
-                                        logger.trace(&format!("server: {}: message {}: code {:08x} (body)", id, msg.id, code as u32));
+                                        trace!(logger, "server: {}: message {}: code {:08x} (body)", id, msg.id, code as u32);
                                         match handler.send_error_typed(msg.id, code, &body).await {
                                             Ok(_) => (),
                                             Err(_) => handler.close(true).await,
                                         }
                                     },
                                     Err(handler::Error::ProtocolError(protocol::Error{code, body: None})) => {
-                                        logger.trace(&format!("server: {}: message {}: code {:08x}", id, msg.id, code as u32));
+                                        trace!(logger, "server: {}: message {}: code {:08x}", id, msg.id, code as u32);
                                         match handler.send_error_simple(msg.id, code).await {
                                             Ok(_) => (),
                                             Err(_) => handler.close(true).await,
                                         }
                                     },
                                     Err(e) => {
-                                        logger.trace(&format!("server: {}: message {}: error: {} (closing)", id, msg.id, e));
+                                        trace!(logger, "server: {}: message {}: error: {} (closing)", id, msg.id, e);
                                         handler.close(true).await;
                                     },
                                     Ok((ResponseType::Success, body)) => {
-                                        logger.trace(&format!("server: {}: message {}: code {:08x}", id, msg.id, 0));
+                                        trace!(logger, "server: {}: message {}: code {:08x}", id, msg.id, 0);
                                         match handler.send_success(msg.id, body).await {
                                             Ok(_) => (),
                                             Err(_) => handler.close(true).await,
                                         }
-                                        logger.trace(&format!("server: {}: message {}: code {:08x} sent", id, msg.id, 0));
+                                        trace!(logger, "server: {}: message {}: code {:08x} sent", id, msg.id, 0);
                                     },
                                     Ok((ResponseType::Partial, body)) => {
-                                        logger.trace(&format!("server: {}: message {}: code {:08x}", id, msg.id, 0));
+                                        trace!(logger, "server: {}: message {}: code {:08x}", id, msg.id, 0);
                                         match handler.send_continuation(msg.id, body).await {
                                             Ok(_) => (),
                                             Err(_) => handler.close(true).await,
                                         }
-                                        logger.trace(&format!("server: {}: message {}: code {:08x} sent", id, msg.id, 0));
+                                        trace!(logger, "server: {}: message {}: code {:08x} sent", id, msg.id, 0);
                                     },
                                 }
                             });
@@ -446,7 +446,7 @@ impl Server {
                 },
                 chanid = chandeathrx.recv() => {
                     if let Some(chanid) = chanid {
-                        logger.trace(&format!("server: {}: received channel death for channel {}", id, chanid));
+                        trace!(logger, "server: {}: received channel death for channel {}", id, chanid);
                         let state = state.clone();
                         task::spawn(async move {
                             Self::notify_channel_death(state, chanid).await;
@@ -540,7 +540,7 @@ impl Server {
         let logger = state.logger();
         match MessageKind::from_u32(message.kind) {
             Some(MessageKind::Capability) => {
-                logger.trace(&format!("server: {}: capability message", id));
+                trace!(logger, "server: {}: capability message", id);
                 let c = protocol::CapabilityResponse {
                     version: vec![0x00000000],
                     capabilities: state
@@ -554,7 +554,7 @@ impl Server {
                 Ok((ResponseType::Success, serializer.serialize_body(&c)))
             }
             Some(MessageKind::Version) => {
-                logger.trace(&format!("server: {}: version message", id));
+                trace!(logger, "server: {}: version message", id);
                 handler.flush_requests().await;
                 let m = valid_message!(handler, protocol::VersionRequest, message);
                 let supported = state.config().capabilities();
@@ -580,15 +580,15 @@ impl Server {
                 }
             }
             Some(MessageKind::CloseAlert) => {
-                logger.trace(&format!("server: {}: close alert", id));
+                trace!(logger, "server: {}: close alert", id);
                 Ok((ResponseType::Close, None))
             }
             Some(MessageKind::Ping) => {
-                logger.trace(&format!("server: {}: ping", id));
+                trace!(logger, "server: {}: ping", id);
                 Ok((ResponseType::Success, None))
             }
             Some(MessageKind::Authenticate) => {
-                logger.trace(&format!("server: {}: authenticate", id));
+                trace!(logger, "server: {}: authenticate", id);
                 handler.flush_requests().await;
                 let m = valid_message!(handler, protocol::AuthenticateRequest, message);
                 if m.last_id.is_some() || m.message.is_some() || m.method != b"EXTERNAL" as &[u8] {
@@ -665,7 +665,7 @@ impl Server {
                 Ok((ResponseType::Success, None))
             }
             Some(MessageKind::CreateChannel) => {
-                logger.trace(&format!("server: {}: create channel", id));
+                trace!(logger, "server: {}: create channel", id);
                 assert_authenticated!(handler, message);
                 let m = valid_message!(handler, protocol::CreateChannelRequest, message);
                 logger.trace(&format!(
@@ -714,13 +714,13 @@ impl Server {
                         Ok((ResponseType::Success, serializer.serialize_body(&r)))
                     }
                     Err(_) => {
-                        logger.trace(&format!("server: {}: create channel: failed", id));
+                        trace!(logger, "server: {}: create channel: failed", id);
                         Err(ResponseCode::InvalidParameters.into())
                     }
                 }
             }
             Some(MessageKind::ReadChannel) => {
-                logger.trace(&format!("server: {}: read channel", id));
+                trace!(logger, "server: {}: read channel", id);
                 assert_authenticated!(handler, message);
                 let m = valid_message!(handler, protocol::ReadChannelRequest, message);
                 let ch = match channels.get(m.id) {
@@ -736,7 +736,7 @@ impl Server {
                 Ok((ResponseType::Success, serializer.serialize_body(&resp)))
             }
             Some(MessageKind::WriteChannel) => {
-                logger.trace(&format!("server: {}: write channel", id));
+                trace!(logger, "server: {}: write channel", id);
                 assert_authenticated!(handler, message);
                 let m = valid_message!(handler, protocol::WriteChannelRequest, message);
                 let ch = match channels.get(m.id) {
@@ -752,7 +752,7 @@ impl Server {
                 Ok((ResponseType::Success, serializer.serialize_body(&resp)))
             }
             Some(MessageKind::DeleteChannel) => {
-                logger.trace(&format!("server: {}: delete channel", id));
+                trace!(logger, "server: {}: delete channel", id);
                 assert_authenticated!(handler, message);
                 let m = valid_message!(handler, protocol::DeleteChannelRequest, message);
                 match channels.remove(m.id) {
@@ -762,7 +762,7 @@ impl Server {
                 Ok((ResponseType::Success, None))
             }
             Some(MessageKind::DetachChannelSelector) => {
-                logger.trace(&format!("server: {}: detach channel selector", id));
+                trace!(logger, "server: {}: detach channel selector", id);
                 assert_authenticated!(handler, message);
                 let m = valid_message!(handler, protocol::DetachChannelSelectorRequest, message);
                 let ch = match channels.get(m.id) {
@@ -775,7 +775,7 @@ impl Server {
                 }
             }
             Some(MessageKind::PollChannel) => {
-                logger.trace(&format!("server: {}: poll channel", id));
+                trace!(logger, "server: {}: poll channel", id);
                 assert_authenticated!(handler, message);
                 let m = valid_message!(handler, protocol::PollChannelRequest, message);
                 let ch = match channels.get(m.id) {
@@ -806,7 +806,7 @@ impl Server {
                 Ok((ResponseType::Success, serializer.serialize_body(&resp)))
             }
             Some(MessageKind::PingChannel) => {
-                logger.trace(&format!("server: {}: ping channel", id));
+                trace!(logger, "server: {}: ping channel", id);
                 assert_authenticated!(handler, message);
                 let m = valid_message!(handler, protocol::PingChannelRequest, message);
                 let ch = match channels.get(m.id) {
