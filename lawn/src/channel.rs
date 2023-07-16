@@ -254,7 +254,7 @@ fn poll(
 
 pub trait Channel {
     fn id(&self) -> ChannelID;
-    fn read(&self, selector: u32) -> Result<Bytes, protocol::Error>;
+    fn read(&self, selector: u32, count: u64) -> Result<Bytes, protocol::Error>;
     fn write(&self, selector: u32, data: Bytes) -> Result<u64, protocol::Error>;
     fn poll(
         &self,
@@ -367,8 +367,8 @@ impl Channel for ServerCommandChannel {
         self.ch.id()
     }
 
-    fn read(&self, selector: u32) -> Result<Bytes, protocol::Error> {
-        self.ch.read(selector)
+    fn read(&self, selector: u32, count: u64) -> Result<Bytes, protocol::Error> {
+        self.ch.read(selector, count)
     }
 
     fn write(&self, selector: u32, data: Bytes) -> Result<u64, protocol::Error> {
@@ -407,7 +407,7 @@ impl Channel for ServerGenericCommandChannel {
         self.id
     }
 
-    fn read(&self, selector: u32) -> Result<Bytes, protocol::Error> {
+    fn read(&self, selector: u32, count: u64) -> Result<Bytes, protocol::Error> {
         let fds = self.fds.clone();
         let id = self.id;
         let logger = self.logger.clone();
@@ -424,7 +424,7 @@ impl Channel for ServerGenericCommandChannel {
                     None => return Err(protocol::Error::from_errno(libc::EBADF)),
                 }
             };
-            let mut v = vec![0u8; 4096];
+            let mut v = vec![0u8; std::cmp::min(count, 4096) as usize];
             let mut g = io.lock().await;
             let res = g.read(&mut v).await;
             trace!(logger, "channel {}: read: {:?}", id, res);
@@ -628,8 +628,8 @@ impl Channel for ServerClipboardChannel {
         self.ch.id()
     }
 
-    fn read(&self, selector: u32) -> Result<Bytes, protocol::Error> {
-        self.ch.read(selector)
+    fn read(&self, selector: u32, count: u64) -> Result<Bytes, protocol::Error> {
+        self.ch.read(selector, count)
     }
 
     fn write(&self, selector: u32, data: Bytes) -> Result<u64, protocol::Error> {
@@ -932,7 +932,7 @@ impl<T: FSChannel> Channel for T {
         self.channel_id()
     }
 
-    fn read(&self, selector: u32) -> Result<Bytes, protocol::Error> {
+    fn read(&self, selector: u32, count: u64) -> Result<Bytes, protocol::Error> {
         let fd = self.rd();
         let logger = self.logger();
         let id = self.channel_id();
@@ -941,7 +941,7 @@ impl<T: FSChannel> Channel for T {
             match (selector, &mut *g) {
                 (1, Some(reader)) => {
                     trace!(logger, "channel {}: reading {}", id, selector);
-                    let mut buf = vec![0u8; 65536];
+                    let mut buf = vec![0u8; std::cmp::min(count, 65536) as usize];
                     let n = match reader.try_read(&mut buf) {
                         Ok(n) => n,
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => {

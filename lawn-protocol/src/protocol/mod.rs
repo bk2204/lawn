@@ -124,7 +124,7 @@ impl ResponseCode {
     }
 }
 
-pub struct WrongTypeError;
+pub struct WrongTypeError(pub Error);
 
 #[derive(Debug, Clone)]
 pub struct Error {
@@ -172,7 +172,7 @@ impl TryInto<io::Error> for Error {
                 }
             }
         }
-        Err(WrongTypeError)
+        Err(WrongTypeError(self))
     }
 }
 

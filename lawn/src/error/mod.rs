@@ -1,8 +1,9 @@
 use crate::fs_proxy;
 use lawn_protocol::{handler, protocol};
-use std::convert::TryFrom;
+use std::convert::{TryFrom, TryInto};
 use std::fmt;
 use std::fmt::Display;
+use std::io;
 
 #[derive(Debug)]
 pub struct Error {
@@ -112,8 +113,8 @@ impl From<Error> for i32 {
     }
 }
 
-#[derive(Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub struct WrongTypeError;
+#[derive(Debug)]
+pub struct WrongTypeError(pub Error);
 
 impl TryFrom<Error> for handler::Error {
     type Error = WrongTypeError;
@@ -122,11 +123,15 @@ impl TryFrom<Error> for handler::Error {
             ErrorKind::HandlerError => match e.cause {
                 Some(mut cause) => match cause.downcast_mut::<handler::Error>() {
                     Some(e) => Ok(std::mem::replace(e, handler::Error::Unserializable)),
-                    None => Err(WrongTypeError),
+                    None => Err(WrongTypeError(Error {
+                        kind: e.kind,
+                        cause: Some(cause),
+                        message: e.message,
+                    })),
                 },
-                None => Err(WrongTypeError),
+                None => Err(WrongTypeError(e)),
             },
-            _ => Err(WrongTypeError),
+            _ => Err(WrongTypeError(e)),
         }
     }
 }
@@ -138,7 +143,16 @@ impl TryFrom<Error> for protocol::Error {
         if let handler::Error::ProtocolError(e) = err {
             return Ok(e);
         }
-        Err(WrongTypeError)
+        Err(WrongTypeError(err.into()))
+    }
+}
+
+impl TryFrom<Error> for io::Error {
+    type Error = WrongTypeError;
+    fn try_from(e: Error) -> Result<io::Error, Self::Error> {
+        let err = protocol::Error::try_from(e)?;
+        let e: Result<io::Error, _> = err.try_into();
+        e.map_err(|e| WrongTypeError(handler::Error::from(e.0).into()))
     }
 }
 

@@ -80,7 +80,7 @@ impl ProxyListener {
                     let target = self.target.clone();
                     let protocol = self.protocol;
                     tokio::spawn(async move {
-                        let mut p = Proxy::new(config, conn, ours, target, protocol);
+                        let p = Proxy::new(config, conn, ours, target, protocol);
                         let _ = p.run_server().await;
                     });
                 }
@@ -95,7 +95,7 @@ impl ProxyListener {
                 if let Ok(ours) = UnixStream::connect(&self.ours).await {
                     let config = self.config.clone();
                     let target = self.target.clone();
-                    let mut p = Proxy::new(config, conn, ours, target, self.protocol);
+                    let p = Proxy::new(config, conn, ours, target, self.protocol);
                     let _ = p.run_server().await;
                     return Ok(());
                 }
@@ -122,7 +122,7 @@ impl Proxy {
     ) -> Proxy {
         let (rd, wr) = p9p.into_split();
         Proxy {
-            conn: Arc::new(Connection::new(config, None, ours, false)),
+            conn: Connection::new(config, None, ours, false),
             p9p_rd: rd,
             p9p_wr: wr,
             target,
@@ -147,19 +147,21 @@ impl Proxy {
         }
     }
 
-    pub async fn run_server(&mut self) -> Result<(), Error> {
+    pub async fn run_server(self) -> Result<(), Error> {
         self.conn.ping().await?;
         self.conn.negotiate_default_version().await?;
         self.conn.auth_external().await?;
         match self.protocol {
             ProxyProtocol::P9P => {
                 self.conn
-                    .run_9p(&mut self.p9p_rd, &mut self.p9p_wr, self.target.clone())
+                    .clone()
+                    .run_9p(self.p9p_rd, self.p9p_wr, self.target.clone())
                     .await?
             }
             ProxyProtocol::SFTP => {
                 self.conn
-                    .run_sftp(&mut self.p9p_rd, &mut self.p9p_wr, self.target.clone())
+                    .clone()
+                    .run_sftp(self.p9p_rd, self.p9p_wr, self.target.clone())
                     .await?
             }
         };

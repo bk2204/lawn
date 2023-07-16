@@ -20,7 +20,8 @@ use num_traits::FromPrimitive;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_cbor::Value;
 use std::collections::{BTreeMap, BTreeSet};
-use std::convert::TryInto;
+use std::convert::{TryFrom, TryInto};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,6 +29,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::UnixStream;
 use tokio::select;
+use tokio::task::JoinHandle;
 use tokio::time;
 
 #[derive(Clone)]
@@ -80,7 +82,7 @@ impl Default for FDStatus {
 pub struct Connection {
     config: Arc<Config>,
     path: Option<PathBuf>,
-    handler: Arc<Option<ProtocolHandler<OwnedReadHalf, OwnedWriteHalf>>>,
+    handler: Arc<ProtocolHandler<OwnedReadHalf, OwnedWriteHalf>>,
 }
 
 impl Connection {
@@ -89,35 +91,28 @@ impl Connection {
         path: Option<&Path>,
         socket: UnixStream,
         synchronous: bool,
-    ) -> Self {
+    ) -> Arc<Self> {
         let logger = config.logger();
         let cfg = Arc::new(lawn_protocol::config::Config::new(false, logger));
         let (sread, swrite) = socket.into_split();
-        let handler = Arc::new(Some(ProtocolHandler::new(cfg, sread, swrite, synchronous)));
-        Self {
+        let handler = Arc::new(ProtocolHandler::new(cfg, sread, swrite, synchronous));
+        Arc::new(Self {
             config,
             path: path.map(|p| p.into()),
             handler,
-        }
+        })
     }
 
     pub async fn ping(&self) -> Result<(), Error> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
-        handler
+        self.handler
             .send_message_simple::<Empty, Empty>(MessageKind::Ping, Some(true))
             .await?;
         Ok(())
     }
 
     pub async fn capability(&self) -> Result<CapabilityResponse, Error> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
-        match handler
+        match self
+            .handler
             .send_message_simple::<_, Empty>(MessageKind::Capability, Some(true))
             .await?
         {
@@ -131,11 +126,8 @@ impl Connection {
 
     #[allow(clippy::mutable_key_type)]
     pub async fn negotiate_default_version(&self) -> Result<CapabilityResponse, Error> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
-        let resp: CapabilityResponse = match handler
+        let resp: CapabilityResponse = match self
+            .handler
             .send_message_simple::<_, Empty>(MessageKind::Capability, Some(true))
             .await?
         {
@@ -170,23 +162,20 @@ impl Connection {
             id: None,
             user_agent: Some(crate::config::VERSION.into()),
         };
-        handler
+        self.handler
             .send_message::<_, Empty, Empty>(MessageKind::Version, &req, Some(true))
             .await?;
         Ok(resp)
     }
 
     pub async fn auth_external(&self) -> Result<AuthenticateResponse, Error> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
         let req = AuthenticateRequest {
             last_id: None,
             method: "EXTERNAL".into(),
             message: None,
         };
-        match handler
+        match self
+            .handler
             .send_message::<_, _, Empty>(MessageKind::Authenticate, &req, Some(true))
             .await?
         {
@@ -203,13 +192,17 @@ impl Connection {
         message: MessageKind,
         body: Option<T>,
     ) -> Result<Option<ResponseValue<U, V>>, Error> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
         let resp = match body {
-            Some(body) => handler.send_message(message, &body, Some(true)).await?,
-            None => handler.send_message_simple(message, Some(true)).await?,
+            Some(body) => {
+                self.handler
+                    .send_message(message, &body, Some(true))
+                    .await?
+            }
+            None => {
+                self.handler
+                    .send_message_simple(message, Some(true))
+                    .await?
+            }
         };
         Ok(resp)
     }
@@ -223,13 +216,9 @@ impl Connection {
         message: MessageKind,
         body: Option<T>,
     ) -> Result<Option<Vec<I>>, Error> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
         let mut resp = match body {
-            Some(body) => handler.send_message(message, &body, Some(true)).await,
-            None => handler.send_message_simple(message, Some(true)).await,
+            Some(body) => self.handler.send_message(message, &body, Some(true)).await,
+            None => self.handler.send_message_simple(message, Some(true)).await,
         };
         let mut data = vec![];
         let mut id = None;
@@ -259,14 +248,18 @@ impl Connection {
                 kind: message as u32,
                 id: reqid,
             };
-            resp = handler
+            resp = self
+                .handler
                 .send_message(MessageKind::Continue, &req, Some(true))
                 .await;
         }
     }
 
-    pub async fn run_clipboard<I: AsyncReadExt + Unpin, O: AsyncWriteExt + Unpin>(
-        &self,
+    pub async fn run_clipboard<
+        I: AsyncReadExt + Unpin + Send + 'static,
+        O: AsyncWriteExt + Unpin + Send + 'static,
+    >(
+        self: Arc<Self>,
         stdin: I,
         stdout: O,
         op: ClipboardChannelOperation,
@@ -299,8 +292,11 @@ impl Connection {
         }
     }
 
-    pub async fn run_9p<I: AsyncReadExt + Unpin, O: AsyncWriteExt + Unpin>(
-        &self,
+    pub async fn run_9p<
+        I: AsyncReadExt + Unpin + Send + 'static,
+        O: AsyncWriteExt + Unpin + Send + 'static,
+    >(
+        self: Arc<Self>,
         stdin: I,
         stdout: O,
         target: Bytes,
@@ -317,8 +313,11 @@ impl Connection {
             .await
     }
 
-    pub async fn run_sftp<I: AsyncReadExt + Unpin, O: AsyncWriteExt + Unpin>(
-        &self,
+    pub async fn run_sftp<
+        I: AsyncReadExt + Unpin + Send + 'static,
+        O: AsyncWriteExt + Unpin + Send + 'static,
+    >(
+        self: Arc<Self>,
         stdin: I,
         stdout: O,
         target: Bytes,
@@ -336,11 +335,11 @@ impl Connection {
     }
 
     pub async fn run_command<
-        I: AsyncReadExt + Unpin,
-        O: AsyncWriteExt + Unpin,
-        E: AsyncWriteExt + Unpin,
+        I: AsyncReadExt + Unpin + Send + 'static,
+        O: AsyncWriteExt + Unpin + Send + 'static,
+        E: AsyncWriteExt + Unpin + Send + 'static,
     >(
-        &self,
+        self: Arc<Self>,
         args: &[Bytes],
         stdin: I,
         stdout: O,
@@ -357,120 +356,165 @@ impl Connection {
     }
 
     async fn run_channel<
-        I: AsyncReadExt + Unpin,
-        O: AsyncWriteExt + Unpin,
-        E: AsyncWriteExt + Unpin,
+        I: AsyncReadExt + Unpin + Send + 'static,
+        O: AsyncWriteExt + Unpin + Send + 'static,
+        E: AsyncWriteExt + Unpin + Send + 'static,
     >(
-        &self,
+        self: Arc<Self>,
         stdin: I,
         stdout: O,
         stderr: E,
         id: ChannelID,
-        fd_status: &mut [FDStatus],
+        _fd_status: &mut [FDStatus],
     ) -> Result<i32, Error> {
-        let mut stdin = stdin;
-        let mut stdout = stdout;
-        let mut stderr = stderr;
-        let (polltx, mut pollrx) = tokio::sync::mpsc::unbounded_channel();
-        let (cfg, chandler) = (self.config.clone(), self.handler.clone());
-        let mut selectors = BTreeMap::new();
-        selectors.insert(1, PollChannelFlags::Input | PollChannelFlags::Hangup);
-        if fd_status.len() > 2 {
-            selectors.insert(2, PollChannelFlags::Input | PollChannelFlags::Hangup);
-        }
-        tokio::spawn(async move {
-            loop {
-                let results =
-                    Self::poll_channel(cfg.clone(), chandler.clone(), id, &selectors).await;
-                let _ = polltx.send(results);
-            }
-        });
         let rhandler = self.handler.clone();
         let (finaltx, mut finalrx) = tokio::sync::mpsc::channel(1);
         let logger = self.config.logger();
         tokio::spawn(async move {
-            let handler = match rhandler.as_ref() {
-                Some(handler) => handler,
-                None => return,
-            };
             loop {
-                let msg = handler.recv().await;
+                let msg = rhandler.recv().await;
                 trace!(logger, "received packet");
                 if let Ok(Some(msg)) = msg {
                     trace!(logger, "received async response");
-                    if let Some(code) = Self::handle_async_run_message(handler, &msg) {
+                    if let Some(code) = Self::handle_async_run_message(&rhandler, &msg) {
                         trace!(logger, "sending final message");
                         finaltx.send(Ok(code)).await.unwrap();
                     }
                 }
             }
         });
-        let logger = self.config.logger();
-        let mut buf = vec![0u8; 65536];
-        loop {
-            select! {
-                res = finalrx.recv() => {
-                    trace!(logger, "processing final message");
-                    fd_status[0] = self.read_command_fd(id, 0, &fd_status[0], &mut stdin).await;
-                    fd_status[1] = self.write_command_fd(id, 1, &fd_status[1], &mut stdout).await;
-                    if fd_status.len() > 2 {
-                        fd_status[2] = self.write_command_fd(id, 2, &fd_status[2], &mut stderr).await;
-                    }
+        self.clone().io_channel_write_task(id, 0, stdin);
+        let stdout_task = self.clone().io_channel_read_task(id, 1, stdout);
+        let stderr_task = self.clone().io_channel_read_task(id, 2, stderr);
+        let res = finalrx.recv().await;
+        let _ = tokio::join!(stdout_task, stderr_task);
+        let _ = self.delete_channel(id).await;
+        trace!(self.config.logger(), "returning value");
+        res.unwrap()
+    }
 
-                    while fd_status[0].needs_final_read() {
-                        fd_status[0] = self.read_command_fd(id, 0, &fd_status[0], &mut stdin).await;
+    fn io_channel_write_task<R: AsyncReadExt + Unpin + Send + 'static>(
+        self: Arc<Self>,
+        id: ChannelID,
+        selector: u32,
+        r: R,
+    ) -> JoinHandle<Result<u64, Error>> {
+        tokio::task::spawn(async move {
+            let r = self.clone().write_copy_command_fd(id, selector, r).await;
+            self.detach_channel_selector(id, selector).await;
+            r
+        })
+    }
+
+    fn io_channel_read_task<W: AsyncWriteExt + Unpin + Send + 'static>(
+        self: Arc<Self>,
+        id: ChannelID,
+        selector: u32,
+        w: W,
+    ) -> JoinHandle<Result<u64, Error>> {
+        tokio::task::spawn(async move {
+            let r = self.clone().read_copy_command_fd(id, selector, w).await;
+            self.detach_channel_selector(id, selector).await;
+            r
+        })
+    }
+
+    async fn write_copy_command_fd<R: AsyncReadExt + Unpin>(
+        self: Arc<Self>,
+        id: ChannelID,
+        selector: u32,
+        r: R,
+    ) -> Result<u64, Error> {
+        let mut r = r;
+        let mut total = 0u64;
+        let mut buf = [0u8; 65536];
+        let mut off = 0;
+        let mut last = 0;
+        loop {
+            let (start, end) = if off == 0 {
+                let sz = match r.read(&mut buf).await {
+                    Ok(0) => {
+                        return Ok(total);
                     }
-                    while fd_status[1].needs_final_write() {
-                        fd_status[1] = self.write_command_fd(id, 1, &fd_status[1], &mut stdout).await;
-                    }
-                    while fd_status.len() > 2 && fd_status[2].needs_final_write() {
-                        fd_status[2] = self.write_command_fd(id, 2, &fd_status[2], &mut stderr).await;
-                    }
-                    let _ = self.delete_channel(id).await;
-                    trace!(logger, "returning value");
-                    return res.unwrap();
+                    Ok(sz) => sz,
+                    Err(e) => return Err(handler::Error::from(protocol::Error::from(e)).into()),
+                };
+                (0, sz)
+            } else {
+                (off, last)
+            };
+            match self
+                .clone()
+                .write_channel(id, selector, &buf[start..end])
+                .await
+            {
+                Ok(written) if written as usize == end - start => {
+                    off = 0;
+                    last = 0;
+                    total += written;
                 }
-                res = stdin.read(&mut buf), if fd_status[0].open => {
-                    match res {
-                        Ok(x) if x != 0 => {
-                            match &mut fd_status[0].data {
-                                Some(data) => data.extend(&buf[0..x]),
-                                None => fd_status[0].data = Some(buf[0..x].into()),
-                            }
-                            fd_status[0] = self.read_command_fd(id, 0, &fd_status[0], &mut stdin).await;
-                        },
-                        Ok(0) => fd_status[0] = self.read_command_fd(id, 0, &fd_status[0], &mut stdin).await,
-                        _ => (),
-                    }
+                Ok(written) => {
+                    off += written as usize;
+                    last = end;
+                    total += written;
                 }
-                results = pollrx.recv() => {
-                    trace!(logger, "channel {}: poll: results {:?}", id, results);
-                    let results = results.unwrap();
-                    if let Ok(results) = results {
-                        if let Some(flags) = results.get(&0) {
-                            let mask = (PollChannelFlags::Output | PollChannelFlags::Hangup | PollChannelFlags::Invalid).bits();
-                            if (flags & mask) != 0 {
-                                trace!(logger, "channel {}: selector 0: reading", id);
-                                fd_status[0] = self.read_command_fd(id, 0, &fd_status[0], &mut stdin).await;
-                            }
-                        }
-                        if let Some(flags) = results.get(&1) {
-                            let mask = (PollChannelFlags::Input | PollChannelFlags::Hangup | PollChannelFlags::Invalid).bits();
-                            if (flags & mask) != 0 {
-                                trace!(logger, "channel {}: selector 1: writing", id);
-                                fd_status[1] = self.write_command_fd(id, 1, &fd_status[1], &mut stdout).await;
-                            }
-                        }
-                        if let Some(flags) = results.get(&2) {
-                            let mask = (PollChannelFlags::Input | PollChannelFlags::Hangup | PollChannelFlags::Invalid).bits();
-                            if (flags & mask) != 0 && fd_status.len() > 2 {
-                                trace!(logger, "channel {}: selector 2: writing", id);
-                                fd_status[2] = self.write_command_fd(id, 2, &fd_status[2], &mut stderr).await;
-                            }
-                        }
+                Err(e) => match io::Error::try_from(e) {
+                    Ok(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        off = start;
+                        last = end;
+                        let mut selectors = BTreeMap::new();
+                        selectors.insert(1, PollChannelFlags::Output | PollChannelFlags::Hangup);
+                        let _ = Self::poll_channel(
+                            self.config.clone(),
+                            self.handler.clone(),
+                            id,
+                            &selectors,
+                        )
+                        .await;
+                        continue;
                     }
-                }
+                    Ok(e) => return Err(handler::Error::from(protocol::Error::from(e)).into()),
+                    Err(e) => return Err(e.0),
+                },
             }
+        }
+    }
+
+    async fn read_copy_command_fd<W: AsyncWriteExt + Unpin>(
+        self: Arc<Self>,
+        id: ChannelID,
+        selector: u32,
+        w: W,
+    ) -> Result<u64, Error> {
+        let mut w = w;
+        let mut total = 0u64;
+        loop {
+            let data = match self.clone().read_channel(id, selector).await {
+                Ok(data) if data.is_empty() => return Ok(total),
+                Ok(data) => data,
+                Err(e) => match io::Error::try_from(e) {
+                    Ok(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        let mut selectors = BTreeMap::new();
+                        selectors.insert(1, PollChannelFlags::Output | PollChannelFlags::Hangup);
+                        let _ = Self::poll_channel(
+                            self.config.clone(),
+                            self.handler.clone(),
+                            id,
+                            &selectors,
+                        )
+                        .await;
+                        continue;
+                    }
+                    Ok(e) => return Err(handler::Error::from(protocol::Error::from(e)).into()),
+                    Err(e) => return Err(e.0),
+                },
+            };
+            match w.write_all(&data).await {
+                Ok(()) => {
+                    total += data.len() as u64;
+                }
+                Err(e) => return Err(handler::Error::from(protocol::Error::from(e)).into()),
+            };
         }
     }
 
@@ -506,14 +550,10 @@ impl Connection {
 
     async fn poll_channel(
         config: Arc<Config>,
-        handler: Arc<Option<ProtocolHandler<OwnedReadHalf, OwnedWriteHalf>>>,
+        handler: Arc<ProtocolHandler<OwnedReadHalf, OwnedWriteHalf>>,
         id: ChannelID,
         selectors: &BTreeMap<u32, protocol::PollChannelFlags>,
     ) -> Result<BTreeMap<u32, u64>, Error> {
-        let handler = match handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
         let logger = config.logger();
         let wanted = selectors.values().cloned().map(|f| f.bits()).collect();
         let fds = selectors.keys().cloned().collect();
@@ -542,7 +582,7 @@ impl Connection {
     }
 
     async fn write_command_fd<T: AsyncWriteExt + Unpin>(
-        &self,
+        self: Arc<Self>,
         id: ChannelID,
         selector: u32,
         st: &FDStatus,
@@ -563,7 +603,7 @@ impl Connection {
                     id,
                     selector
                 );
-                match self.read_channel(id, selector).await {
+                match self.clone().read_channel(id, selector).await {
                     Ok(data) => {
                         trace!(
                             logger,
@@ -618,7 +658,7 @@ impl Connection {
             }
         };
         if data.is_empty() {
-            self.detach_channel_selector(id, selector).await;
+            self.clone().detach_channel_selector(id, selector).await;
             return FDStatus {
                 open: false,
                 last: false,
@@ -645,7 +685,7 @@ impl Connection {
             },
             Err(e) => match e.kind() {
                 std::io::ErrorKind::BrokenPipe => {
-                    self.detach_channel_selector(id, selector).await;
+                    self.clone().detach_channel_selector(id, selector).await;
                     FDStatus {
                         open: false,
                         last: false,
@@ -670,7 +710,7 @@ impl Connection {
     }
 
     async fn read_command_fd<T: AsyncReadExt + Unpin>(
-        &self,
+        self: Arc<Self>,
         id: ChannelID,
         selector: u32,
         st: &FDStatus,
@@ -798,17 +838,14 @@ impl Connection {
         }
     }
 
-    async fn read_channel(&self, id: ChannelID, selector: u32) -> Result<Bytes, Error> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
+    async fn read_channel(self: Arc<Self>, id: ChannelID, selector: u32) -> Result<Bytes, Error> {
         let req = ReadChannelRequest {
             id,
             selector,
             count: 65536,
         };
-        let resp: ReadChannelResponse = match handler
+        let resp: ReadChannelResponse = match self
+            .handler
             .send_message::<_, _, Empty>(MessageKind::ReadChannel, &req, Some(false))
             .await?
         {
@@ -821,17 +858,19 @@ impl Connection {
         Ok(resp.bytes)
     }
 
-    async fn write_channel(&self, id: ChannelID, selector: u32, data: &[u8]) -> Result<u64, Error> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
+    async fn write_channel(
+        self: Arc<Self>,
+        id: ChannelID,
+        selector: u32,
+        data: &[u8],
+    ) -> Result<u64, Error> {
         let req = WriteChannelRequest {
             id,
             selector,
             bytes: data.to_vec().into(),
         };
-        let resp: WriteChannelResponse = match handler
+        let resp: WriteChannelResponse = match self
+            .handler
             .send_message::<_, _, Empty>(MessageKind::WriteChannel, &req, Some(false))
             .await?
         {
@@ -844,13 +883,10 @@ impl Connection {
         Ok(resp.count)
     }
 
-    async fn detach_channel_selector(&self, id: ChannelID, selector: u32) {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return,
-        };
+    async fn detach_channel_selector(self: Arc<Self>, id: ChannelID, selector: u32) {
         let req = DetachChannelSelectorRequest { id, selector };
-        let res = handler
+        let res = self
+            .handler
             .send_message::<_, Empty, Empty>(MessageKind::DetachChannelSelector, &req, Some(false))
             .await;
         trace!(
@@ -863,10 +899,6 @@ impl Connection {
     }
 
     async fn create_command_channel(&self, args: &[Bytes]) -> Result<ChannelID, Error> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
         let config = self.config.clone();
         let req = CreateChannelRequest {
             kind: (b"command" as &'static [u8]).into(),
@@ -876,7 +908,8 @@ impl Connection {
             meta: None,
             selectors: vec![0, 1, 2],
         };
-        let resp: CreateChannelResponse = match handler
+        let resp: CreateChannelResponse = match self
+            .handler
             .send_message::<_, _, Empty>(MessageKind::CreateChannel, &req, Some(true))
             .await?
         {
@@ -895,10 +928,6 @@ impl Connection {
         op: ClipboardChannelOperation,
         target: Option<ClipboardChannelTarget>,
     ) -> Result<ChannelID, Error> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
         let mut meta = BTreeMap::new();
         let selectors = match op {
             ClipboardChannelOperation::Copy => {
@@ -935,7 +964,8 @@ impl Connection {
             meta: Some(meta),
             selectors,
         };
-        let resp: CreateChannelResponse = match handler
+        let resp: CreateChannelResponse = match self
+            .handler
             .send_message::<_, _, Empty>(MessageKind::CreateChannel, &req, Some(true))
             .await?
         {
@@ -957,10 +987,6 @@ impl Connection {
     }
 
     async fn create_fs_channel(&self, target: Bytes, kind: &[u8]) -> Result<ChannelID, Error> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
         let req = CreateChannelRequest {
             kind: kind.to_owned().into(),
             kind_args: None,
@@ -969,7 +995,8 @@ impl Connection {
             meta: None,
             selectors: vec![0, 1],
         };
-        let resp: CreateChannelResponse = match handler
+        let resp: CreateChannelResponse = match self
+            .handler
             .send_message::<_, _, Empty>(MessageKind::CreateChannel, &req, Some(true))
             .await?
         {
@@ -983,15 +1010,11 @@ impl Connection {
     }
 
     async fn delete_channel(&self, id: ChannelID) -> Result<(), Error> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => return Err(Error::new(ErrorKind::NotConnected)),
-        };
         let req = DeleteChannelRequest {
             id,
             termination: None,
         };
-        handler
+        self.handler
             .send_message::<_, Empty, Empty>(MessageKind::DeleteChannel, &req, Some(false))
             .await?;
         Ok(())
@@ -1011,7 +1034,7 @@ impl Client {
         &self,
         stream: std::os::unix::net::UnixStream,
         synchronous: bool,
-    ) -> Result<Connection, Error> {
+    ) -> Result<Arc<Connection>, Error> {
         let _ = stream.set_nonblocking(true);
         match UnixStream::from_std(stream) {
             Ok(stream) => Ok(Connection::new(
@@ -1033,7 +1056,7 @@ impl Client {
         &self,
         location: I,
         synchronous: bool,
-    ) -> Result<Connection, Error> {
+    ) -> Result<Arc<Connection>, Error> {
         match UnixStream::connect(location.as_ref()).await {
             Ok(stream) => Ok(Connection::new(
                 self.config.clone(),
