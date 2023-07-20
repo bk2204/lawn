@@ -1,0 +1,28 @@
+#!/usr/bin/env ruby
+#
+#/ Usage: extract-changelog VERSION
+#/
+#/ Prints the piece of the changelog matching the specified version, but not other versions before or after.
+
+if ARGV.length == 0 || ARGV[0] == "--help"
+  is_err = ARGV.length == 0
+  dest = is_err ? $stderr : $stdout
+  dest.puts File.read($0).each_line.select { |ln| ln.start_with?("#/") }.map { |ln| ln.gsub(%r[^#/\s?], '') }
+  exit is_err ? 2 : 0
+end
+
+version = ARGV[0].sub(/^v/, '')
+VERSION = "v#{version}"
+
+cl = File.open("CHANGELOG.adoc")
+
+state = :quiet
+while line = cl.gets
+  case line
+  when /^== #{VERSION}/
+    state = :print
+  when /^== /
+    state = :quiet
+  end
+  print line if state == :print
+end
