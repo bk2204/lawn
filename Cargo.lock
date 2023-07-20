@@ -240,7 +240,7 @@ dependencies = [
 
 [[package]]
 name = "lawn"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "clap",
@@ -265,7 +265,7 @@ dependencies = [
 
 [[package]]
 name = "lawn-9p"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bitflags",
  "flurry",
@@ -282,7 +282,7 @@ dependencies = [
 
 [[package]]
 name = "lawn-constants"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "libc",
  "num-derive",
@@ -306,7 +306,7 @@ dependencies = [
 
 [[package]]
 name = "lawn-protocol"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bitflags",
  "bytes",
