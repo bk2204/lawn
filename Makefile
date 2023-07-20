@@ -5,7 +5,7 @@ DOCKER_STAMPS := $(patsubst %,test/Dockerfile.%.stamp,$(GROUPS))
 CI_TARGETS := $(patsubst %,ci-%,$(GROUPS))
 INCLUDES := $(wildcard test/include/*.erb)
 
-CRATES := lawn-constants lawn-protocol lawn-9p lawn
+CRATES := lawn-constants lawn-protocol lawn-fs lawn-9p lawn-sftp lawn
 PACKAGE_TARGETS := $(patsubst %,package-%,$(CRATES))
 
 # Set this to a Docker target to build for a specific platform.
