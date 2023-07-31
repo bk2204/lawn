@@ -38,3 +38,4 @@ However, the `lawn-constants` and `lawn-9p` crates (without the `unix` feature) 
 * link:doc/man[Manual Pages]
 * link:doc/example-use-cases.adoc[Example Use Cases]
 * link:doc/faq.adoc[FAQ]
+* link:doc/verifying-releases.adoc[Verifying Releases]
