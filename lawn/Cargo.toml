@@ -1,6 +1,6 @@
 [package]
 name = "lawn"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2018"
 license = "MIT"
 license-file = "../LICENSE"
@@ -27,10 +27,10 @@ serde_cbor = "0.11"
 serde_yaml = "0.8"
 libc = "0.2"
 signal-hook-tokio = "0.3"
-lawn-constants = { path = "../lawn-constants", version = "0.2.0" }
-lawn-9p = { path = "../lawn-9p", version = "0.2.0", features = ["unix"] }
+lawn-constants = { path = "../lawn-constants", version = "0.3.0" }
+lawn-9p = { path = "../lawn-9p", version = "0.3.0", features = ["unix"] }
 lawn-fs = { path = "../lawn-fs", version = "0.3.0", features = ["unix"] }
-lawn-protocol = { path = "../lawn-protocol", version = "0.2.0", features = ["async"] }
+lawn-protocol = { path = "../lawn-protocol", version = "0.3.0", features = ["async"] }
 lawn-sftp = { path = "../lawn-sftp", version = "0.3.0" }
 tokio = { version = "1", features = [ "io-std", "macros", "net", "process", "rt", "rt-multi-thread", "signal", "time" ] }
 tokio-pipe = "0.2"

@@ -5,11 +5,13 @@
 === Binary
 
 * `lawn mount` now understands how to access SFTP mounts.
+* `lawn mount` can accept an `--auto` option to choose the program and options for an SFTP mount automatically.
 
 === Protocol and Internals
 
 * The `channel=sftp` protocol is now supported.
 * The libc backend for 9P has been moved into a more generic `lawn-fs` crate that implements support for 9P and SFTP.
+* Substantially improve performance of channels and serialization.
 
 == v0.2.0 (2023-03-02)
 

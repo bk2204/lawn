@@ -5,7 +5,7 @@ DOCKER_STAMPS := $(patsubst %,test/Dockerfile.%.stamp,$(GROUPS))
 CI_TARGETS := $(patsubst %,ci-%,$(GROUPS))
 INCLUDES := $(wildcard test/include/*.erb)
 
-CRATES := lawn-constants lawn-protocol lawn-9p lawn
+CRATES := lawn-constants lawn-protocol lawn-fs lawn-9p lawn-sftp lawn
 PACKAGE_TARGETS := $(patsubst %,package-%,$(CRATES))
 
 # Set this to a Docker target to build for a specific platform.
@@ -42,7 +42,7 @@ all:
 
 clean:
 	cargo clean
-	$(RM) -fr target tmp
+	$(RM) -fr assets target tmp
 	for i in "$(DOCKER_STAMPS)"; \
 	do \
 		[ ! -f "$$i" ] || docker image rm -f "$$i"; \
@@ -88,6 +88,14 @@ package-%: %/README.md
 	(cd $(^D) && cargo package --locked --allow-dirty)
 
 package: $(PACKAGE_TARGETS)
+
+assets:
+	mkdir -p $@
+
+assets/changelog-%.md: CHANGELOG.adoc assets
+	script/extract-changelog $* | asciidoctor -o $@+ -b docbook5 -
+	pandoc -f docbook -t commonmark -o $@ $@+
+	$(RM) $@+
 
 # We do not require both of these commands here since nightly Rust may be
 # missing one or more of these. When run under CI, they should be present for

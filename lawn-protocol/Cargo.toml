@@ -1,6 +1,6 @@
 [package]
 name = "lawn-protocol"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2018"
 license = "MIT"
 license-file = "../LICENSE"
@@ -24,7 +24,7 @@ bytes = { version = "1", features = ["serde"] }
 tokio = { version = "1", features = ["fs", "sync", "io-util"], optional = true }
 num-traits = "0.2"
 num-derive = "0.3"
-lawn-constants = { path = "../lawn-constants", version = "0.2.0" }
+lawn-constants = { path = "../lawn-constants", version = "0.3.0" }
 
 [features]
 async = ["tokio"]
