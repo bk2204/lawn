@@ -1,0 +1,9 @@
+= lawn-9p
+
+include::../doc/README-base.adoc
+
+The `lawn-sftp` crate provides types and traits for implementing an SFTP server, optionally with authentication.
+
+If the `unix` feature is enabled, then an SFTP server backend which uses POSIX is provided.
+
+Note that documentation is at the moment unfortunately lacking.

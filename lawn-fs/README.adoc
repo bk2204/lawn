@@ -1,0 +1,4 @@
+include::../doc/README-base.adoc
+
+The `lawn-fs` crate provides types and definitions for generic file systems
+support in Lawn.
