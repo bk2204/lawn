@@ -1,0 +1,49 @@
+= Verifying Releases
+
+We sign our releases with an OpenSSH signing key using a certificate authority.
+
+To verify a release, you can follow the below steps:
+
+. Download the two files starting with `hashes` corresponding to the release,
+plus whatever other release assets you'd like to verify.  Let's call the
+release you'd like to verify _RELEASE_.
+. Create a file in the current directory called `allowed_signers`, containing
+the following:
++
+----
+codesign+lawn-release@crustytoothpaste.net cert-authority ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICAKTZl8Cjsw2uU6SbA3ttcPX33SMKgnFg7kaMlNUqeW Root Signing CA
+----
++
+. Verify the `hashes` file using OpenSSH, substituting _RELEASE_ for the version
+number:
++
+----
+$ ssh-keygen -Y verify -I codesign+lawn-release@crustytoothpaste.net -n file -s hashes-RELEASE.txt.sig -f allowed_signers < hashes-RELEASE.txt
+----
++
+. If the operation is successful, you should get a successful exit status and a
+message which looks like this:
++
+----
+Good "file" signature for codesign+lawn-release@crustytoothpaste.net with ED25519-CERT key SHA256:J4lclOItrELX3VUmIGY8sl8E5d3R6aRgtob3I96bU0Q
+----
++
+If it's not successful, then the signature is bad, and you should not use the
+release assets.
+. You can then verify the hashes for the specific files you're interested in
+from the release using `shasum`, `b2sum`, `sha3sum`, or a similar tool as you
+see fit:
++
+----
+# Verify using shasum.
+$ grep 'SHA[0-9][0-9]' hashes-RELEASE.txt | shasum -c
+# Verify using sha3sum.
+$ grep 'SHA3-' hashes-RELEASE.txt | sha3sum -c
+# Verify using b2sum.
+$ grep BLAKE2b hashes-RELEASE.txt | b2sum -c
+----
++
+. If the operation is successful, you should get a successful exit status and
+the text `OK` (or your localized version) for each file which you've downloaded.
+If it's not successful, then the hash is bad, and you should not use the release
+assets.
