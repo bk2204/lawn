@@ -678,45 +678,51 @@ fn dispatch(verbosity: &mut i32) -> Result<(), Error> {
             Arg::with_name("verbose")
                 .long("verbose")
                 .short("v")
-                .multiple(true),
+                .multiple(true)
+                .help("Make the command more verbose"),
         )
         .arg(
             Arg::with_name("quiet")
                 .long("quiet")
                 .short("q")
-                .multiple(true),
+                .multiple(true)
+                .help("Make the command less verbose"),
         )
-        .arg(Arg::with_name("socket").long("socket").takes_value(true))
-        .arg(Arg::with_name("no-detach").long("no-detach"))
-        .subcommand(App::new("server"))
-        .subcommand(App::new("query").subcommand(App::new("test-connection")))
+        .arg(Arg::with_name("socket").long("socket").takes_value(true).help("Specify the path to the Lawn socket"))
+        .arg(Arg::with_name("no-detach").long("no-detach").help("Do not detach from the terminal when starting a server"))
+        .subcommand(App::new("server").about("Start a server on the root machine"))
+        .subcommand(App::new("query").about("Query information about Lawn").subcommand(App::new("test-connection").about("Test that a connection can be made and is basically functional")))
         .subcommand(
             App::new("clip")
-                .arg(Arg::with_name("copy").long("copy").short("i"))
-                .arg(Arg::with_name("paste").long("paste").short("o"))
-                .arg(Arg::with_name("primary").long("primary").short("p"))
-                .arg(Arg::with_name("clipboard").long("clipboard").short("b")),
+                .about("Copy to and paste from the clipboard")
+                .arg(Arg::with_name("copy").long("copy").short("i").help("Copy standard input to the clipboard"))
+                .arg(Arg::with_name("paste").long("paste").short("o").help("Paste the clipboard to the standard output"))
+                .arg(Arg::with_name("primary").long("primary").short("p").help("Use the PRIMARY selection on X11"))
+                .arg(Arg::with_name("clipboard").long("clipboard").short("b").help("Use the CLIPBOARD selection on X11 or the regular clipboard on other platforms")),
         )
         .subcommand(
             App::new("proxy")
+                .about("Create an SSH agent suitable which can be used for Lawn commands")
                 .arg(Arg::with_name("ssh").long("ssh"))
-                .arg(Arg::with_name("arg").multiple(true)),
+                .arg(Arg::with_name("arg").multiple(true).help("Command and arguments to run (usually \"ssh -A\")")),
         )
         .subcommand(
             App::new("mount")
-                .arg(Arg::with_name("socket").long("socket"))
-                .arg(Arg::with_name("fd").long("fd"))
+                .about("Provide access to a file system mount")
+                .arg(Arg::with_name("socket").long("socket").help("Use a socket to expose the mount"))
+                .arg(Arg::with_name("fd").long("fd").help("Expose the mount to the command using standard input and output"))
                 .arg(
                     Arg::with_name("type")
                         .long("type")
                         .takes_value(true)
-                        .value_name("PROTOCOL"),
+                        .value_name("PROTOCOL")
+                        .help("Protocol to use to access the mount: \"9p\" (default) or \"sftp\""),
                 )
-                .arg(Arg::with_name("auto").long("auto"))
-                .arg(Arg::with_name("target").required(true))
-                .arg(Arg::with_name("arg").multiple(true).required(true)),
+                .arg(Arg::with_name("auto").long("auto").help("Automatically guess a suitable program to mount"))
+                .arg(Arg::with_name("target").required(true).help("Name of the mount point to mount"))
+                .arg(Arg::with_name("arg").multiple(true).required(true).help("With --auto, the path to mount on; otherwise, the command to run")),
         )
-        .subcommand(App::new("run").arg(Arg::with_name("arg").multiple(true)))
+        .subcommand(App::new("run").about("Run a command").arg(Arg::with_name("arg").multiple(true).help("Name of the command and its arguments")))
         .get_matches();
     *verbosity = matches.occurrences_of("verbose") as i32 - matches.occurrences_of("quiet") as i32;
     let config = config(*verbosity)?;
