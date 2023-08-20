@@ -176,7 +176,7 @@ impl TryInto<io::Error> for Error {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd)]
 pub struct Empty {}
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
@@ -416,7 +416,7 @@ pub struct AbortRequest {
     pub kind: u32,
 }
 
-#[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone, Copy)]
+#[derive(Serialize, Deserialize, Debug, Hash, Eq, PartialEq, Ord, PartialOrd, Clone, Copy)]
 #[serde(transparent)]
 pub struct ChannelID(pub u32);
 
@@ -512,7 +512,7 @@ bitflags! {
     }
 }
 
-#[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[derive(Serialize, Deserialize, Debug, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct CreateExtensionRangeRequest {
     pub extension: (Bytes, Option<Bytes>),
@@ -856,5 +856,197 @@ impl ProtocolSerializer {
                 }),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ChannelID, Empty, Message, ProtocolSerializer, Response, ResponseValue};
+    use bytes::Bytes;
+    use serde::{de::DeserializeOwned, Deserialize, Serialize};
+    use std::convert::TryFrom;
+    use std::fmt::Debug;
+
+    #[test]
+    fn serialize_header() {
+        let cases: &[(u32, u32, usize, Option<&[u8]>)] = &[
+            (
+                0x01234567,
+                0xffeeddcc,
+                0x00000000,
+                Some(b"\x08\x00\x00\x00\x67\x45\x23\x01\xcc\xdd\xee\xff"),
+            ),
+            (
+                0x87654321,
+                0x00000000,
+                0x00000099,
+                Some(b"\xa1\x00\x00\x00\x21\x43\x65\x87\x00\x00\x00\x00"),
+            ),
+            (
+                0x87654321,
+                0x00000000,
+                0x00fffff7,
+                Some(b"\xff\xff\xff\x00\x21\x43\x65\x87\x00\x00\x00\x00"),
+            ),
+            (0x87654321, 0x00000000, 0x00fffff8, None),
+        ];
+        let ser = ProtocolSerializer::new();
+        for (id, next, data_len, response) in cases {
+            assert_eq!(
+                ser.serialize_header(*id, *next, *data_len).as_deref(),
+                *response
+            );
+        }
+    }
+
+    fn assert_encode<'a, S: Serialize + Deserialize<'a> + Debug + Clone + PartialEq>(
+        desc: &str,
+        s: &S,
+        seq: &[u8],
+    ) {
+        let id = 0x01234567u32;
+        let next = 0xffeeddccu32;
+        let mut header = [0u8; 12];
+
+        header[0..4].copy_from_slice(&u32::try_from(seq.len() + 8).unwrap().to_le_bytes());
+        header[4..8].copy_from_slice(&id.to_le_bytes());
+        header[8..12].copy_from_slice(&next.to_le_bytes());
+
+        let ser = ProtocolSerializer::new();
+        let msg = Message {
+            id,
+            kind: next,
+            message: Some(Bytes::copy_from_slice(seq)),
+        };
+
+        let res = ser.serialize_header(id, next, seq.len()).unwrap();
+        assert_eq!(&res, &header as &[u8], "header: {}", desc);
+
+        let res = ser.serialize_message_simple(&msg).unwrap();
+        assert_eq!(res[0..12], header, "simple header: {}", desc);
+        assert_eq!(res[12..], *seq, "simple body: {}", desc);
+
+        let res = ser.serialize_body(s).unwrap();
+        assert_eq!(res, *seq, "body: {}", desc);
+
+        let msg = Message {
+            id,
+            kind: next,
+            message: None,
+        };
+        let res = ser.serialize_message_typed(&msg, s).unwrap();
+        assert_eq!(res[0..12], header, "typed header: {}", desc);
+        assert_eq!(res[12..], *seq, "typed body: {}", desc);
+    }
+
+    fn assert_round_trip<S: Serialize + DeserializeOwned + Debug + Clone + PartialEq>(
+        desc: &str,
+        s: &S,
+        seq: &[u8],
+    ) {
+        assert_encode(desc, s, seq);
+        assert_decode(desc, s, seq);
+    }
+
+    fn assert_decode<S: Serialize + DeserializeOwned + Debug + Clone + PartialEq>(
+        desc: &str,
+        s: &S,
+        seq: &[u8],
+    ) {
+        let id = 0x01234567u32;
+        let next = 0u32;
+        let mut header = [0u8; 12];
+
+        header[0..4].copy_from_slice(&u32::try_from(seq.len() + 8).unwrap().to_le_bytes());
+        header[4..8].copy_from_slice(&id.to_le_bytes());
+        header[8..12].copy_from_slice(&next.to_le_bytes());
+
+        let body = Bytes::copy_from_slice(seq);
+
+        let ser = ProtocolSerializer::new();
+        let resp = Response {
+            id,
+            code: next,
+            message: Some(body.clone()),
+        };
+
+        let mut full_msg: Vec<u8> = header.into();
+        full_msg.extend(seq);
+
+        let res = ser.deserialize_response_typed::<S, Empty>(&resp);
+        assert_eq!(
+            res.unwrap().unwrap(),
+            ResponseValue::Success(s.clone()),
+            "deserialize typed response: {}",
+            desc
+        );
+    }
+
+    #[test]
+    fn serialize_basic_types() {
+        assert_round_trip("0u32", &0u32, b"\x00");
+        assert_round_trip("all ones u32", &0xfedcba98u32, b"\x1a\xfe\xdc\xba\x98");
+        assert_round_trip(
+            "simple Bytes",
+            &Bytes::from(b"Hello, world!\n" as &'static [u8]),
+            b"\x4eHello, world!\n",
+        );
+        assert_encode("simple &str", &"Hello, world!\n", b"\x6eHello, world!\n");
+        assert_round_trip(
+            "simple String",
+            &String::from("Hello, world!\n"),
+            b"\x6eHello, world!\n",
+        );
+    }
+
+    #[test]
+    fn serialize_encoded_types() {
+        assert_round_trip("ChannelID 0", &ChannelID(0), b"\x00");
+        assert_round_trip(
+            "ChannelID all ones u32",
+            &ChannelID(0xfedcba98u32),
+            b"\x1a\xfe\xdc\xba\x98",
+        );
+    }
+
+    #[test]
+    fn serialize_requests() {
+        assert_round_trip(
+            "CreateExtensionRangeRequest with no second part",
+            &super::CreateExtensionRangeRequest {
+                extension: (
+                    Bytes::from(b"foobar@test.ns.crustytoothpaste.net" as &[u8]),
+                    None,
+                ),
+                count: 5,
+            },
+            b"\xa2\x69extension\x82\x58\x23foobar@test.ns.crustytoothpaste.net\xf6\x65count\x05",
+        );
+        assert_round_trip(
+            "CreateExtensionRangeRequest with second part",
+            &super::CreateExtensionRangeRequest {
+                extension: (
+                    Bytes::from(b"foobar@test.ns.crustytoothpaste.net" as &[u8]),
+                    Some(Bytes::from(b"v1" as &[u8])),
+                ),
+                count: 5,
+            },
+            b"\xa2\x69extension\x82\x58\x23foobar@test.ns.crustytoothpaste.net\x42v1\x65count\x05",
+        );
+    }
+
+    #[test]
+    fn deserialize_requests() {
+        assert_decode(
+            "CreateExtensionRangeRequest with extension field",
+            &super::CreateExtensionRangeRequest {
+                extension: (
+                    Bytes::from(b"foobar@test.ns.crustytoothpaste.net" as &[u8]),
+                    None,
+                ),
+                count: 5,
+            },
+            b"\xa3\x69extension\x82\x58\x23foobar@test.ns.crustytoothpaste.net\xf6\x58\x26extension@test.ns.crustytoothpaste.net\xf5\x65count\x05",
+        );
     }
 }
