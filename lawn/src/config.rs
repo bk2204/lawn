@@ -1212,5 +1212,7 @@ mod tests {
             level: LogLevel::Debug,
         };
         trace!(logger, "this should never be invoked");
+        let body: Option<u32> = None;
+        trace!(logger, "nor should this: {:?}", body.unwrap());
     }
 }
