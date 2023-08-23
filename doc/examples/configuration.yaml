@@ -45,6 +45,26 @@ v0:
     # command, we attempt to connect to all found sockets and remove those where
     # the connection fails.
     autoprune: true
+  # Controls for `lawn proxy`.
+  proxy:
+    # Controls for SSH agent proxying with `lawn proxy` (currently the only type).
+    ssh:
+      # Timeout controls.
+      timeout:
+        # The SSH agent protocol requires the client to speak first.  In order
+        # to ensure that asynchronous messages from the server are received, the
+        # client sends a no-op message every so often.  Setting a lower value
+        # produces more responsive behaviour at the cost of additional network
+        # traffic and reduced robustness to bad connections.  This option
+        # controls the frequency in ms of this poll.
+        poll_ms: 50
+        # Because of the above limitation, we want to wait a short amount of
+        # time for the server to respond to a client message to avoid waiting
+        # for the next poll delay.  Setting a lower value allows more client
+        # requests at the cost of a potentially longer response time to those
+        # requests.  This timeout is the number of ms to wait for a response
+        # from the server before returning an empty response over the protocol.
+        server_read_ms: 15
   # The clipboard controls
   clipboard:
     # A boolean expression determining whether to allow operations on the clipboard.

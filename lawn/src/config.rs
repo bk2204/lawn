@@ -19,7 +19,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 pub const VERSION: &str = concat!("Lawn/", env!("CARGO_PKG_VERSION"));
 
@@ -435,6 +435,36 @@ impl Config {
         let ctx = self.template_context(None, None);
         let val = Value::String(val);
         Ok(Some(ConfigValue::new(val, &ctx)?.into_string()?))
+    }
+
+    pub fn proxy_poll_timeout(&self) -> Duration {
+        let val = {
+            let g = self.data.read().unwrap();
+            g.config_file
+                .v0
+                .proxy
+                .as_ref()
+                .and_then(|v| v.ssh.as_ref())
+                .and_then(|v| v.timeout.as_ref())
+                .and_then(|v| v.poll_ms)
+                .unwrap_or(50)
+        };
+        Duration::from_micros(val)
+    }
+
+    pub fn proxy_server_read_timeout(&self) -> Duration {
+        let val = {
+            let g = self.data.read().unwrap();
+            g.config_file
+                .v0
+                .proxy
+                .as_ref()
+                .and_then(|v| v.ssh.as_ref())
+                .and_then(|v| v.timeout.as_ref())
+                .and_then(|v| v.server_read_ms)
+                .unwrap_or(15)
+        };
+        Duration::from_micros(val)
     }
 
     fn clipboard_command_from_str(s: &str) -> Option<ClipboardBackend> {
@@ -1037,6 +1067,7 @@ impl ConfigFile {
                 commands: None,
                 p9p: None,
                 fs: None,
+                proxy: None,
             },
         }
     }
@@ -1051,6 +1082,24 @@ struct ConfigFileV0 {
     #[serde(rename = "9p")]
     p9p: Option<BTreeMap<String, Config9P>>,
     fs: Option<BTreeMap<String, ConfigFS>>,
+    proxy: Option<ConfigProxy>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ConfigProxy {
+    ssh: Option<ConfigProxySSH>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ConfigProxySSH {
+    timeout: Option<ConfigProxySSHTimeout>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename = "kebab-case")]
+pub struct ConfigProxySSHTimeout {
+    poll_ms: Option<u64>,
+    server_read_ms: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
