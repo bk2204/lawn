@@ -236,7 +236,9 @@ impl Proxy {
                         ours_write.write_all(&ours).await?;
                         trace!(logger, "proxy: relayed message");
                         let mut buf = vec![0u8; 65536];
-                        let _ = tokio::time::timeout(self.server_read_timeout, ours_read.readable()).await;
+                        let _ =
+                            tokio::time::timeout(self.server_read_timeout, ours_read.readable())
+                                .await;
                         match ours_read.try_read(&mut buf) {
                             // We have a message from the server to send.
                             Ok(n) => {
