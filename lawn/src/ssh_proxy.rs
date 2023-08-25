@@ -97,6 +97,7 @@ pub struct Proxy {
     ours_write: Arc<Mutex<OwnedWriteHalf>>,
     multiplex: Arc<Mutex<UnixStream>>,
     config: Arc<Config>,
+    server_read_timeout: Duration,
 }
 
 impl Proxy {
@@ -107,6 +108,7 @@ impl Proxy {
         multiplex: UnixStream,
     ) -> Proxy {
         let (rd, wr) = ours.into_split();
+        let server_read_timeout = config.proxy_server_read_timeout();
         Proxy {
             config,
             ssh: match ssh {
@@ -116,6 +118,7 @@ impl Proxy {
             ours_read: Arc::new(Mutex::new(rd)),
             ours_write: Arc::new(Mutex::new(wr)),
             multiplex: Arc::new(Mutex::new(multiplex)),
+            server_read_timeout,
         }
     }
 
@@ -149,7 +152,7 @@ impl Proxy {
     /// messages into the SSH protocol for use on the other side.
     pub async fn run_client(&self) -> Result<(), Error> {
         use tokio::io::AsyncReadExt;
-        let mut interval = tokio::time::interval(Duration::from_millis(100));
+        let mut interval = tokio::time::interval(self.config.proxy_poll_timeout());
         let mut ours_read = self.ours_read.lock().await;
         let logger = self.config.logger();
         let mut buf = vec![0u8; 65536];
@@ -233,6 +236,9 @@ impl Proxy {
                         ours_write.write_all(&ours).await?;
                         trace!(logger, "proxy: relayed message");
                         let mut buf = vec![0u8; 65536];
+                        let _ =
+                            tokio::time::timeout(self.server_read_timeout, ours_read.readable())
+                                .await;
                         match ours_read.try_read(&mut buf) {
                             // We have a message from the server to send.
                             Ok(n) => {
