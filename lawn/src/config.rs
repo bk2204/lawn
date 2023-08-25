@@ -1174,6 +1174,7 @@ mod tests {
         cfg
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn default_is_root() {
         let mut env = BTreeMap::new();
@@ -1193,6 +1194,7 @@ mod tests {
         assert_eq!(cfg.is_root().unwrap(), true);
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn is_root_with_values() {
         let cfg = config_with_values(BTreeMap::new(), |c| {

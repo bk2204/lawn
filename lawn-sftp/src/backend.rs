@@ -839,6 +839,7 @@ impl Backend {
     }
 }
 
+#[cfg(not(miri))]
 #[cfg(test)]
 mod tests {
     use super::{
