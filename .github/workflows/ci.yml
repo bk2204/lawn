@@ -54,6 +54,18 @@ jobs:
       with:
         ruby-version: 3.1
     - run: make ci-nightly
+  build-miri:
+    name: Linux (Miri)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Install Miri
+      run: |
+        rustup toolchain install nightly --component miri
+        rustup override set nightly
+        cargo miri setup
+    - name: Test with Miri
+      run: cargo miri test
   build-freebsd:
     name: FreeBSD
     runs-on: macos-12
