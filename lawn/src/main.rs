@@ -33,6 +33,7 @@ mod server;
 mod ssh_proxy;
 mod task;
 mod template;
+#[cfg(not(miri))]
 #[cfg(test)]
 mod tests;
 mod unix;

@@ -1621,6 +1621,7 @@ impl Backend for LibcBackend {
     }
 }
 
+#[cfg(not(miri))]
 #[cfg(test)]
 mod tests {
     use super::{LibcBackend, MaybeIDInfo};
