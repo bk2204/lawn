@@ -211,6 +211,78 @@ impl Connection {
         Ok(resp)
     }
 
+    pub async fn send_message_with_id<T: Serialize, U: DeserializeOwned, V: DeserializeOwned>(
+        &self,
+        message: MessageKind,
+        body: Option<T>,
+    ) -> Result<(u32, Option<ResponseValue<U, V>>), Error> {
+        let resp = match body {
+            Some(body) => {
+                self.handler
+                    .send_message_with_id(message, &body, Some(true))
+                    .await?
+            }
+            None => {
+                self.handler
+                    .send_message_simple_with_id(message, Some(true))
+                    .await?
+            }
+        };
+        Ok(resp)
+    }
+
+    pub async fn send_message_simple<T: Serialize, U: DeserializeOwned>(
+        &self,
+        message: MessageKind,
+        body: Option<T>,
+    ) -> Result<Option<U>, Error> {
+        let resp = match body {
+            Some(body) => {
+                self.handler
+                    .send_message::<_, _, Empty>(message, &body, Some(true))
+                    .await?
+            }
+            None => {
+                self.handler
+                    .send_message_simple(message, Some(true))
+                    .await?
+            }
+        };
+        match resp {
+            Some(ResponseValue::Success(x)) => Ok(Some(x)),
+            Some(ResponseValue::Continuation(..)) => {
+                Err(Error::new(ErrorKind::UnexpectedContinuation))
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub async fn send_message_simple_with_id<T: Serialize, U: DeserializeOwned>(
+        &self,
+        message: MessageKind,
+        body: Option<T>,
+    ) -> Result<(u32, Option<U>), Error> {
+        let resp = match body {
+            Some(body) => {
+                self.handler
+                    .send_message_with_id::<_, _, Empty>(message, &body, Some(true))
+                    .await?
+            }
+            None => {
+                self.handler
+                    .send_message_simple_with_id(message, Some(true))
+                    .await?
+            }
+        };
+        match resp {
+            (id, Some(ResponseValue::Success(x))) => Ok((id, Some(x))),
+            (_, Some(ResponseValue::Continuation(..))) => {
+                Err(Error::new(ErrorKind::UnexpectedContinuation))
+            }
+            (id, None) => Ok((id, None)),
+        }
+    }
+
     pub async fn send_pagination_message<
         I,
         T: Serialize,

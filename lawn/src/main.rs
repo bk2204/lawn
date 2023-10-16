@@ -26,6 +26,7 @@ use tokio::runtime::Handle;
 mod channel;
 mod client;
 mod config;
+mod credential;
 mod encoding;
 mod error;
 mod fs_proxy;
