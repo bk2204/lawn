@@ -32,6 +32,7 @@ mod error;
 mod fs_proxy;
 mod server;
 mod ssh_proxy;
+mod store;
 mod task;
 mod template;
 #[cfg(not(miri))]
