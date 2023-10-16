@@ -29,6 +29,8 @@ use std::io;
 use std::sync::Arc;
 use thiserror::Error;
 
+pub mod protocol;
+
 #[derive(Debug, Error)]
 pub enum CredentialError {
     #[error("empty response {0}")]
