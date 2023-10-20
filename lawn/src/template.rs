@@ -2,6 +2,7 @@ use crate::encoding::escape;
 use bytes::Bytes;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 
 pub struct Template {
     text: Bytes,
@@ -45,7 +46,7 @@ impl Template {
         }
     }
 
-    pub fn expand(&self, context: &TemplateContext<'_, '_>) -> Result<Bytes, Error> {
+    pub fn expand(&self, context: &TemplateContext) -> Result<Bytes, Error> {
         if !self.needs_expansion {
             return Ok(self.text.clone());
         }
@@ -88,13 +89,13 @@ impl Template {
 
     fn expand_text_pattern(&self, id: &[u8], context: &TemplateContext) -> Result<Bytes, Error> {
         if id.starts_with(b"senv:") {
-            Ok(self.expand_env(&id[5..], context.senv))
+            Ok(self.expand_env(&id[5..], context.senv.as_deref()))
         } else if id.starts_with(b"cenv:") {
-            Ok(self.expand_env(&id[5..], context.cenv))
+            Ok(self.expand_env(&id[5..], context.cenv.as_deref()))
         } else if id.starts_with(b"senv?:") {
-            Ok(self.has_entry(&id[6..], context.senv))
+            Ok(self.has_entry(&id[6..], context.senv.as_deref()))
         } else if id.starts_with(b"cenv?:") {
-            Ok(self.has_entry(&id[6..], context.cenv))
+            Ok(self.has_entry(&id[6..], context.cenv.as_deref()))
         } else if id.starts_with(b"sq:") {
             Ok(self.single_quote(&self.expand_text_pattern(&id[3..], context)?))
         } else {
@@ -137,15 +138,16 @@ impl Template {
 }
 
 #[derive(Default, Clone)]
-pub struct TemplateContext<'a, 'b> {
-    pub senv: Option<&'a BTreeMap<Bytes, Bytes>>,
-    pub cenv: Option<&'b BTreeMap<Bytes, Bytes>>,
-    pub args: Option<&'b [Bytes]>,
+pub struct TemplateContext {
+    pub senv: Option<Arc<BTreeMap<Bytes, Bytes>>>,
+    pub cenv: Option<Arc<BTreeMap<Bytes, Bytes>>>,
+    pub args: Option<Arc<[Bytes]>>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Template, TemplateContext};
+    use std::sync::Arc;
 
     #[test]
     fn simple_expansion() {
@@ -177,8 +179,8 @@ mod tests {
         .cloned()
         .map(|(a, b)| (a.into(), b.into()))
         .collect();
-        ctx.senv = Some(&senv);
-        ctx.cenv = Some(&cenv);
+        ctx.senv = Some(Arc::new(senv));
+        ctx.cenv = Some(Arc::new(cenv));
         let cases = [
             ("My path is '%(senv:PATH)'", "My path is '/bin:/usr/bin'"),
             (

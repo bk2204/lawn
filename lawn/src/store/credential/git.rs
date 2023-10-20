@@ -41,7 +41,7 @@ impl GitCredentialBackend {
         &self,
         subcommand: Bytes,
     ) -> Result<std::process::Command, crate::error::Error> {
-        let args = &[subcommand];
+        let args = Arc::new([subcommand]);
         let ctx = self.config.template_context(None, Some(args));
         Ok(config::Command::new_simple(&self.command, &ctx)?.run_std_command())
     }

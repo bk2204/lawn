@@ -106,7 +106,7 @@ type EnvFn = dyn FnMut(&str) -> Option<OsString>;
 
 pub struct ConfigBuilder {
     env: Option<Box<EnvFn>>,
-    env_vars: Option<BTreeMap<Bytes, Bytes>>,
+    env_vars: Option<Arc<BTreeMap<Bytes, Bytes>>>,
     verbosity: i32,
     config_file: Option<PathBuf>,
     stdout: Option<Box<dyn Write + Sync + Send>>,
@@ -140,11 +140,11 @@ impl ConfigBuilder {
     ) -> &mut Self {
         let mut env_iter = env_iter;
         self.env = Some(Box::new(env));
-        self.env_vars = Some(
+        self.env_vars = Some(Arc::new(
             env_iter()
                 .map(|(k, v)| (k.as_bytes().to_vec().into(), v.as_bytes().to_vec().into()))
                 .collect(),
-        );
+        ));
         self
     }
 
@@ -241,7 +241,7 @@ impl ConfigBuilder {
 pub struct Config {
     logger: Arc<Logger>,
     data: RwLock<ConfigData>,
-    env_vars: BTreeMap<Bytes, Bytes>,
+    env_vars: Arc<BTreeMap<Bytes, Bytes>>,
 }
 
 impl Config {
@@ -293,19 +293,21 @@ impl Config {
                 capability: Capability::implemented(),
                 credential_backends: None,
             }),
-            env_vars: env_iter()
-                .map(|(k, v)| (k.as_bytes().to_vec().into(), v.as_bytes().to_vec().into()))
-                .collect(),
+            env_vars: Arc::new(
+                env_iter()
+                    .map(|(k, v)| (k.as_bytes().to_vec().into(), v.as_bytes().to_vec().into()))
+                    .collect(),
+            ),
         })
     }
 
-    pub fn template_context<'a>(
+    pub fn template_context(
         &self,
-        cenv: Option<&'a BTreeMap<Bytes, Bytes>>,
-        args: Option<&'a [Bytes]>,
-    ) -> TemplateContext<'_, 'a> {
+        cenv: Option<Arc<BTreeMap<Bytes, Bytes>>>,
+        args: Option<Arc<[Bytes]>>,
+    ) -> TemplateContext {
         TemplateContext {
-            senv: Some(&self.env_vars),
+            senv: Some(self.env_vars.clone()),
             cenv,
             args,
         }
@@ -856,20 +858,17 @@ impl lawn_protocol::config::Logger for Logger {
     }
 }
 
-pub struct ConfigValue<'a, 'b, 'c> {
+pub struct ConfigValue<'a> {
     value: Value,
-    context: &'c TemplateContext<'a, 'b>,
+    context: &'a TemplateContext,
 }
 
-impl<'a, 'b, 'c> ConfigValue<'a, 'b, 'c> {
-    pub fn new(
-        value: Value,
-        context: &'c TemplateContext<'a, 'b>,
-    ) -> Result<ConfigValue<'a, 'b, 'c>, Error> {
+impl<'a> ConfigValue<'a> {
+    pub fn new(value: Value, context: &'a TemplateContext) -> Result<ConfigValue<'a>, Error> {
         Ok(ConfigValue { value, context })
     }
 
-    fn templatize(s: &str, context: &'c TemplateContext<'a, 'b>) -> Result<Bytes, Error> {
+    fn templatize(s: &str, context: &'a TemplateContext) -> Result<Bytes, Error> {
         if s.is_empty() || !s.starts_with('!') {
             return Err(Error::new_with_message(
                 ErrorKind::UnknownCommandType,
@@ -944,12 +943,12 @@ impl<'a, 'b, 'c> ConfigValue<'a, 'b, 'c> {
         let mut cmd = std::process::Command::new("sh");
         cmd.arg("-c");
         cmd.arg(OsStr::from_bytes(&shell));
-        if let Some(args) = self.context.args {
-            for arg in args {
+        if let Some(args) = &self.context.args {
+            for arg in args.iter() {
                 cmd.arg(OsString::from_vec(arg.to_vec()));
             }
         }
-        if let Some(senv) = self.context.senv {
+        if let Some(senv) = &self.context.senv {
             cmd.env_clear();
             cmd.envs(senv.iter().map(|(k, v)| {
                 (
@@ -963,10 +962,7 @@ impl<'a, 'b, 'c> ConfigValue<'a, 'b, 'c> {
     }
 }
 
-pub fn command_from_shell(
-    shell: &Bytes,
-    context: &TemplateContext<'_, '_>,
-) -> tokio::process::Command {
+pub fn command_from_shell(shell: &Bytes, context: &TemplateContext) -> tokio::process::Command {
     let mut shell: BytesMut = shell.as_ref().into();
     shell.extend_from_slice(b" \"$@\"");
     command_from_args(
@@ -979,10 +975,7 @@ pub fn command_from_shell(
     )
 }
 
-pub fn std_command_from_shell(
-    shell: &Bytes,
-    context: &TemplateContext<'_, '_>,
-) -> std::process::Command {
+pub fn std_command_from_shell(shell: &Bytes, context: &TemplateContext) -> std::process::Command {
     let mut shell: BytesMut = shell.as_ref().into();
     shell.extend_from_slice(b" \"$@\"");
     std_command_from_args(
@@ -995,10 +988,7 @@ pub fn std_command_from_shell(
     )
 }
 
-pub fn command_from_args(
-    args: &[Bytes],
-    context: &TemplateContext<'_, '_>,
-) -> tokio::process::Command {
+pub fn command_from_args(args: &[Bytes], context: &TemplateContext) -> tokio::process::Command {
     let args: Vec<OsString> = args
         .iter()
         .map(|x| OsString::from_vec(x.to_vec()))
@@ -1007,12 +997,12 @@ pub fn command_from_args(
     if args.len() > 1 {
         cmd.args(&args[1..]);
     }
-    if let Some(args) = context.args {
-        for arg in args {
+    if let Some(args) = &context.args {
+        for arg in args.iter() {
             cmd.arg(OsString::from_vec(arg.to_vec()));
         }
     }
-    if let Some(senv) = context.senv {
+    if let Some(senv) = &context.senv {
         cmd.env_clear();
         cmd.envs(senv.iter().map(|(k, v)| {
             (
@@ -1025,10 +1015,7 @@ pub fn command_from_args(
     cmd
 }
 
-pub fn std_command_from_args(
-    args: &[Bytes],
-    context: &TemplateContext<'_, '_>,
-) -> std::process::Command {
+pub fn std_command_from_args(args: &[Bytes], context: &TemplateContext) -> std::process::Command {
     let args: Vec<OsString> = args
         .iter()
         .map(|x| OsString::from_vec(x.to_vec()))
@@ -1037,12 +1024,12 @@ pub fn std_command_from_args(
     if args.len() > 1 {
         cmd.args(&args[1..]);
     }
-    if let Some(args) = context.args {
-        for arg in args {
+    if let Some(args) = &context.args {
+        for arg in args.iter() {
             cmd.arg(OsString::from_vec(arg.to_vec()));
         }
     }
-    if let Some(senv) = context.senv {
+    if let Some(senv) = &context.senv {
         cmd.env_clear();
         cmd.envs(senv.iter().map(|(k, v)| {
             (
@@ -1055,19 +1042,16 @@ pub fn std_command_from_args(
     cmd
 }
 
-pub struct Command<'a, 'b, 'c> {
+pub struct Command<'a> {
     condition: Option<Value>,
     pre: Vec<Bytes>,
     post: Vec<Bytes>,
     command: Bytes,
-    context: &'c TemplateContext<'a, 'b>,
+    context: &'a TemplateContext,
 }
 
-impl<'a, 'b, 'c> Command<'a, 'b, 'c> {
-    pub fn new(
-        config: &ConfigCommand,
-        context: &'c TemplateContext<'a, 'b>,
-    ) -> Result<Command<'a, 'b, 'c>, Error> {
+impl<'a> Command<'a> {
+    pub fn new(config: &ConfigCommand, context: &'a TemplateContext) -> Result<Command<'a>, Error> {
         let pre = match &config.pre {
             Some(cmds) => cmds
                 .iter()
@@ -1091,10 +1075,7 @@ impl<'a, 'b, 'c> Command<'a, 'b, 'c> {
         })
     }
 
-    pub fn new_simple(
-        command: &str,
-        context: &'c TemplateContext<'a, 'b>,
-    ) -> Result<Command<'a, 'b, 'c>, Error> {
+    pub fn new_simple(command: &str, context: &'a TemplateContext) -> Result<Command<'a>, Error> {
         Ok(Command {
             condition: Some(Value::Bool(true)),
             pre: vec![],
@@ -1104,7 +1085,7 @@ impl<'a, 'b, 'c> Command<'a, 'b, 'c> {
         })
     }
 
-    fn templatize(s: &str, context: &'c TemplateContext<'a, 'b>) -> Result<Bytes, Error> {
+    fn templatize(s: &str, context: &'a TemplateContext) -> Result<Bytes, Error> {
         if s.is_empty() || !s.starts_with('!') {
             return Err(Error::new_with_message(
                 ErrorKind::UnknownCommandType,

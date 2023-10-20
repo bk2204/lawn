@@ -1607,8 +1607,8 @@ impl Server {
         if allowed != requested {
             return Err(ResponseCode::ParametersNotSupported.into());
         }
-        let args = match &m.args {
-            Some(args) if !args.is_empty() => args,
+        let args: Arc<[Bytes]> = match &m.args {
+            Some(args) if !args.is_empty() => args.clone().into(),
             _ => return Err(ResponseCode::InvalidParameters.into()),
         };
         let config = state.config();
@@ -1616,7 +1616,8 @@ impl Server {
             Some(cmd) => cmd,
             None => return Err(ResponseCode::NotFound.into()),
         };
-        let ctx = config.template_context(m.env.as_ref(), Some(args));
+        let env = m.env.as_ref().map(|e| Arc::new(e.clone()));
+        let ctx = config.template_context(env, Some(args.clone()));
         let logger = state.logger();
         let channels = state.channels();
         let cmd = match config::Command::new(&cfgcmd, &ctx) {
