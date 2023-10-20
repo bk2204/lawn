@@ -2,14 +2,17 @@ use crate::client;
 use crate::config::{self, Config, ConfigBuilder};
 use crate::server;
 use bytes::Bytes;
+use format_bytes::format_bytes;
 use lawn_protocol::protocol::Capability;
+use std::borrow::Cow;
 use std::collections::btree_map::IntoIter as BTreeMapIter;
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::TryFrom;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
 use std::io::{Read, Write};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,19 +41,26 @@ impl FakeEnvironment {
     }
 
     fn env(&self, s: &str) -> Option<OsString> {
-        let subpath = match s {
-            "HOME" => Some("home"),
-            "XDG_RUNTIME_DIR" => Some("runtime"),
-            "PATH" => return Some("/bin:/usr/bin:/sbin:/usr/sbin".into()),
+        let cwd = std::env::current_dir().unwrap();
+        let subpath: Cow<'static, [u8]> = match s {
+            "HOME" => Some(Cow::Borrowed(b"home" as &[u8])),
+            "XDG_RUNTIME_DIR" => Some(Cow::Borrowed(b"runtime" as &[u8])),
+            "LAWN_TEST_DATA_DIR" => Some(Cow::Borrowed(b"data" as &[u8])),
+            "PATH" => {
+                return Some(OsString::from_vec(format_bytes!(
+                    b"{}/../spec/fixtures/bin:/bin:/usr/bin:/sbin:/usr/sbin",
+                    cwd.as_os_str().as_bytes()
+                )))
+            }
             _ => None,
         }?;
         let mut root = self.root.clone();
-        root.push(subpath);
+        root.push(OsStr::from_bytes(&subpath));
         Some(root.into())
     }
 
     fn iter(&self) -> FakeEnvironmentIter {
-        let keys = &["HOME", "PATH", "XDG_RUNTIME_DIR"];
+        let keys = &["HOME", "PATH", "XDG_RUNTIME_DIR", "LAWN_TEST_DATA_DIR"];
         let map: BTreeMap<OsString, OsString> = keys
             .iter()
             .filter_map(|k| {
@@ -70,13 +80,14 @@ pub struct TestInstance {
 }
 
 impl TestInstance {
-    pub fn new(builder: Option<ConfigBuilder>) -> Self {
+    pub fn new(builder: Option<ConfigBuilder>, config: Option<&str>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let mut server = dir.path().to_owned();
         server.push("server");
         fs::create_dir(&server).unwrap();
         let paths = &[
             "home/.local/run/lawn",
+            "data",
             "path",
             "run/user",
             "runtime/lawn",
@@ -88,7 +99,7 @@ impl TestInstance {
             to_create.push(p);
             fs::create_dir_all(&to_create).unwrap();
         }
-        let config_file = Self::write_config_file(&server);
+        let config_file = Self::write_config_file(&server, config);
         let env = FakeEnvironment::new(dir.path());
         let iterenv = env.clone();
         let mut builder = builder.unwrap_or_else(|| ConfigBuilder::new());
@@ -96,32 +107,33 @@ impl TestInstance {
         builder.create_runtime_dir(false);
         builder.verbosity(5);
         builder.stdout(Box::new(io::Cursor::new(Vec::new())));
-        builder.stderr(Box::new(io::stderr()));
+        builder.stderr(Box::new(io::stdout()));
         builder.config_file(&config_file);
         let cfg = Arc::new(builder.build().unwrap());
         cfg.set_detach(false);
         Self { dir, config: cfg }
     }
 
-    fn write_config_file(dir: &Path) -> PathBuf {
-        let mut dest = dir.to_owned();
-        dest.push("config.yaml");
-        let mut fp = fs::File::create(&dest).unwrap();
-        write!(
-            fp,
-            "---
+    fn default_config_file() -> &'static str {
+        "---
 v0:
     root: true
     commands:
         printf:
             if: '!/bin/true'
-            command: '!f() {{ printf \"$@\"; }};f'
+            command: '!f() { printf \"$@\"; };f'
         echo:
             if: true
-            command: '!f() {{ printf \"$@\"; }};f'
+            command: '!f() { printf \"$@\"; };f'
 "
-        )
-        .unwrap();
+    }
+
+    fn write_config_file(dir: &Path, config: Option<&str>) -> PathBuf {
+        let mut dest = dir.to_owned();
+        dest.push("config.yaml");
+        let mut fp = fs::File::create(&dest).unwrap();
+        let config = config.unwrap_or(Self::default_config_file());
+        write!(fp, "{}", config,).unwrap();
         dest
     }
 
@@ -150,7 +162,7 @@ fn runtime() -> tokio::runtime::Runtime {
 
 #[test]
 fn starts_server() {
-    let ti = TestInstance::new(None);
+    let ti = TestInstance::new(None, None);
     let rt = runtime();
     rt.block_on(async {
         let s = ti.server();
@@ -185,7 +197,7 @@ where
 
 #[test]
 fn can_perform_test_connections() {
-    let ti = Arc::new(TestInstance::new(None));
+    let ti = Arc::new(TestInstance::new(None, None));
     with_server(ti.clone(), async move {
         let c = ti.connection().await;
         c.ping().await.unwrap();
@@ -222,7 +234,7 @@ fn can_handle_extensions_listing_with_many_extensions() {
     cb.capabilities(capabilities.clone());
     let unwrapped: Vec<(Bytes, Option<Bytes>)> =
         capabilities.iter().map(|c| (*c).clone().into()).collect();
-    let ti = Arc::new(TestInstance::new(Some(cb)));
+    let ti = Arc::new(TestInstance::new(Some(cb), None));
     with_server(ti.clone(), async move {
         // Basic setup.
         let c = ti.connection().await;
@@ -396,7 +408,7 @@ fn can_create_and_delete_extension_ranges_without_auth() {
     cb.capabilities(capabilities.clone());
     let unwrapped: Vec<(Bytes, Option<Bytes>)> =
         capabilities.iter().map(|c| (*c).clone().into()).collect();
-    let ti = Arc::new(TestInstance::new(Some(cb)));
+    let ti = Arc::new(TestInstance::new(Some(cb), None));
     with_server(ti.clone(), async move {
         // Basic setup.
         let c = ti.connection().await;
@@ -456,5 +468,119 @@ fn can_create_and_delete_extension_ranges_without_auth() {
             .await
             .unwrap()
             .is_none());
+    });
+}
+
+#[test]
+fn can_round_trip_data_through_git_credential_helper() {
+    use crate::credential::{
+        Credential, CredentialClient, CredentialHandle, CredentialRequest, FieldRequest, Location,
+    };
+    use lawn_protocol::protocol::StoreSearchRecursionLevel;
+
+    let config = format!(
+        "{}\n{}",
+        TestInstance::default_config_file(),
+        "
+    credential:
+        if: true
+        backends:
+            - name: git
+              type: git
+              if: true
+              options:
+                  command: '!f() { git-backend \"$0\" \"$@\"; };f'
+"
+    );
+    let mut capabilities = Capability::implemented();
+    capabilities.insert(Capability::StoreCredential);
+
+    let mut cb = ConfigBuilder::new();
+    cb.capabilities(capabilities.clone());
+    let ti = Arc::new(TestInstance::new(Some(cb), Some(&config)));
+    with_server(ti.clone(), async move {
+        // Basic setup.
+        let c = ti.connection().await;
+        c.ping().await.unwrap();
+        let resp = c.negotiate_default_version().await.unwrap();
+        assert_eq!(resp.version, &[0], "version is correct");
+        assert_eq!(
+            resp.user_agent.unwrap(),
+            config::VERSION,
+            "user-agent is correct"
+        );
+        c.auth_external().await.unwrap();
+
+        let creds = CredentialClient::new(c).await.unwrap();
+        let stores = creds.list_stores().await.unwrap();
+        assert_eq!(stores.len(), 1, "one store");
+        assert_eq!(stores[0].path().await, "/git/", "correct path");
+        let vaults = stores[0].list_vaults().await.unwrap();
+        assert_eq!(vaults.len(), 1, "one vault");
+        assert_eq!(vaults[0].path().await, "/git/-/", "correct path");
+        let vault = vaults.get(0).unwrap();
+
+        let mut cred = Credential {
+            username: Some(Bytes::from(b"user" as &[u8])),
+            secret: Bytes::from(b"very-secret-password" as &[u8]),
+            authtype: None,
+            kind: "api".into(),
+            title: Some("Git: https://example.com/".into()),
+            description: None,
+            location: vec![Location {
+                protocol: Some("https".into()),
+                host: Some("example.com".into()),
+                port: None,
+                path: None,
+            }],
+            service: None,
+            extra: BTreeMap::new(),
+            id: Bytes::from(b"" as &[u8]),
+        };
+        cred.id = cred.generate_id();
+
+        vault.put_entry(&cred).await.unwrap();
+
+        let mut req = CredentialRequest::new();
+        req.protocol = FieldRequest::LiteralString("https".into());
+        req.host = FieldRequest::LiteralString("example.com".into());
+
+        let result = vault
+            .search_entry(&req, StoreSearchRecursionLevel::Boolean(true))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result, cred, "expected credential for simple search");
+
+        req.username = FieldRequest::LiteralBytes(Bytes::from(b"user" as &[u8]));
+
+        let result = vault
+            .search_entry(&req, StoreSearchRecursionLevel::Boolean(true))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result, cred, "expected credential for search with username");
+
+        let mut newreq = req.clone();
+        newreq.username = FieldRequest::LiteralBytes(Bytes::from(b"bob" as &[u8]));
+
+        let result = vault
+            .search_entry(&newreq, StoreSearchRecursionLevel::Boolean(true))
+            .await
+            .unwrap();
+        assert_eq!(
+            result, None,
+            "expected credential for search with wrong username"
+        );
+
+        vault.delete_entry(&cred).await.unwrap();
+        let result = vault
+            .search_entry(&req, StoreSearchRecursionLevel::Boolean(true))
+            .await
+            .unwrap();
+        assert_eq!(
+            result, None,
+            "expected credential for search with deleted data"
+        );
     });
 }
