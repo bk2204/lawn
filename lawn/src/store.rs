@@ -7,6 +7,8 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Mutex;
 use std::sync::{Arc, RwLock};
 
+pub mod credential;
+
 pub struct StoreManager {
     map: RwLock<HashMap<StoreID, Arc<dyn Store + Send + Sync>>>,
     id: Mutex<u32>,
