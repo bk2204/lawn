@@ -86,6 +86,20 @@ struct ConfigData {
     clipboard_backend: Option<ClipboardBackend>,
     clipboard_enabled: Option<bool>,
     capability: BTreeSet<Capability>,
+    credential_backends: Option<Vec<CredentialBackend>>,
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CredentialBackend {
+    pub kind: CredentialBackendType,
+    pub name: String,
+    enabled: bool,
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CredentialBackendType {
+    Git { command: String },
+    Other,
 }
 
 type EnvFn = dyn FnMut(&str) -> Option<OsString>;
@@ -217,6 +231,7 @@ impl ConfigBuilder {
                 clipboard_backend: None,
                 clipboard_enabled: None,
                 capability: self.capabilities.unwrap_or_else(Capability::implemented),
+                credential_backends: None,
             }),
             env_vars,
         })
@@ -276,6 +291,7 @@ impl Config {
                 clipboard_backend: None,
                 clipboard_enabled: None,
                 capability: Capability::implemented(),
+                credential_backends: None,
             }),
             env_vars: env_iter()
                 .map(|(k, v)| (k.as_bytes().to_vec().into(), v.as_bytes().to_vec().into()))
@@ -474,6 +490,101 @@ impl Config {
             "macos" => Some(ClipboardBackend::MacOS),
             _ => None,
         }
+    }
+
+    fn compute_credential_backends(&self) -> Result<(), Error> {
+        let g = self.data.read().unwrap();
+        if g.credential_backends.is_some() {
+            return Ok(());
+        }
+        let val = match g
+            .config_file
+            .v0
+            .credential
+            .as_ref()
+            .map(|x| x.if_value.clone())
+        {
+            Some(v) => v,
+            None => Value::Bool(false),
+        };
+        let ctx = self.template_context(None, None);
+        let result = ConfigValue::new(val, &ctx)?.into_bool()?;
+        let backends = {
+            let config_backends = if result {
+                g.config_file
+                    .v0
+                    .credential
+                    .as_ref()
+                    .and_then(|c| c.backends.as_deref())
+                    .unwrap_or_default()
+            } else {
+                &[]
+            };
+            config_backends
+                .iter()
+                .map(|b| {
+                    let val = b.if_value.clone().unwrap_or(Value::Bool(false));
+                    let ctx = self.template_context(None, None);
+                    let result = ConfigValue::new(val, &ctx)?.into_bool()?;
+                    let kind = match (b.kind.as_ref(), &b.options) {
+                        ("git", Some(opts)) => match opts.get("command") {
+                            Some(Value::String(ref s)) => {
+                                CredentialBackendType::Git { command: s.clone() }
+                            }
+                            _ => {
+                                return Err(Error::new_with_message(
+                                    ErrorKind::InvalidConfigurationValue,
+                                    "credential type \"git\" requires the option \"command\"",
+                                ))
+                            }
+                        },
+                        ("git", None) => {
+                            return Err(Error::new_with_message(
+                                ErrorKind::InvalidConfigurationValue,
+                                "credential type \"git\" requires the option \"command\"",
+                            ))
+                        }
+                        _ => CredentialBackendType::Other,
+                    };
+                    Ok(CredentialBackend {
+                        kind,
+                        name: b.name.clone(),
+                        enabled: result,
+                    })
+                })
+                .collect::<Result<Vec<_>, Error>>()?
+        };
+        std::mem::drop(g);
+        let mut g = self.data.write().unwrap();
+        g.credential_backends = Some(backends);
+        Ok(())
+    }
+
+    pub fn credential_backends(&self) -> Result<Vec<CredentialBackend>, Error> {
+        self.compute_credential_backends()?;
+        let g = self.data.read().unwrap();
+        if let Some(ref val) = g.credential_backends {
+            return Ok(val
+                .iter()
+                .filter(|b| b.enabled && b.kind != CredentialBackendType::Other)
+                .cloned()
+                .collect());
+        }
+        Ok(vec![])
+    }
+
+    pub fn credential_backends_as_map(&self) -> Result<BTreeMap<String, CredentialBackend>, Error> {
+        self.compute_credential_backends()?;
+        let g = self.data.read().unwrap();
+        if let Some(ref val) = g.credential_backends {
+            return Ok(val
+                .iter()
+                .filter(|b| b.enabled && b.kind != CredentialBackendType::Other)
+                .cloned()
+                .map(|b| (b.name.clone(), b))
+                .collect());
+        }
+        Ok(BTreeMap::new())
     }
 
     pub fn clipboard_enabled(&self) -> Result<bool, Error> {
@@ -980,6 +1091,19 @@ impl<'a, 'b, 'c> Command<'a, 'b, 'c> {
         })
     }
 
+    pub fn new_simple(
+        command: &str,
+        context: &'c TemplateContext<'a, 'b>,
+    ) -> Result<Command<'a, 'b, 'c>, Error> {
+        Ok(Command {
+            condition: Some(Value::Bool(true)),
+            pre: vec![],
+            post: vec![],
+            command: Self::templatize(command, context)?,
+            context,
+        })
+    }
+
     fn templatize(s: &str, context: &'c TemplateContext<'a, 'b>) -> Result<Bytes, Error> {
         if s.is_empty() || !s.starts_with('!') {
             return Err(Error::new_with_message(
@@ -1065,6 +1189,7 @@ impl ConfigFile {
                 clipboard: None,
                 socket: None,
                 commands: None,
+                credential: None,
                 p9p: None,
                 fs: None,
                 proxy: None,
@@ -1079,6 +1204,7 @@ struct ConfigFileV0 {
     clipboard: Option<ConfigClipboard>,
     socket: Option<ConfigSockets>,
     commands: Option<BTreeMap<String, ConfigCommand>>,
+    credential: Option<ConfigCredential>,
     #[serde(rename = "9p")]
     p9p: Option<BTreeMap<String, Config9P>>,
     fs: Option<BTreeMap<String, ConfigFS>>,
@@ -1137,6 +1263,23 @@ pub struct ConfigFS {
     #[serde(rename = "if")]
     if_value: Value,
     location: Option<Value>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ConfigCredential {
+    #[serde(rename = "if")]
+    if_value: Value,
+    backends: Option<Vec<ConfigCredentialBackend>>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ConfigCredentialBackend {
+    #[serde(rename = "if")]
+    if_value: Option<Value>,
+    name: String,
+    #[serde(rename = "type")]
+    kind: String,
+    options: Option<BTreeMap<String, Value>>,
 }
 
 #[cfg(test)]
