@@ -21,8 +21,7 @@ use lawn_protocol::protocol::{Message, MessageKind, ResponseCode};
 use num_traits::cast::FromPrimitive;
 use serde_cbor::Value;
 use std::any::Any;
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::convert::TryInto;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::marker::Unpin;
@@ -270,6 +269,7 @@ impl Server {
             let mut fdwr = fdwr;
             let _ = fdwr.write_all(&[0x00]);
         }
+        let shared_state = SharedServerState::new(self.config.clone());
         logger.trace("server: starting main loop");
         loop {
             select! {
@@ -308,9 +308,10 @@ impl Server {
                         trace!(logger, "server: accepted connection, spawning handler {}", id);
                         let (tx, rx) = sync::mpsc::channel(1);
                         let config = self.config.clone();
+                        let shst = shared_state.clone();
                         let handle = task::spawn(async move {
                             let logger = config.logger();
-                            Self::run_job(config, id, rx, conn).await;
+                            Self::run_job(shst, id, rx, conn).await;
                             trace!(logger, "server: exiting handler {}", id);
                             id
                         });
@@ -351,13 +352,16 @@ impl Server {
     }
 
     async fn run_job(
-        config: Arc<Config>,
+        shared_state: Arc<SharedServerState>,
         id: u64,
         rx: sync::mpsc::Receiver<()>,
         conn: net::UnixStream,
     ) {
         let mut rx = rx;
-        let cfg = Arc::new(lawn_protocol::config::Config::new(true, config.logger()));
+        let cfg = Arc::new(lawn_protocol::config::Config::new(
+            true,
+            shared_state.config().logger(),
+        ));
         let (chandeathtx, mut chandeathrx) = sync::mpsc::channel(10);
         let (connread, connwrite) = conn.into_split();
         let state = Arc::new(ServerState {
@@ -369,9 +373,9 @@ impl Server {
             )),
             channels: Arc::new(ChannelManager::new(Some(chandeathtx))),
             stores: Arc::new(StoreManager::new()),
-            config,
             extensions: Arc::new(RwLock::new(ExtensionMap::new())),
             continuations: Continuations::new(),
+            shared_state,
         });
         let handler = state.handler();
         let channels = state.channels();
@@ -1064,7 +1068,10 @@ impl Server {
                             .await =>
                     {
                         let id = stores.next_id();
-                        stores.insert(id, Arc::new(CredentialStore::new(id, state.config.clone())));
+                        stores.insert(
+                            id,
+                            Arc::new(CredentialStore::new(id, state.config().clone())),
+                        );
                         Ok(id)
                     }
                     _ => return Err(ResponseCode::ParametersNotSupported.into()),
@@ -1944,13 +1951,44 @@ impl Server {
     }
 }
 
+/// State shared across multiple connection instances.
+///
+/// This struct contains data which can be shared across multiple server connections, notably data
+/// for cached credentials and the configuration.
+#[allow(dead_code)]
+pub struct SharedServerState {
+    credentials: RwLock<BTreeMap<Bytes, Value>>,
+    config: Arc<Config>,
+}
+
+impl SharedServerState {
+    /// Create a new shared server state.
+    fn new(config: Arc<Config>) -> Arc<Self> {
+        Arc::new(SharedServerState {
+            credentials: Default::default(),
+            config,
+        })
+    }
+
+    /// Get the credentials stored in this state.
+    #[allow(dead_code)]
+    pub fn credentials(&self) -> &RwLock<BTreeMap<Bytes, Value>> {
+        &self.credentials
+    }
+
+    /// Get the configuration stored in this state.
+    pub fn config(&self) -> Arc<Config> {
+        self.config.clone()
+    }
+}
+
 struct ServerState<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> {
     handler: Arc<ProtocolHandler<T, U>>,
     channels: Arc<ChannelManager>,
     stores: Arc<StoreManager>,
-    config: Arc<Config>,
     extensions: Arc<RwLock<ExtensionMap>>,
     continuations: Continuations,
+    shared_state: Arc<SharedServerState>,
 }
 
 impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ServerState<T, U> {
@@ -1967,10 +2005,10 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ServerState<T, U> {
     }
 
     fn config(&self) -> Arc<Config> {
-        self.config.clone()
+        self.shared_state.config.clone()
     }
 
     fn logger(&self) -> Arc<Logger> {
-        self.config.logger()
+        self.shared_state.config.logger()
     }
 }
