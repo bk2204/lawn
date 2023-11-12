@@ -415,49 +415,72 @@ impl Server {
                         Ok(None) => (),
                         Ok(Some(msg)) => {
                             tokio::spawn(async move {
-                                let handler = state.handler();
+                                let msgid = msg.id;
                                 let logger = state.logger();
-                                trace!(logger, "server: {}: processing message {}", id, msg.id);
-                                match Self::process_message(state.clone(), id, &msg).await {
-                                    Ok((ResponseType::Close, body)) => {
-                                        trace!(logger, "server: {}: message {}: code {:08x} (closing)", id, msg.id, 0);
-                                        let _ = handler.send_success(msg.id, body).await;
-                                        handler.close(false).await;
+                                let handle = tokio::spawn(async move {
+                                    let handler = state.handler();
+                                    let logger = state.logger();
+                                    trace!(logger, "server: {}: processing message {}", id, msg.id);
+                                    match Self::process_message(state.clone(), id, &msg).await {
+                                        Ok((ResponseType::Close, body)) => {
+                                            trace!(logger, "server: {}: message {}: code {:08x} (closing)", id, msg.id, 0);
+                                            let _ = handler.send_success(msg.id, body).await;
+                                            handler.close(false).await;
+                                        }
+                                        Err(handler::Error::ProtocolError(protocol::Error{code, body: Some(body)})) => {
+                                            trace!(logger, "server: {}: message {}: code {:08x} (body)", id, msg.id, code as u32);
+                                            match handler.send_error_typed(msg.id, code, &body).await {
+                                                Ok(_) => (),
+                                                Err(_) => handler.close(true).await,
+                                            }
+                                        },
+                                        Err(handler::Error::ProtocolError(protocol::Error{code, body: None})) => {
+                                            trace!(logger, "server: {}: message {}: code {:08x}", id, msg.id, code as u32);
+                                            match handler.send_error_simple(msg.id, code).await {
+                                                Ok(_) => (),
+                                                Err(_) => handler.close(true).await,
+                                            }
+                                        },
+                                        Err(e) => {
+                                            trace!(logger, "server: {}: message {}: error: {} (closing)", id, msg.id, e);
+                                            handler.close(true).await;
+                                        },
+                                        Ok((ResponseType::Success, body)) => {
+                                            trace!(logger, "server: {}: message {}: code {:08x}", id, msg.id, 0);
+                                            match handler.send_success(msg.id, body).await {
+                                                Ok(_) => (),
+                                                Err(_) => handler.close(true).await,
+                                            }
+                                            trace!(logger, "server: {}: message {}: code {:08x} sent", id, msg.id, 0);
+                                        },
+                                        Ok((ResponseType::Partial, body)) => {
+                                            trace!(logger, "server: {}: message {}: code {:08x}", id, msg.id, 0);
+                                            match handler.send_continuation(msg.id, body).await {
+                                                Ok(_) => (),
+                                                Err(_) => handler.close(true).await,
+                                            }
+                                            trace!(logger, "server: {}: message {}: code {:08x} sent", id, msg.id, 0);
+                                        },
                                     }
-                                    Err(handler::Error::ProtocolError(protocol::Error{code, body: Some(body)})) => {
-                                        trace!(logger, "server: {}: message {}: code {:08x} (body)", id, msg.id, code as u32);
-                                        match handler.send_error_typed(msg.id, code, &body).await {
-                                            Ok(_) => (),
-                                            Err(_) => handler.close(true).await,
+                                });
+                                match handle.await {
+                                    Ok(_) => (),
+                                    Err(e) if e.is_cancelled() => {
+                                        trace!(logger, "server: {}: message {}: cancelled", id, msgid);
+                                    },
+                                    Err(e) if e.is_panic() => {
+                                        let e = e.into_panic();
+                                        if let Some(e) = e.downcast_ref::<&str>() {
+                                            trace!(logger, "server: {}: message {}: panic: {}", id, msgid, e);
+                                        } else if let Some(e) = e.downcast_ref::<String>() {
+                                            trace!(logger, "server: {}: message {}: panic: {}", id, msgid, e);
+                                        } else {
+                                            trace!(logger, "server: {}: message {}: unknown panic", id, msgid);
                                         }
                                     },
-                                    Err(handler::Error::ProtocolError(protocol::Error{code, body: None})) => {
-                                        trace!(logger, "server: {}: message {}: code {:08x}", id, msg.id, code as u32);
-                                        match handler.send_error_simple(msg.id, code).await {
-                                            Ok(_) => (),
-                                            Err(_) => handler.close(true).await,
-                                        }
-                                    },
-                                    Err(e) => {
-                                        trace!(logger, "server: {}: message {}: error: {} (closing)", id, msg.id, e);
-                                        handler.close(true).await;
-                                    },
-                                    Ok((ResponseType::Success, body)) => {
-                                        trace!(logger, "server: {}: message {}: code {:08x}", id, msg.id, 0);
-                                        match handler.send_success(msg.id, body).await {
-                                            Ok(_) => (),
-                                            Err(_) => handler.close(true).await,
-                                        }
-                                        trace!(logger, "server: {}: message {}: code {:08x} sent", id, msg.id, 0);
-                                    },
-                                    Ok((ResponseType::Partial, body)) => {
-                                        trace!(logger, "server: {}: message {}: code {:08x}", id, msg.id, 0);
-                                        match handler.send_continuation(msg.id, body).await {
-                                            Ok(_) => (),
-                                            Err(_) => handler.close(true).await,
-                                        }
-                                        trace!(logger, "server: {}: message {}: code {:08x} sent", id, msg.id, 0);
-                                    },
+                                    Err(_) => {
+                                        trace!(logger, "server: {}: message {}: unknown error", id, msgid);
+                                    }
                                 }
                             });
                         }
