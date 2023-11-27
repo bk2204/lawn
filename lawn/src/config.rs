@@ -310,6 +310,7 @@ impl Config {
             senv: Some(self.env_vars.clone()),
             cenv,
             args,
+            ctxsenv: None,
         }
     }
 
@@ -1011,6 +1012,14 @@ pub fn command_from_args(args: &[Bytes], context: &TemplateContext) -> tokio::pr
             )
         }));
     }
+    if let Some(ctxsenv) = &context.ctxsenv {
+        cmd.envs(ctxsenv.iter().map(|(k, v)| {
+            (
+                OsString::from_vec(k.to_vec()),
+                OsString::from_vec(v.to_vec()),
+            )
+        }));
+    }
     cmd.current_dir("/");
     cmd
 }
@@ -1032,6 +1041,14 @@ pub fn std_command_from_args(args: &[Bytes], context: &TemplateContext) -> std::
     if let Some(senv) = &context.senv {
         cmd.env_clear();
         cmd.envs(senv.iter().map(|(k, v)| {
+            (
+                OsString::from_vec(k.to_vec()),
+                OsString::from_vec(v.to_vec()),
+            )
+        }));
+    }
+    if let Some(ctxsenv) = &context.ctxsenv {
+        cmd.envs(ctxsenv.iter().map(|(k, v)| {
             (
                 OsString::from_vec(k.to_vec()),
                 OsString::from_vec(v.to_vec()),
