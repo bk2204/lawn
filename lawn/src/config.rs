@@ -99,6 +99,7 @@ pub struct CredentialBackend {
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CredentialBackendType {
     Git { command: String },
+    Memory { token: Option<String> },
     Other,
 }
 
@@ -538,6 +539,19 @@ impl Config {
                                 return Err(Error::new_with_message(
                                     ErrorKind::InvalidConfigurationValue,
                                     "credential type \"git\" requires the option \"command\"",
+                                ))
+                            }
+                        },
+                        ("memory", None) => CredentialBackendType::Memory { token: None },
+                        ("memory", Some(opts)) => match opts.get("token") {
+                            Some(Value::String(ref s)) => {
+                                CredentialBackendType::Memory { token: Some(s.clone()) }
+                            },
+                            None => CredentialBackendType::Memory { token: None },
+                            _ => {
+                                return Err(Error::new_with_message(
+                                    ErrorKind::InvalidConfigurationValue,
+                                    "credential type \"memory\" requires the option \"token\" to be a string",
                                 ))
                             }
                         },

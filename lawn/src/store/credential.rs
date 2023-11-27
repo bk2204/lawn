@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 pub mod git;
 pub mod helpers;
+pub mod memory;
 
 pub trait CredentialBackend {
     fn name(&self) -> &[u8];

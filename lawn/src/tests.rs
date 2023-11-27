@@ -1,9 +1,11 @@
 use crate::client;
 use crate::config::{self, Config, ConfigBuilder};
+use crate::credential::{CredentialHandle, CredentialStore};
 use crate::server;
+use async_trait::async_trait;
 use bytes::Bytes;
 use format_bytes::format_bytes;
-use lawn_protocol::protocol::Capability;
+use lawn_protocol::protocol::{self, Capability, ResponseCode};
 use std::borrow::Cow;
 use std::collections::btree_map::IntoIter as BTreeMapIter;
 use std::collections::{BTreeMap, BTreeSet};
@@ -583,4 +585,287 @@ fn can_round_trip_data_through_git_credential_helper() {
             "expected credential for search with deleted data"
         );
     });
+}
+
+fn ce_to_pe(e: crate::credential::CredentialError) -> protocol::Error {
+    protocol::Error::try_from(crate::error::Error::from(e)).unwrap()
+}
+
+#[async_trait]
+trait Auther {
+    async fn auth(&self, cs: &mut CredentialStore);
+}
+
+struct PlainAuth;
+
+#[async_trait]
+impl Auther for PlainAuth {
+    async fn auth(&self, cs: &mut CredentialStore) {
+        let resp = cs
+            .authenticate(
+                None,
+                b"PLAIN",
+                Some(Bytes::from(b"\x00\x00abc123" as &[u8])),
+            )
+            .await
+            .unwrap();
+        assert!(resp.0.is_none(), "no continuation ID response from PLAIN");
+        assert!(resp.1.is_none(), "empty response from PLAIN");
+    }
+}
+
+struct KeyboardInteractiveAuth;
+
+#[async_trait]
+impl Auther for KeyboardInteractiveAuth {
+    async fn auth(&self, cs: &mut CredentialStore) {
+        use lawn_protocol::protocol::{
+            KeyboardInteractiveAuthenticationRequest, KeyboardInteractiveAuthenticationResponse,
+        };
+
+        let (id, resp) = cs
+            .authenticate(None, b"keyboard-interactive", None)
+            .await
+            .unwrap();
+        let id = id.expect("valid ID for keyboard-interactive first step");
+        let resp = resp.unwrap();
+        let req: KeyboardInteractiveAuthenticationRequest = serde_cbor::from_slice(&resp).unwrap();
+        assert_eq!(req.prompts.len(), 1, "correct number of prompts");
+        assert_eq!(req.prompts[0].prompt, "Password", "expected prompt text");
+        assert_eq!(req.prompts[0].echo, false, "password is not echoed");
+        let resp = KeyboardInteractiveAuthenticationResponse {
+            responses: vec!["abc123".into()],
+        };
+        let resp = serde_cbor::to_vec(&resp).unwrap().into();
+        let resp = cs
+            .authenticate(Some(id), b"keyboard-interactive", Some(resp))
+            .await
+            .unwrap();
+        assert!(
+            resp.0.is_none(),
+            "no ID for keyboard-interactive second step"
+        );
+        assert!(resp.1.is_none(), "empty response from keyboard-interactive");
+    }
+}
+
+#[test]
+fn can_round_trip_data_through_memory_credential_helper() {
+    use crate::credential::{
+        Credential, CredentialClient, CredentialHandle, CredentialRequest, FieldRequest, Location,
+    };
+    use lawn_protocol::protocol::StoreSearchRecursionLevel;
+
+    let authers: [Arc<dyn Auther + Send + Sync>; 2] =
+        [Arc::new(PlainAuth), Arc::new(KeyboardInteractiveAuth)];
+
+    let config = format!(
+        "{}\n{}",
+        TestInstance::default_config_file(),
+        "
+    credential:
+        if: true
+        backends:
+            - name: memory
+              type: memory
+              if: true
+              options:
+                  token: abc123
+"
+    );
+    let mut capabilities = Capability::implemented();
+    capabilities.insert(Capability::StoreCredential);
+
+    for auther in &authers {
+        let mut cb = ConfigBuilder::new();
+        cb.capabilities(capabilities.clone());
+
+        let ti = Arc::new(TestInstance::new(Some(cb), Some(&config)));
+        let auther = auther.clone();
+        with_server(ti.clone(), async move {
+            // Basic setup.
+            let c = ti.connection().await;
+            c.ping().await.unwrap();
+            let resp = c.negotiate_default_version().await.unwrap();
+            assert_eq!(resp.version, &[0], "version is correct");
+            assert_eq!(
+                resp.user_agent.unwrap(),
+                config::VERSION,
+                "user-agent is correct"
+            );
+            c.auth_external().await.unwrap();
+
+            let creds = CredentialClient::new(c).await.unwrap();
+            let mut stores = creds.list_stores().await.unwrap();
+            assert_eq!(stores.len(), 1, "one store");
+            assert_eq!(stores[0].path().await, "/memory/", "correct path");
+
+            let entries = creds.list_entries().await.unwrap().collect::<Vec<_>>();
+            assert_eq!(entries.len(), 1, "one store as entry");
+            assert_eq!(entries[0].path, "/memory/", "correct path for entry");
+            assert_eq!(
+                entries[0].needs_authentication,
+                Some(true),
+                "needs authentication"
+            );
+            assert_eq!(
+                entries[0].authentication_methods,
+                Some(vec![
+                    Bytes::from(b"PLAIN" as &[u8]),
+                    Bytes::from(b"keyboard-interactive" as &[u8])
+                ]),
+                "needs authentication with expected methods"
+            );
+
+            let e = stores[0].list_vaults().await.unwrap_err();
+            assert_eq!(ce_to_pe(e).code, ResponseCode::NeedsAuthentication);
+            auther.auth(&mut stores[0]).await;
+
+            let vaults = stores[0].list_vaults().await.unwrap();
+            assert!(vaults.is_empty(), "no vaults");
+            let vault = stores[0].create_vault(b"vault").await.unwrap();
+            let vaults = stores[0].list_vaults().await.unwrap();
+            assert_eq!(vaults.len(), 1, "no vaults");
+            assert_eq!(
+                vaults[0].path().await,
+                b"/memory/vault/" as &[u8],
+                "correct vault path"
+            );
+            assert_eq!(
+                vaults[0].path().await,
+                vault.path().await,
+                "consistent vault path"
+            );
+
+            let items = vault.list_entries().await.unwrap().collect::<Vec<_>>();
+            eprintln!("{:?}", items);
+            assert!(items.is_empty(), "no vault entries");
+
+            let mut cred1 = Credential {
+                username: Some(Bytes::from(b"username" as &[u8])),
+                secret: Bytes::from(b"secret" as &[u8]),
+                authtype: Some("PLAIN".into()),
+                kind: "api".into(),
+                title: Some("title".into()),
+                description: Some("description".into()),
+                service: Some("git".into()),
+                extra: BTreeMap::new(),
+                id: Bytes::new(),
+                location: vec![Location {
+                    protocol: Some("https".into()),
+                    host: Some("example.com".into()),
+                    port: Some(443),
+                    path: Some("/git/foo/bar".into()),
+                }],
+            };
+            cred1.id = cred1.generate_id();
+            assert_eq!(cred1.id.as_ref(), b"20aafdb3831287f75a74dd7c2843e7cbd87df92b91944f4311a940eabfa633651107f8bc24bfd563cc4c8de6f80b0e3a9e67af0e76f85044283531974a6be138", "credential has expected ID");
+            let cred1_path = Bytes::from(format_bytes!(b"/memory/vault/{}", cred1.id.as_ref()));
+            assert_eq!(cred1_path.as_ref(), b"/memory/vault/20aafdb3831287f75a74dd7c2843e7cbd87df92b91944f4311a940eabfa633651107f8bc24bfd563cc4c8de6f80b0e3a9e67af0e76f85044283531974a6be138", "credential path is as expected");
+
+            let mut cred2 = Credential {
+                username: Some(Bytes::from(b"someone-else" as &[u8])),
+                secret: Bytes::from(b"secret" as &[u8]),
+                authtype: Some("PLAIN".into()),
+                kind: "api".into(),
+                title: Some("title".into()),
+                description: Some("description".into()),
+                service: Some("git".into()),
+                extra: BTreeMap::new(),
+                id: Bytes::new(),
+                location: vec![Location {
+                    protocol: Some("https".into()),
+                    host: Some("example.com".into()),
+                    port: Some(443),
+                    path: Some("/git/foo/baz".into()),
+                }],
+            };
+            cred2.id = cred2.generate_id();
+            let cred2_path = Bytes::from(format_bytes!(
+                b"/memory/vault/foo/bar/{}",
+                cred2.id.as_ref()
+            ));
+            assert_eq!(cred2_path.as_ref(), b"/memory/vault/foo/bar/857ff0c8c6cad14f7e4e70b3ed3a69b673a8ed297c963fce899b7d445266737a35cb67485263ceac977daed3f191a69df03a9a85ac258b33a8bcc3e76692d1ea", "credential path is as expected");
+
+            vault.create_entry(&cred1).await.unwrap();
+            let items = vault.list_entries().await.unwrap().collect::<Vec<_>>();
+            assert_eq!(items.len(), 1, "one vault entry");
+            assert_eq!(items[0].path, cred1_path, "vault entry has expected path");
+
+            assert!(
+                vault.get_entry(b"abc123").await.unwrap().is_none(),
+                "no entry for absent credential"
+            );
+
+            let expected = vault.get_entry(&cred1.id).await.unwrap().unwrap();
+            assert_eq!(expected, cred1, "cred1 is round-tripped correctly");
+
+            let foodir = vault.create_directory(b"foo").await.unwrap();
+            let bardir = foodir.create_directory(b"bar").await.unwrap();
+            bardir.create_entry(&cred2).await.unwrap();
+            let items = bardir.list_entries().await.unwrap().collect::<Vec<_>>();
+            assert_eq!(items.len(), 1, "one vault entry in directory");
+            assert_eq!(
+                items[0].path, cred2_path,
+                "vault entry in directory has expected path"
+            );
+
+            let items = vault.list_directories().await.unwrap();
+            assert_eq!(items.len(), 1, "one directory in vault");
+            assert_eq!(
+                items[0].path().await.as_ref(),
+                b"/memory/vault/foo/",
+                "directory entry in vault has expected path"
+            );
+
+            let items = foodir.list_directories().await.unwrap();
+            assert_eq!(items.len(), 1, "one directory in vault directory");
+            assert_eq!(
+                items[0].path().await.as_ref(),
+                b"/memory/vault/foo/bar/",
+                "directory entry in vault directory has expected path"
+            );
+
+            let items = bardir.list_directories().await.unwrap();
+            assert_eq!(items.len(), 0, "no directory in vault directory");
+
+            let req = CredentialRequest {
+                username: FieldRequest::LiteralBytes(Bytes::copy_from_slice(b"someone-else")),
+                protocol: FieldRequest::LiteralString("https".into()),
+                host: FieldRequest::LiteralString("example.com".into()),
+                ..Default::default()
+            };
+            let cred = vault
+                .search_entry(&req, StoreSearchRecursionLevel::Boolean(true))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(cred, cred2, "recursively searched credential 2 is found");
+
+            let req = CredentialRequest {
+                username: FieldRequest::LiteralBytes(Bytes::copy_from_slice(b"username")),
+                protocol: FieldRequest::LiteralString("https".into()),
+                host: FieldRequest::LiteralString("example.com".into()),
+                ..Default::default()
+            };
+            let cred = vault
+                .search_entry(&req, StoreSearchRecursionLevel::Boolean(true))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(cred, cred1, "recursively searched credential 1 is found");
+
+            let req = CredentialRequest {
+                username: FieldRequest::LiteralBytes(Bytes::copy_from_slice(b"bob")),
+                protocol: FieldRequest::LiteralString("https".into()),
+                host: FieldRequest::LiteralString("example.com".into()),
+                ..Default::default()
+            };
+            let cred = vault
+                .search_entry(&req, StoreSearchRecursionLevel::Boolean(true))
+                .await
+                .unwrap();
+            assert!(cred.is_none(), "missing credential is missing");
+        });
+    }
 }
