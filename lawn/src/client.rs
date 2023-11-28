@@ -103,6 +103,10 @@ impl Connection {
         })
     }
 
+    pub(crate) fn config(&self) -> Arc<Config> {
+        self.config.clone()
+    }
+
     pub async fn ping(&self) -> Result<(), Error> {
         self.handler
             .send_message_simple::<Empty, Empty>(MessageKind::Ping, Some(true))
