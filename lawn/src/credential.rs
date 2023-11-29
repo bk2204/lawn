@@ -1,5 +1,6 @@
 use crate::client::Connection;
 use crate::error::MissingElementError;
+use crate::store::credential::CredentialPathComponentType;
 use crate::task::block_on_async;
 use async_trait::async_trait;
 use blake2::Digest;
@@ -78,6 +79,13 @@ impl Drop for ConnectionWrapper {
     }
 }
 
+pub enum CredentialObject {
+    Credential(Credential),
+    Store(CredentialStore),
+    Vault(CredentialVault),
+    Directory(CredentialDirectory),
+}
+
 pub struct CredentialClient {
     conn: Arc<ConnectionWrapper>,
     handle: CredentialDirectoryHandle,
@@ -132,6 +140,7 @@ impl CredentialClient {
         path: Bytes,
     ) -> Result<StoreSelectorID, CredentialError> {
         let req = AcquireStoreElementRequest { id, selector: path };
+        // TODO: gracefully handle NotFound
         let resp: AcquireStoreElementResponse = match conn
             .connection()
             .send_message_simple(MessageKind::AcquireStoreElement, Some(req))
@@ -172,6 +181,41 @@ impl CredentialClient {
             None => Err(CredentialError::EmptyResponse(
                 "when listing credential stores".into(),
             )),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub async fn get_object(
+        &self,
+        path: Bytes,
+    ) -> Result<Option<CredentialObject>, CredentialError> {
+        let store_id = self.conn.store_id();
+        let handle = CredentialDirectoryHandle {
+            path: path.clone(),
+            id: Some(Self::acquire_handle(self.conn.clone(), store_id, path.clone()).await?),
+            conn: self.conn.clone(),
+            store_id,
+        };
+        match CredentialPathComponentType::from_path(path.clone()) {
+            Some(CredentialPathComponentType::Top) | None => Ok(None),
+            Some(CredentialPathComponentType::Backend) => {
+                Ok(Some(CredentialObject::Store(CredentialStore { handle })))
+            }
+            Some(CredentialPathComponentType::Vault) => {
+                Ok(Some(CredentialObject::Vault(CredentialVault { handle })))
+            }
+            Some(CredentialPathComponentType::VaultDirectory) => {
+                Ok(Some(CredentialObject::Directory(CredentialDirectory {
+                    handle,
+                })))
+            }
+            Some(CredentialPathComponentType::Entry) => {
+                match handle.get_entry_from_path(path).await {
+                    Ok(Some(c)) => Ok(Some(CredentialObject::Credential(c))),
+                    Ok(None) => Ok(None),
+                    Err(e) => Err(e),
+                }
+            }
         }
     }
 }
@@ -345,6 +389,42 @@ impl CredentialDirectoryHandle {
             store_id: self.store_id,
         })
     }
+
+    async fn get_entry_from_path(
+        &self,
+        path: Bytes,
+    ) -> Result<Option<Credential>, CredentialError> {
+        let logger = self.conn.connection().config().logger();
+        trace!(
+            logger,
+            "credential: fetching entry {}",
+            path.as_ref().as_log_str()
+        );
+        let req = ReadStoreElementRequest {
+            id: self.store_id,
+            selector: StoreSelector::Path(path),
+        };
+        match self
+            .conn
+            .connection()
+            .send_message_simple::<_, ReadStoreElementResponse<CredentialStoreElement>>(
+                MessageKind::ReadStoreElement,
+                Some(req),
+            )
+            .await
+        {
+            Ok(Some(elem)) => match elem.body.try_into() {
+                Ok(cred) => Ok(Some(cred)),
+                Err(_) => Err(CredentialError::UnsupportedSerialization),
+            },
+            Ok(None) => Err(CredentialError::UnsupportedSerialization),
+            Err(e) => match ProtocolError::try_from(e) {
+                Ok(pe) if pe.code == ResponseCode::NotFound => Ok(None),
+                Ok(pe) => Err(crate::error::Error::from(handler::Error::from(pe)).into()),
+                Err(e) => Err(e.0.into()),
+            },
+        }
+    }
 }
 
 #[async_trait]
@@ -447,37 +527,12 @@ impl CredentialHandle for CredentialDirectoryHandle {
     }
 
     async fn get_entry(&self, component: &[u8]) -> Result<Option<Credential>, CredentialError> {
-        let path = format_bytes!(b"{}{}", self.path().await.as_ref(), component);
-        let logger = self.conn.connection().config().logger();
-        trace!(
-            logger,
-            "credential: fetching entry {}",
-            path.as_slice().as_log_str()
-        );
-        let req = ReadStoreElementRequest {
-            id: self.store_id,
-            selector: StoreSelector::Path(path.into()),
-        };
-        match self
-            .conn
-            .connection()
-            .send_message_simple::<_, ReadStoreElementResponse<CredentialStoreElement>>(
-                MessageKind::ReadStoreElement,
-                Some(req),
-            )
-            .await
-        {
-            Ok(Some(elem)) => match elem.body.try_into() {
-                Ok(cred) => Ok(Some(cred)),
-                Err(_) => Err(CredentialError::UnsupportedSerialization),
-            },
-            Ok(None) => Err(CredentialError::UnsupportedSerialization),
-            Err(e) => match ProtocolError::try_from(e) {
-                Ok(pe) if pe.code == ResponseCode::NotFound => Ok(None),
-                Ok(pe) => Err(crate::error::Error::from(handler::Error::from(pe)).into()),
-                Err(e) => Err(e.0.into()),
-            },
-        }
+        let path = Bytes::from(format_bytes!(
+            b"{}{}",
+            self.path().await.as_ref(),
+            component
+        ));
+        self.get_entry_from_path(path).await
     }
 
     async fn create_entry(&self, req: &Credential) -> Result<(), CredentialError> {
