@@ -30,6 +30,7 @@ mod credential;
 mod encoding;
 mod error;
 mod fs_proxy;
+mod serializer;
 mod server;
 mod ssh_proxy;
 mod store;

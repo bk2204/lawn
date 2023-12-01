@@ -4,6 +4,11 @@ Files: *
 Copyright: 2022 brian m. carlson
 License: Expat
 
+Files: lawn/src/serializer/script.rs
+Copyright: 2023 brian m. carlson
+           Contributors to the Rust Project
+License: Expat
+
 License: Expat
  Permission is hereby granted, free of charge, to any
  person obtaining a copy of this software and associated
