@@ -123,7 +123,11 @@ impl From<crate::credential::CredentialError> for Error {
                 Error::new_full(ErrorKind::MissingResponse, err, s)
             }
             E::ProtocolFailure(e) => e,
-            E::Conflict | E::NotFound | E::UnsupportedSerialization => {
+            E::Conflict
+            | E::NotFound
+            | E::UnsupportedSerialization
+            | E::InvalidPath
+            | E::NotADirectory => {
                 let s = err.to_string();
                 Error::new_full(ErrorKind::CredentialError, err, s)
             }

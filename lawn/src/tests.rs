@@ -1,5 +1,6 @@
 use crate::client;
 use crate::config::{self, Config, ConfigBuilder};
+use crate::credential::script::ScriptRunner;
 use crate::credential::{CredentialHandle, CredentialStore};
 use crate::server;
 use async_trait::async_trait;
@@ -13,7 +14,7 @@ use std::convert::TryFrom;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
-use std::io::{Read, Write};
+use std::io::{Cursor, Read, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -866,6 +867,94 @@ fn can_round_trip_data_through_memory_credential_helper() {
                 .await
                 .unwrap();
             assert!(cred.is_none(), "missing credential is missing");
+        });
+    }
+}
+
+async fn script_runner<'a, 'b>(
+    conn: Arc<client::Connection>,
+    msg: &'a [u8],
+    writable: &'b mut Vec<u8>,
+) -> ScriptRunner<Cursor<&'a [u8]>, Cursor<&'b mut Vec<u8>>> {
+    ScriptRunner::new(conn, Cursor::new(msg), Cursor::new(writable))
+        .await
+        .unwrap()
+}
+
+async fn run_script_command(conn: Arc<client::Connection>, msg: &[u8]) -> Vec<u8> {
+    let mut v = Vec::new();
+    let mut runner = script_runner(conn, msg, &mut v).await;
+    while runner.run_command().await.unwrap() {}
+    v
+}
+
+#[test]
+fn can_script_credential_ops_with_memory_backend() {
+    use crate::credential::{CredentialClient, CredentialHandle};
+
+    let authers: [Arc<dyn Auther + Send + Sync>; 2] =
+        [Arc::new(PlainAuth), Arc::new(KeyboardInteractiveAuth)];
+
+    let config = format!(
+        "{}\n{}",
+        TestInstance::default_config_file(),
+        "
+    credential:
+        if: true
+        backends:
+            - name: memory
+              type: memory
+              if: true
+              options:
+                  token: abc123
+"
+    );
+    let mut capabilities = Capability::implemented();
+    capabilities.insert(Capability::StoreCredential);
+
+    for auther in &authers {
+        let mut cb = ConfigBuilder::new();
+        cb.capabilities(capabilities.clone());
+
+        let ti = Arc::new(TestInstance::new(Some(cb), Some(&config)));
+        let auther = auther.clone();
+        with_server(ti.clone(), async move {
+            // Basic setup.
+            let c = ti.connection().await;
+            c.ping().await.unwrap();
+            let resp = c.negotiate_default_version().await.unwrap();
+            assert_eq!(resp.version, &[0], "version is correct");
+            assert_eq!(
+                resp.user_agent.unwrap(),
+                config::VERSION,
+                "user-agent is correct"
+            );
+            c.auth_external().await.unwrap();
+
+            let creds = CredentialClient::new(c.clone()).await.unwrap();
+            let mut stores = creds.list_stores().await.unwrap();
+            assert_eq!(stores.len(), 1, "one store");
+            assert_eq!(stores[0].path().await, "/memory/", "correct path");
+            let e = stores[0].list_vaults().await.unwrap_err();
+            assert_eq!(ce_to_pe(e).code, ResponseCode::NeedsAuthentication);
+            auther.auth(&mut stores[0]).await;
+
+            let vaults = stores[0].list_vaults().await.unwrap();
+            assert!(vaults.is_empty(), "no vaults");
+
+            assert_eq!(
+                run_script_command(c.clone(), b"a01 mkdir /memory/vault/\n").await,
+                b"a01 ok mkdir /memory/vault/\n",
+                "mkdir script succeeds"
+            );
+
+            let vaults = stores[0].list_vaults().await.unwrap();
+            assert_eq!(vaults.len(), 1, "no vaults");
+            assert_eq!(
+                vaults[0].path().await,
+                b"/memory/vault/" as &[u8],
+                "correct vault path"
+            );
         });
     }
 }

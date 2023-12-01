@@ -1,5 +1,5 @@
 use crate::client::Connection;
-use crate::error::MissingElementError;
+use crate::error::{ExtendedError, MissingElementError};
 use crate::store::credential::CredentialPathComponentType;
 use crate::task::block_on_async;
 use async_trait::async_trait;
@@ -31,6 +31,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 pub mod protocol;
+pub mod script;
 
 #[derive(Debug, Error)]
 pub enum CredentialError {
@@ -42,8 +43,29 @@ pub enum CredentialError {
     NotFound,
     #[error("conflict")]
     Conflict,
+    #[error("invalid path")]
+    InvalidPath,
+    #[error("not a directory")]
+    NotADirectory,
     #[error("unsupported serialization")]
     UnsupportedSerialization,
+}
+
+impl ExtendedError for CredentialError {
+    fn error_types(&self) -> Cow<'static, [Cow<'static, str>]> {
+        Cow::Borrowed(&[Cow::Borrowed("credential-error")])
+    }
+    fn error_tag(&self) -> Cow<'static, str> {
+        match self {
+            Self::EmptyResponse(..) => "empty-response".into(),
+            Self::ProtocolFailure(..) => "protocol-failure".into(),
+            Self::NotFound => "not-found".into(),
+            Self::Conflict => "conflict".into(),
+            Self::InvalidPath => "invalid-path".into(),
+            Self::NotADirectory => "not-a-directory".into(),
+            Self::UnsupportedSerialization => "unsupported-serialization".into(),
+        }
+    }
 }
 
 struct ConnectionWrapper {
