@@ -131,6 +131,20 @@ impl From<crate::credential::CredentialError> for Error {
     }
 }
 
+/// A trait to allow logging and scripting of error values.
+pub trait ExtendedError {
+    /// The types of errors.
+    ///
+    /// This provides a list of string error types that classify this error.  For example, a
+    /// credential error that wraps an I/O error might indicate `["credential-error", "io-error"].
+    fn error_types(&self) -> Cow<'static, [Cow<'static, str>]>;
+    /// The tag of an error.
+    ///
+    /// This tag represents the error as a simple dash-divided string that indicates this specific
+    /// error.  This will usually be a kebab-case version of the error kind.
+    fn error_tag(&self) -> Cow<'static, str>;
+}
+
 #[derive(Debug)]
 pub struct WrongTypeError<T>(pub T);
 
