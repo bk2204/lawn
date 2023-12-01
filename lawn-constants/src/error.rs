@@ -347,10 +347,22 @@ impl From<Error> for io::Error {
 }
 
 impl From<io::Error> for Error {
+    fn from(err: io::Error) -> Error {
+        Error::from(&err)
+    }
+}
+
+impl<'a> From<&'a mut io::Error> for Error {
+    fn from(err: &'a mut io::Error) -> Error {
+        Error::from(&*err)
+    }
+}
+
+impl<'a> From<&'a io::Error> for Error {
     // Some OSes, like Linux, are missing separate values for some errors and we don't want a
     // warning here.
     #[allow(unreachable_patterns)]
-    fn from(err: io::Error) -> Error {
+    fn from(err: &'a io::Error) -> Error {
         match err.raw_os_error() {
             Some(libc::EPERM) => Self::EPERM,
             Some(libc::ENOENT) => Self::ENOENT,
