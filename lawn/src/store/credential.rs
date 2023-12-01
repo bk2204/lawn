@@ -5,6 +5,7 @@ use super::{
 };
 use crate::config::{Config, CredentialBackendType};
 use crate::credential::CredentialParserError;
+use crate::server::SharedServerState;
 use bytes::Bytes;
 use format_bytes::format_bytes;
 use lawn_protocol::protocol::{self, ResponseCode, StoreID, StoreSelectorID};
@@ -488,16 +489,18 @@ pub struct CredentialStore {
     next_id: Arc<AtomicU32>,
     elems: CredentialElements,
     backends: Arc<Mutex<BTreeMap<Bytes, Arc<dyn CredentialBackend + Send + Sync>>>>,
+    shared_state: Arc<SharedServerState>,
 }
 
 impl CredentialStore {
-    pub fn new(id: StoreID, config: Arc<Config>) -> Self {
+    pub fn new(id: StoreID, config: Arc<Config>, shared_state: Arc<SharedServerState>) -> Self {
         Self {
             id,
             elems: Arc::new(RwLock::new(BTreeMap::new())),
             next_id: Arc::new(AtomicU32::new(0)),
             config,
             backends: Arc::new(Mutex::new(BTreeMap::new())),
+            shared_state,
         }
     }
 
@@ -537,6 +540,7 @@ impl CredentialStore {
                         self.next_id.clone(),
                         Bytes::copy_from_slice(name),
                         token.as_deref(),
+                        self.shared_state.clone(),
                     )))
                 }
                 _ => None,

@@ -4,6 +4,7 @@ use super::helpers::{
 use super::{CredentialBackendHandle, CredentialElements, CredentialPathComponentType};
 use crate::config::Config;
 use crate::credential::{Credential, CredentialParserError, CredentialRequest};
+use crate::server::SharedServerState;
 use crate::store::{StoreAuthenticationMetadata, StorePath};
 use bytes::Bytes;
 use format_bytes::format_bytes;
@@ -145,7 +146,7 @@ pub struct MemoryCredentialBackend {
     token: Option<String>,
     next_id: Arc<AtomicU32>,
     elems: CredentialElements,
-    vaults: LockableData,
+    vaults: Arc<LockableData>,
 }
 
 impl MemoryCredentialBackend {
@@ -155,15 +156,52 @@ impl MemoryCredentialBackend {
         ids: Arc<AtomicU32>,
         name: Bytes,
         token: Option<&str>,
+        shared_state: Arc<SharedServerState>,
     ) -> Self {
+        let st = shared_state.clone();
+        let key = Self::key_from_name(name.clone());
+        let mut creds = st.credentials().write().unwrap();
+        let logger = config.logger();
+        let vaults = match creds.get(&key).cloned() {
+            Some(v) => {
+                trace!(logger, "server: memory backend: found cache entry");
+                match v.downcast::<LockableData>().ok() {
+                    Some(data) => {
+                        trace!(
+                            logger,
+                            "server: memory backend: found cached data: locked {}",
+                            data.locked.load(Ordering::Acquire)
+                        );
+                        Some(data)
+                    }
+                    None => {
+                        trace!(logger, "server: memory backend: found unknown data");
+                        None
+                    }
+                }
+            }
+            None => {
+                trace!(
+                    logger,
+                    "server: memory backend: no cache entry; using default"
+                );
+                None
+            }
+        }
+        .unwrap_or_else(|| Arc::new(LockableData::new(token.is_some())));
+        creds.insert(key, vaults.clone());
         Self {
             config,
             name,
             next_id: ids,
             elems,
             token: token.map(|t| t.to_owned()),
-            vaults: LockableData::new(token.is_some()),
+            vaults,
         }
+    }
+
+    fn key_from_name(name: Bytes) -> Bytes {
+        format_bytes!(b"credential:memory:storage:v1:{}", name.as_ref()).into()
     }
 
     fn components(&self, id: StoreSelectorID) -> Result<Vec<Bytes>, CredentialParserError> {

@@ -1093,7 +1093,11 @@ impl Server {
                         let id = stores.next_id();
                         stores.insert(
                             id,
-                            Arc::new(CredentialStore::new(id, state.config().clone())),
+                            Arc::new(CredentialStore::new(
+                                id,
+                                state.config().clone(),
+                                state.shared_state.clone(),
+                            )),
                         );
                         Ok(id)
                     }
@@ -1980,7 +1984,7 @@ impl Server {
 /// for cached credentials and the configuration.
 #[allow(dead_code)]
 pub struct SharedServerState {
-    credentials: RwLock<BTreeMap<Bytes, Value>>,
+    credentials: RwLock<BTreeMap<Bytes, Arc<dyn Any + Send + Sync>>>,
     config: Arc<Config>,
 }
 
@@ -1995,7 +1999,7 @@ impl SharedServerState {
 
     /// Get the credentials stored in this state.
     #[allow(dead_code)]
-    pub fn credentials(&self) -> &RwLock<BTreeMap<Bytes, Value>> {
+    pub fn credentials(&self) -> &RwLock<BTreeMap<Bytes, Arc<dyn Any + Send + Sync>>> {
         &self.credentials
     }
 
