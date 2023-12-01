@@ -107,7 +107,7 @@ pub enum ResponseCode {
 
     /// The message type was not enabled.
     NotEnabled = 0x00020000,
-    /// The message type was not supported.
+    /// The message type or operation was not supported.
     NotSupported = 0x00020001,
     /// The parameters were not supported.
     ParametersNotSupported = 0x00020002,
@@ -330,6 +330,7 @@ impl Capability {
             Self::Channel9P,
             Self::ChannelSFTP,
             Self::ExtensionAllocate,
+            Self::StoreCredential,
         ]
         .iter()
         .cloned()
@@ -345,6 +346,7 @@ impl Capability {
                 | Self::Channel9P
                 | Self::ChannelSFTP
                 | Self::ExtensionAllocate
+                | Self::StoreCredential
         )
     }
 }

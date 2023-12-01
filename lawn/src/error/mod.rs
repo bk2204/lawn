@@ -243,6 +243,7 @@ pub enum ErrorKind {
     ConfigurationSpawnError,
     FSProxyError,
     CredentialError,
+    ScriptError,
 }
 
 impl From<ErrorKind> for i32 {

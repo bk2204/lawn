@@ -10,17 +10,21 @@ extern crate num_derive;
 extern crate tokio;
 
 use crate::client::Connection;
+use crate::credential::protocol::git::GitProtocolHandler;
 use crate::encoding::{escape, osstr, path};
 use bytes::Bytes;
 use clap::{App, Arg, ArgMatches};
 use lawn_protocol::config::Logger;
-use lawn_protocol::protocol::{ClipboardChannelOperation, ClipboardChannelTarget};
+use lawn_protocol::protocol::{
+    ClipboardChannelOperation, ClipboardChannelTarget, StoreSearchRecursionLevel,
+};
 use std::ffi::{OsStr, OsString};
+use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::runtime::Handle;
 
 mod channel;
@@ -239,6 +243,255 @@ fn find_or_autostart_server(
     match find_server_socket(handle, socket, config) {
         Some(s) => Ok(s),
         None => Err(Error::new(ErrorKind::SocketConnectionFailure)),
+    }
+}
+
+async fn credentials_all_vaults(
+    creds: &credential::CredentialClient,
+) -> Result<Vec<credential::CredentialVault>, credential::CredentialError> {
+    let stores = creds.list_stores().await?;
+    let mut vaults = Vec::new();
+    for store in stores {
+        vaults.extend(store.list_vaults().await?)
+    }
+    Ok(vaults)
+}
+
+enum GitCredentialOperation {
+    Get,
+    Store,
+    Erase,
+}
+
+fn dispatch_credential_script(
+    config: Arc<config::Config>,
+    main: &ArgMatches,
+    _m: &ArgMatches,
+) -> Result<(), Error> {
+    let logger = config.logger();
+    logger.trace("Starting runtime");
+    let runtime = runtime();
+    let socket =
+        find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
+    runtime.block_on(async {
+        let client = client::Client::new(config);
+        match socket
+            .peer_addr()
+            .ok()
+            .and_then(|x| x.as_pathname().map(|x| x.to_owned()))
+        {
+            Some(name) => debug!(logger, "Connecting to socket {}", escape(path(&*name))),
+            None => debug!(logger, "Connecting to anonymous socket"),
+        }
+        let conn = client.connect_to_socket(socket, false).await?;
+        let _ = conn.negotiate_default_version().await;
+        let _ = conn.auth_external().await;
+        let runner = crate::credential::script::ScriptRunner::new(
+            conn.clone(),
+            tokio::io::stdin(),
+            tokio::io::stdout(),
+        )
+        .await;
+        let mut runner = match runner {
+            Ok(runner) => runner,
+            Err(e) => {
+                return Err(Error::new_full(
+                    ErrorKind::CredentialError,
+                    Box::new(e),
+                    "error initializing credential client",
+                ))
+            }
+        };
+        loop {
+            match runner.run_command().await {
+                Ok(false) => break,
+                Ok(true) => continue,
+                Err(e) => {
+                    return Err(Error::new_full(
+                        ErrorKind::ScriptError,
+                        Box::new(e),
+                        "error parsing script input",
+                    ))
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
+fn dispatch_credential_git(
+    config: Arc<config::Config>,
+    main: &ArgMatches,
+    m: &ArgMatches,
+) -> Result<(), Error> {
+    use credential::CredentialHandle;
+
+    let op = match m.subcommand() {
+        ("get", Some(_)) => GitCredentialOperation::Get,
+        ("store", Some(_)) => GitCredentialOperation::Store,
+        ("erase", Some(_)) => GitCredentialOperation::Erase,
+        _ => return Err(Error::new(ErrorKind::Unimplemented)),
+    };
+    let logger = config.logger();
+    logger.trace("Starting runtime");
+    let runtime = runtime();
+    let socket =
+        find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
+    runtime.block_on(async {
+        let client = client::Client::new(config);
+        match socket
+            .peer_addr()
+            .ok()
+            .and_then(|x| x.as_pathname().map(|x| x.to_owned()))
+        {
+            Some(name) => logger.debug(&format!("Connecting to socket {}", escape(path(&*name)))),
+            None => logger.debug("Connecting to anonymous socket"),
+        }
+        let conn = client.connect_to_socket(socket, false).await?;
+        let _ = conn.negotiate_default_version().await;
+        let _ = conn.auth_external().await;
+        let creds = credential::CredentialClient::new(conn).await?;
+
+        let stdin = Arc::new(Mutex::new(io::stdin()));
+        let stdout = Arc::new(Mutex::new(io::stdout()));
+        let handler = GitProtocolHandler::new(stdin, stdout, Some("git"), Some("api"), None);
+        match op {
+            GitCredentialOperation::Get => {
+                let rhandler = handler.clone();
+                let req = match tokio::task::spawn_blocking(|| rhandler.parse_fill_request()).await
+                {
+                    Ok(Ok(req)) => req,
+                    Ok(Err(e)) => {
+                        return Err(Error::new_full(
+                            ErrorKind::CredentialError,
+                            Box::new(e),
+                            "error parsing credential input",
+                        ))
+                    }
+                    Err(e) => {
+                        return Err(Error::new_full(
+                            ErrorKind::CredentialError,
+                            Box::new(e),
+                            "error parsing credential input",
+                        ))
+                    }
+                };
+                let vaults = match credentials_all_vaults(&creds).await {
+                    Ok(vaults) => vaults,
+                    Err(e) => {
+                        return Err(Error::new_full(
+                            ErrorKind::CredentialError,
+                            Box::new(e),
+                            "error acquiring credential vaults",
+                        ))
+                    }
+                };
+                for vault in vaults {
+                    match vault
+                        .search_entry(&req, StoreSearchRecursionLevel::Boolean(true))
+                        .await
+                    {
+                        Ok(Some(cred)) => {
+                            let rhandler = handler.clone();
+                            let _ = tokio::task::spawn_blocking(move || {
+                                rhandler.send_fill_response(Some(&cred))
+                            })
+                            .await;
+                            return Ok(());
+                        }
+                        Ok(None) => continue,
+                        Err(e) => {
+                            return Err(Error::new_full(
+                                ErrorKind::CredentialError,
+                                Box::new(e),
+                                "error searching credentials",
+                            ))
+                        }
+                    };
+                }
+                let _ = tokio::task::spawn_blocking(|| handler.send_fill_response(None)).await;
+                Ok(())
+            }
+            kind => {
+                let rhandler = handler.clone();
+                let cred = match tokio::task::spawn_blocking(|| {
+                    rhandler.parse_approve_reject_request(true)
+                })
+                .await
+                {
+                    Ok(Ok(Some(cred))) => cred,
+                    Ok(Ok(None)) => {
+                        return Err(Error::new_with_message(
+                            ErrorKind::CredentialError,
+                            "error parsing credential input: missing secret",
+                        ))
+                    }
+                    Ok(Err(e)) => {
+                        return Err(Error::new_full(
+                            ErrorKind::CredentialError,
+                            Box::new(e),
+                            "error parsing credential input",
+                        ))
+                    }
+                    Err(e) => {
+                        return Err(Error::new_full(
+                            ErrorKind::CredentialError,
+                            Box::new(e),
+                            "error parsing credential input",
+                        ))
+                    }
+                };
+                let vaults = match credentials_all_vaults(&creds).await {
+                    Ok(vaults) => vaults,
+                    Err(e) => {
+                        return Err(Error::new_full(
+                            ErrorKind::CredentialError,
+                            Box::new(e),
+                            "error acquiring credential vaults",
+                        ))
+                    }
+                };
+                match vaults.first() {
+                    Some(vault) => {
+                        let res = match kind {
+                            GitCredentialOperation::Store => vault.put_entry(&cred).await,
+                            GitCredentialOperation::Erase => vault.delete_entry(&cred).await,
+                            GitCredentialOperation::Get => unreachable!(),
+                        };
+                        match (res, kind) {
+                            (Ok(()), _) => Ok(()),
+                            (Err(e), GitCredentialOperation::Store) => Err(Error::new_full(
+                                ErrorKind::CredentialError,
+                                Box::new(e),
+                                "error putting entry",
+                            )),
+                            (Err(e), GitCredentialOperation::Erase) => Err(Error::new_full(
+                                ErrorKind::CredentialError,
+                                Box::new(e),
+                                "error deleting entry",
+                            )),
+                            (Err(_), GitCredentialOperation::Get) => unreachable!(),
+                        }
+                    }
+                    None => Err(Error::new_with_message(
+                        ErrorKind::CredentialError,
+                        "error acquiring credential vaults: no credential vaults found",
+                    )),
+                }
+            }
+        }
+    })
+}
+
+fn dispatch_credential(
+    config: Arc<config::Config>,
+    main: &ArgMatches,
+    m: &ArgMatches,
+) -> Result<(), Error> {
+    match m.subcommand() {
+        ("script", Some(m)) => dispatch_credential_script(config, main, m),
+        ("git", Some(m)) => dispatch_credential_git(config, main, m),
+        _ => Err(Error::new(ErrorKind::Unimplemented)),
     }
 }
 
@@ -705,6 +958,25 @@ fn dispatch(verbosity: &mut i32) -> Result<(), Error> {
                 .arg(Arg::with_name("clipboard").long("clipboard").short("b").help("Use the CLIPBOARD selection on X11 or the regular clipboard on other platforms")),
         )
         .subcommand(
+            App::new("credential")
+                .about("Query credentials")
+                .subcommand(App::new("script")
+                            .about("Take scripting commands from standard input")
+                            )
+                .subcommand(App::new("git")
+                            .about("Operate as a Git credential helper")
+                            .subcommand(App::new("get")
+                                        .about("Fill credentials using the Git credential protocol")
+                                    )
+                            .subcommand(App::new("store")
+                                        .about("Approve credentials using the Git credential protocol")
+                                    )
+                            .subcommand(App::new("erase")
+                                        .about("Reject credentials using the Git credential protocol")
+                                    )
+                            )
+        )
+        .subcommand(
             App::new("proxy")
                 .about("Create an SSH agent suitable which can be used for Lawn commands")
                 .arg(Arg::with_name("ssh").long("ssh"))
@@ -734,6 +1006,7 @@ fn dispatch(verbosity: &mut i32) -> Result<(), Error> {
         config.set_detach(false);
     }
     match matches.subcommand() {
+        ("credential", Some(m)) => dispatch_credential(config, &matches, m),
         ("server", Some(m)) => dispatch_server(config, &matches, m),
         ("query", Some(m)) => dispatch_query(config, &matches, m),
         ("clip", Some(m)) => dispatch_clip(config, &matches, m),
