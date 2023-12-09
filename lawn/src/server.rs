@@ -1252,6 +1252,12 @@ impl Server {
                     Some(st) => st,
                     None => return Err(ResponseCode::NotFound.into()),
                 };
+                let capabilities = state.config().capabilities();
+                let desired: protocol::Capability =
+                    (Bytes::from(b"auth" as &[u8]), Some(m.method.clone())).into();
+                if !capabilities.contains(&desired) {
+                    return Err(ResponseCode::ParametersNotSupported.into());
+                }
                 match st.get(m.selector) {
                     Some(se) => match se.authenticate(m.method.clone(), m.message) {
                         Ok((resp, more)) => {

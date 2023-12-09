@@ -595,6 +595,7 @@ fn ce_to_pe(e: crate::credential::CredentialError) -> protocol::Error {
 #[async_trait]
 trait Auther {
     async fn auth(&self, cs: &mut CredentialStore);
+    async fn try_auth(&self, cs: &mut CredentialStore) -> Result<(), protocol::Error>;
 }
 
 struct PlainAuth;
@@ -602,6 +603,10 @@ struct PlainAuth;
 #[async_trait]
 impl Auther for PlainAuth {
     async fn auth(&self, cs: &mut CredentialStore) {
+        self.try_auth(cs).await.unwrap()
+    }
+
+    async fn try_auth(&self, cs: &mut CredentialStore) -> Result<(), protocol::Error> {
         let resp = cs
             .authenticate(
                 None,
@@ -609,9 +614,10 @@ impl Auther for PlainAuth {
                 Some(Bytes::from(b"\x00\x00abc123" as &[u8])),
             )
             .await
-            .unwrap();
+            .map_err(|e| ce_to_pe(e))?;
         assert!(resp.0.is_none(), "no continuation ID response from PLAIN");
         assert!(resp.1.is_none(), "empty response from PLAIN");
+        Ok(())
     }
 }
 
@@ -620,6 +626,10 @@ struct KeyboardInteractiveAuth;
 #[async_trait]
 impl Auther for KeyboardInteractiveAuth {
     async fn auth(&self, cs: &mut CredentialStore) {
+        self.try_auth(cs).await.unwrap()
+    }
+
+    async fn try_auth(&self, cs: &mut CredentialStore) -> Result<(), protocol::Error> {
         use lawn_protocol::protocol::{
             KeyboardInteractiveAuthenticationRequest, KeyboardInteractiveAuthenticationResponse,
         };
@@ -627,7 +637,7 @@ impl Auther for KeyboardInteractiveAuth {
         let (id, resp) = cs
             .authenticate(None, b"keyboard-interactive", None)
             .await
-            .unwrap();
+            .map_err(|e| ce_to_pe(e))?;
         let id = id.expect("valid ID for keyboard-interactive first step");
         let resp = resp.unwrap();
         let req: KeyboardInteractiveAuthenticationRequest = serde_cbor::from_slice(&resp).unwrap();
@@ -641,12 +651,13 @@ impl Auther for KeyboardInteractiveAuth {
         let resp = cs
             .authenticate(Some(id), b"keyboard-interactive", Some(resp))
             .await
-            .unwrap();
+            .map_err(|e| ce_to_pe(e))?;
         assert!(
             resp.0.is_none(),
             "no ID for keyboard-interactive second step"
         );
         assert!(resp.1.is_none(), "empty response from keyboard-interactive");
+        Ok(())
     }
 }
 
@@ -867,6 +878,99 @@ fn can_round_trip_data_through_memory_credential_helper() {
                 .await
                 .unwrap();
             assert!(cred.is_none(), "missing credential is missing");
+        });
+    }
+}
+
+#[test]
+fn rejects_store_auth_with_disallowed_types() {
+    use crate::credential::{CredentialClient, CredentialHandle};
+
+    let auth: [(Arc<dyn Auther + Send + Sync>, &[u8], bool); 4] = [
+        (Arc::new(PlainAuth), b"PLAIN", true),
+        (
+            Arc::new(KeyboardInteractiveAuth),
+            b"keyboard-interactive",
+            true,
+        ),
+        (Arc::new(PlainAuth), b"keyboard-interactive", false),
+        (Arc::new(KeyboardInteractiveAuth), b"PLAIN", false),
+    ];
+
+    let config = format!(
+        "{}\n{}",
+        TestInstance::default_config_file(),
+        "
+    credential:
+        if: true
+        backends:
+            - name: memory
+              type: memory
+              if: true
+              options:
+                  token: abc123
+"
+    );
+    let mut capabilities = Capability::implemented();
+    capabilities.insert(Capability::StoreCredential);
+
+    for (auther, scheme, success) in auth.iter() {
+        let mut cb = ConfigBuilder::new();
+        let capabilities = capabilities
+            .iter()
+            .cloned()
+            .filter(|capa| {
+                let (first, second) = (capa.clone()).into();
+                first.as_ref() != b"auth" || second.as_deref() == Some(scheme.as_ref())
+            })
+            .collect::<BTreeSet<_>>();
+        cb.capabilities(capabilities);
+
+        let ti = Arc::new(TestInstance::new(Some(cb), Some(&config)));
+        let auther = auther.clone();
+        let success = *success;
+        with_server(ti.clone(), async move {
+            // Basic setup.
+            let c = ti.connection().await;
+            c.ping().await.unwrap();
+            let resp = c.negotiate_default_version().await.unwrap();
+            assert_eq!(resp.version, &[0], "version is correct");
+            assert_eq!(
+                resp.user_agent.unwrap(),
+                config::VERSION,
+                "user-agent is correct"
+            );
+            c.auth_external().await.unwrap();
+
+            let creds = CredentialClient::new(c).await.unwrap();
+            let mut stores = creds.list_stores().await.unwrap();
+            assert_eq!(stores.len(), 1, "one store");
+            assert_eq!(stores[0].path().await, "/memory/", "correct path");
+
+            let entries = creds.list_entries().await.unwrap().collect::<Vec<_>>();
+            assert_eq!(entries.len(), 1, "one store as entry");
+            assert_eq!(entries[0].path, "/memory/", "correct path for entry");
+            assert_eq!(
+                entries[0].needs_authentication,
+                Some(true),
+                "needs authentication"
+            );
+            assert_eq!(
+                entries[0].authentication_methods,
+                Some(vec![
+                    Bytes::from(b"PLAIN" as &[u8]),
+                    Bytes::from(b"keyboard-interactive" as &[u8])
+                ]),
+                "needs authentication with expected methods"
+            );
+
+            let e = stores[0].list_vaults().await.unwrap_err();
+            assert_eq!(ce_to_pe(e).code, ResponseCode::NeedsAuthentication);
+            assert_eq!(
+                auther.try_auth(&mut stores[0]).await.is_ok(),
+                success,
+                "success for auth type is as expected"
+            );
         });
     }
 }

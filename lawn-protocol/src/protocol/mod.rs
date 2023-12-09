@@ -311,6 +311,8 @@ pub enum MessageKind {
 #[derive(Debug, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
 pub enum Capability {
     AuthExternal,
+    AuthKeyboardInteractive,
+    AuthPlain,
     ChannelCommand,
     Channel9P,
     ChannelSFTP,
@@ -325,6 +327,8 @@ impl Capability {
     pub fn implemented() -> BTreeSet<Capability> {
         [
             Self::AuthExternal,
+            Self::AuthKeyboardInteractive,
+            Self::AuthPlain,
             Self::ChannelCommand,
             Self::ChannelClipboard,
             Self::Channel9P,
@@ -341,6 +345,8 @@ impl Capability {
         matches!(
             self,
             Self::AuthExternal
+                | Self::AuthKeyboardInteractive
+                | Self::AuthPlain
                 | Self::ChannelCommand
                 | Self::ChannelClipboard
                 | Self::Channel9P
@@ -358,6 +364,11 @@ impl From<Capability> for (Bytes, Option<Bytes>) {
                 (b"auth" as &[u8]).into(),
                 Some((b"EXTERNAL" as &[u8]).into()),
             ),
+            Capability::AuthKeyboardInteractive => (
+                (b"auth" as &[u8]).into(),
+                Some((b"keyboard-interactive" as &[u8]).into()),
+            ),
+            Capability::AuthPlain => ((b"auth" as &[u8]).into(), Some((b"PLAIN" as &[u8]).into())),
             Capability::ChannelCommand => (
                 (b"channel" as &[u8]).into(),
                 Some((b"command" as &[u8]).into()),
@@ -388,6 +399,8 @@ impl From<(&[u8], Option<&[u8]>)> for Capability {
     fn from(data: (&[u8], Option<&[u8]>)) -> Capability {
         match data {
             (b"auth", Some(b"EXTERNAL")) => Capability::AuthExternal,
+            (b"auth", Some(b"PLAIN")) => Capability::AuthPlain,
+            (b"auth", Some(b"keyboard-interactive")) => Capability::AuthKeyboardInteractive,
             (b"channel", Some(b"command")) => Capability::ChannelCommand,
             (b"channel", Some(b"9p")) => Capability::Channel9P,
             (b"channel", Some(b"sftp")) => Capability::ChannelSFTP,
