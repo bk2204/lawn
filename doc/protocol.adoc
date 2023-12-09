@@ -8,6 +8,41 @@ https://datatracker.ietf.org/doc/html/rfc2119[RFC 2119].
 The CBOR structures in this document are written in terms of Rust structures without the `pub`, `struct`, or type name and the allowed use of kebab-case.
 Byte strings are referred to as `Bytes`, maps as `Map`, and sequences as `Vec` or as a tuple.
 A type of `Value` represents a value of any CBOR type whose interpretation will be further explained.
+A type of `Option` represents a value of the given type, which is serialized as normal, or a CBOR null.
+If it is not present in the serialization, it is assumed to be null.
+
+An enumeration is serialized as a hash, with the enumeration variant being the key and the value as the value.
+If there is no value, then the value is null.
+Thus, the structure with this enumeration:
+
+----
+{
+  foo: {
+    path(String),
+    id(u32)
+  }
+}
+----
+
+is serialized as one of the following two structures:
+
+----
+{
+  foo: {
+    path: String
+  }
+}
+----
+
+or
+
+----
+{
+  foo: {
+    id: u32
+  }
+}
+----
 
 == Main Protocol (version 0)
 
@@ -162,6 +197,22 @@ An implementation supporting the `extension=allocate` capability must support th
 * DeleteExtensionRange
 * ListExtensionRange
 
+An implementation supporting any two-part capability with the first part of `store` must support the following requests:
+
+* OpenStore
+* CloseStore
+* ListStoreElements
+* AcquireStoreElement
+* CloseStoreElement
+* AuthenticateStoreElement
+* CreateStoreElement
+* DeleteStoreElement
+* UpdateStoreElement
+* ReadStoreElement
+* SearchStoreElements
+
+Such an implementation must also support the Unlisted response.
+
 === Major Concepts
 
 ==== Channels
@@ -171,6 +222,23 @@ Each independent stream of bytes is referred to by a selector, and can be read a
 The selector can be thought of in many ways like a Unix file descriptor.
 
 Channels can be used for invoking commands, where the selectors 0, 1, and 2 refer to the streams normally associated with those file descriptors, and they can also be used for streaming various protocols, such as the 9P2000 protocol.
+
+==== Stores
+
+A store provides some set of structured, possibly nested data, upon which the typical CRUD (create, read, update, delete) operations can be performed.
+A store may possibly be encrypted or require authentication at various levels.
+
+All stores start with a root entry, specified as `/`, which is a directory element.
+Directory elements always end with a slash and may contain zero or more directory or file elements.
+File elements contain some sort of structured data, which is usually specified as part of the type of store.
+Components are not presently allowed to contain the `%` sign, which is reserved for future extension.
+
+By default, store items can be accessed directly using a path, which consists of slash-separated byte strings, much like a Unix path, but if one or more of the directory elements is encrypted or requires authentication, then that element must be opened with a handle.
+
+Stores can be used for any sort of structured data, including credentials.
+
+Objects in stores can be specified either with an absolute path (called a _store selector path_) or with an ID (called a _store selector ID_).
+The latter is a 32-bit integer returned by some store operations and is not the same as the ID which is returned in the path.
 
 === Requests
 
@@ -207,15 +275,20 @@ The following capabilities are known:
 |===
 | Key | Value | Meaning
 
-| `auth`      | `EXTERNAL`           | external authentication
-| `auth`      | any uppercase string | Any standardized SASL authentication mechanism
-| `auth`      | any lowercase string | Reserved for future Lawn-defined authentication mechanisms
-| `auth`      | any extension string | Reserved for custom extensions
+| `auth`      | `EXTERNAL`             | external authentication
+| `auth`      | `PLAIN`                | SASL PLAIN authentication
+| `auth`      | `keyboard-interactive` | SASL PLAIN authentication
+| `auth`      | any uppercase string   | Any standardized SASL authentication mechanism
+| `auth`      | any lowercase string   | Reserved for future Lawn-defined authentication mechanisms
+| `auth`      | any extension string   | Reserved for custom extensions
 
 | `channel`   | `9p`                 | 9P channels (including all variants of the protocol)
 | `channel`   | `clipboard`          | clipboard channels
 | `channel`   | `command`            | command channels
 | `channel`   | any extension string | Reserved for custom extensions
+
+| `store`     | `credential`         | credential stores
+| `store`     | any extension string | Reserved for custom extensions
 
 | `extension` | `allocate`           | dynamic message code extensions
 
@@ -749,6 +822,496 @@ If an enabled extension is given different values for client and server (say, be
 
 This message requires authentication and is paginated.
 
+==== OpenStore
+
+The open store request (`0x00030000`) requests that a store be opened.
+
+A store is a structured set of data which may be nested.
+An object is referred to by a path, which always starts with a slash (that is, it is always absolute) and is slash-separated into components.
+At the moment, percent signs are not permitted in path components to allow for future escaping.
+
+An implementation MUST NOT send a message requesting a store type that was not advertised as a capability, and if such a message is received, a ParametersNotSupported response should be sent.
+
+The following store types are known:
+
+|===
+| Store Type | Meaning
+
+|  `credential`         | store for credentials
+|  any extension string | Reserved for custom extensions
+
+|===
+
+A request looks like this:
+
+----
+{
+  kind: Bytes,
+  path: Option<Bytes>,
+  meta: Option<BTreeMap<Bytes, Value>>,
+}
+----
+
+`meta` may contain keys with extension strings if necessary.
+
+On success, a response looks like this:
+
+----
+{
+  id: u32,
+}
+----
+
+The ID returned is referred to as a store ID and is used in future requests to identify this store.
+
+===== Credential Stores
+
+Credential stores are designed to provide access to a variety of credentials using one or more helpers.
+This allows users to access credentials in a variety of ways.
+
+At the moment, paths are structured like so:
+
+* `/BACKEND/VAULT/ENTRY`
+* `/BACKEND/VAULT/VAULT-DIRECTORY/ENTRY`
+* `/BACKEND/VAULT/VAULT-DIRECTORY/VAULT-DIRECTORY/ENTRY`
+
+and so on.
+The number of vault directories is effectively unlimited and whether they are allowed and how deep depends on the credential helper.
+
+Some credential stores are considered _listable_ and thus can have their contents listed, and others are not.
+This limitation exists to support calling backends such as Git credential helpers, which can merely fill, save, or delete a credential, but cannot iterate over the contents of credentials.
+Some credential stores may be listable at some levels (e.g., the vaults available) but not at others (e.g., the individual credentials).
+The Unlistable response is used to indicate that credentials cannot be listed at a given level.
+
+Some credential stores do not provide an enumerated list of vaults.
+In such a case, the vault component will be called `-`, which is the default value.
+
+The `kind` value is always `credential` or `directory`.
+The `path` component in an OpenStore request is not used and should be null.
+The `meta` values are not used unless an extension string is specified as a key and should otherwise be null.
+
+A credential body looks like this:
+
+----
+{
+  username: Option<Bytes>,
+  secret: Option<Bytes>,
+  authtype: Option<String>,
+  type: String,
+  title: Option<String>,
+  description: Option<String>,
+  location: Vec<CredentialStoreLocation>,
+  service: Option<String>,
+  extra: Map<String, Value>,
+  id: Bytes,
+}
+----
+
+`username` represents a username for this credential.
+`secret` represents the password, key, or other secret.
+It is required when creating or updating a credential.
+`authtype` specifies an authentication type for this credential, which may be protocol specific.
+For example, for an HTTP request, `basic`, `digest`, and `bearer` may be values.
+If not specified, the secret is assumed to be generic.
+`type` is specified below.
+`location` indicates a set of locations linked to this secret.
+For example, it might be the website to which this credential belongs, or the API service or IMAP server.
+`service` is the name of the service or software to which this credential belongs.
+If the software is a Unix program, it may precede `@unix.ns.crustytoothpaste.net` to allow arbitrary values.
+`extra` allows extra values which may be relevant.
+Extension strings are allowed as keys.
+`id` is the unique ID for this entry.
+
+A `CredentialStoreLocation` looks like this:
+
+----
+{
+  protocol: Option<String>,
+  host: Option<String>,
+  port: Option<u16>,
+  path: Option<String>,
+}
+----
+
+All the fields in this structure are serialized as if they appeared in a URI as defined by https://datatracker.ietf.org/doc/html/rfc3986[RFC 3986].
+
+A credential may have a variety of values for the `type` field:
+
+|===
+| Name | Meaning
+
+| `api`            | the credential is used for automated access to a system (e.g., as a username/password or token)
+| `ssh`            | the credential is an SSH key in a format known to OpenSSH
+| `pkcs12`         | the credential is a PKCS#12 file in binary format using DER
+| `login`          | the credential is used for human-related access to a system (e.g., as a username/password or token)
+| `totp`           | the credential is used as a TOTP secret
+| extension string | specified by the owner
+|===
+
+A credential or request may have a variety of values for the `extra` entries:
+
+|===
+| Name | Type | Meaning
+
+| `link`                                | Vec<Bytes> | related secrets (e.g., the TOTP secret related to a login and vice versa)
+| `wwwauth@git.ns.crustytoothpaste.net` | Vec<Bytes> | values for the Git credential helper `wwwauth[]` field
+| `*@user.ns.crustytoothpaste.net`      | Any        | metadata specified by the end user
+| extension string                      | Any        | specified by the owner
+|===
+
+A search credential body looks like this:
+
+----
+{
+  username: SearchStoreElementType,
+  secret: SearchStoreElementType,
+  authtype: SearchStoreElementType,
+  kind: SearchStoreElementType,
+  protocol: SearchStoreElementType,
+  host: SearchStoreElementType,
+  title: SearchStoreElementType,
+  description: SearchStoreElementType,
+  path: SearchStoreElementType,
+  service: SearchStoreElementType,
+  extra: Map<String, SearchStoreElementType>,
+  id: SearchStoreElementType,
+}
+----
+
+The fields have exactly the same meaning as in the credential body.
+
+A `SearchStoreElementType` is an enum that looks like this:
+
+----
+{
+  literal(Value),
+  set(Vec<SearchStoreElementType>)
+  sequence(Vec<SearchStoreElementType>)
+  any(null),
+  none(null),
+}
+----
+
+==== CloseStore
+
+The close store request (`0x00030001`) requests that a store be closed and its associated resources be freed.
+
+A request looks like this:
+
+----
+{
+  id: u32,
+}
+----
+
+`id` is a store ID returned by the OpenStore request.
+`selector` is either a path or an store selector ID.
+
+On success, an empty response is returned.
+
+==== ListStoreElements
+
+The list store elements request (`0x00030002`) requests that a store be closed and its associated resources be freed.
+
+A request looks like this:
+
+----
+{
+  id: u32,
+  selector: {
+    path(Bytes),
+    id(u32)
+  }
+}
+----
+
+`id` is a store ID returned by the OpenStore request.
+`selector` is either a path or an store selector ID.
+
+On success, a response, whether initial or continuation, looks like this:
+
+----
+{
+  elements: Vec<StoreElement>,
+}
+----
+
+The `StoreElement` structure looks like this:
+
+----
+{
+  path: Bytes,
+  id: u32,
+  kind: String,
+  needs_authentication: Option<bool>,
+  authentication_methods: Option<Vec<Bytes>>,
+  meta: Option<Map<Bytes, Value>>,
+}
+----
+
+`path` is a path to the item.
+`id` is a store selector ID for this item.
+`kind` refers to the kind of this item.
+The kind will be either `directory` for a directory or the appropriate type for the store in question.
+`needs_authentication` is true if authentication is required, false if it is not, and null if it is not known.
+`authentication_methods` is a list of valid authentication methods.
+`meta` is a set of metadata about this item, which may include extension strings as keys.
+
+This message requires authentication and is paginated.
+
+==== AcquireStoreElement
+
+The acquire store element request (`0x00030003`) requests that an ID be assigned to a path.
+
+A request looks like this:
+
+----
+{
+  id: u32,
+  selector: Bytes
+}
+----
+
+`id` is a store ID returned by the OpenStore request.
+`selector` is a path.
+
+On success, a response looks like this:
+
+----
+{
+  selector: u32,
+}
+----
+
+`selector` is a store selector ID.
+
+This message requires authentication.
+
+==== CloseStoreElement
+
+The close store element request (`0x00030004`) requests that an ID be freed.
+
+A request looks like this:
+
+----
+{
+  id: u32,
+  selector: u32,
+}
+----
+
+`id` is a store ID returned by the OpenStore request.
+`selector` is a store selector ID.
+
+On success, an empty response is returned.
+
+This message requires authentication.
+
+==== AuthenticateStoreElement
+
+The authenticate store element request (`0x00030005`) requests that authentication be performed for a store element.
+Most commonly, this is used against the backend or vault of a credential store to allow it to be unlocked.
+
+A request looks like this:
+
+----
+{
+  id: u32,
+  selector: u32,
+  method: Bytes,
+  message: Option<Bytes>,
+}
+----
+
+`id` is a store ID returned by the OpenStore request.
+`selector` is a store selector ID.
+The `method` and `message` fields are identical in meaning to those specified in the Authenticate request.
+
+On success, a response looks like this:
+
+----
+{
+  method: Bytes,
+  message: Option<Bytes>
+}
+----
+
+Continuation requests and responses are identical to the original message.
+
+Typically, a response to this request will be Success, AuthenticationFailed, Invalid, or Continuation.
+
+This message requires authentication.
+
+==== CreateStoreElement
+
+The create store element request (`0x00030006`) requests that a store element be created.
+
+A request looks like this:
+
+----
+{
+  id: u32,
+  selector: {
+    path(Bytes),
+    id(u32)
+  }
+  kind: String,
+  needs-authentication: Option<bool>,
+  authentication-methods: Option<Vec<Bytes>>,
+  meta: Option<Map<Bytes, Value>>,
+  body: type-specific
+}
+----
+
+`id` is a store ID returned by the OpenStore request.
+`selector` is a store selector.
+`kind` is the kind for this item.
+The kind will be either `directory` for a directory or the appropriate type for the store in question.
+`needs-authentication` is true if the item is expected to need authentication, false if it is not, or null to choose the default, which is usually the same as the vault or backend used.
+`authentication-methods` controls the authentication methods used and should be set to null to inherit the options.
+`meta` is an optional set of metadata attributes, which should be null unless needed.
+Extension strings may be used as keys.
+`body` is the type-specific body, which for credentials is a credential body.
+
+On success, the response is empty.
+
+This message requires authentication.
+
+==== DeleteStoreElement
+
+The delete store element request (`0x00030007`) requests that a store element be created.
+
+A request looks like this:
+
+----
+{
+  id: u32,
+  selector: {
+    path(Bytes),
+    id(u32)
+  }
+}
+----
+
+On success, the response is empty.
+
+This message requires authentication.
+
+==== UpdateStoreElement
+
+The update store element request (`0x00030008`) requests that an existing store element be updated.
+
+A request looks like this:
+
+----
+{
+  id: u32,
+  selector: {
+    path(Bytes),
+    id(u32)
+  }
+  kind: String,
+  needs-authentication: Option<bool>,
+  authentication-methods: Option<Vec<Bytes>>,
+  meta: Option<Map<Bytes, Value>>,
+  body: type-specific
+}
+----
+
+The fields have exactly the same meaning as in the CreateStoreElement request.
+
+On success, the response is empty.
+
+This message requires authentication.
+
+==== ReadStoreElement
+
+The read store element request (`0x00030009`) requests that the data for a store element be returned.
+
+A request looks like this:
+
+----
+{
+  id: u32,
+  selector: {
+    path(Bytes),
+    id(u32)
+  }
+}
+----
+
+On success, the response looks like this:
+
+----
+{
+  kind: String,
+  needs-authentication: Option<bool>,
+  authentication-method: Option<Vec<Bytes>>,
+  meta: Option<Map<Bytes, Value>>,
+  body: type-specific,
+}
+----
+
+The meaning of the values are the same as for the CreateStoreElement request.
+
+This message requires authentication.
+
+==== SearchStoreElements
+
+The search store elements request (`0x0003000c`) requests a search for store elements matching certain criteria.
+
+A request looks like this:
+
+----
+{
+  id: u32,
+  selector: {
+    path(Bytes),
+    id(u32)
+  },
+  recurse: {
+    boolean(bool)
+  },
+  kind: Option<String>,
+  body: Option<type-specific>,
+}
+----
+
+The `recurse` field determines whether this search is recursive.
+It is dependent on the backend whether recursive or non-recursive search is implemented.
+
+The `body` field should be null for searching directories and should be non-null with a type-specific search body for non-directories.
+
+On success, the response looks like this:
+
+----
+{
+  elements: Vec<StoreElement>,
+}
+----
+
+The `StoreElement` field looks like this:
+
+----
+{
+  path: Bytes,
+  id: Option<u32>,
+  kind: String,
+  needs-authentication: Option<bool>,
+  authentication-methods: Option<Vec<Bytes>>,
+  meta: Option<Map<Bytes, Value>>,
+  body: Option<type-specific>,
+}
+----
+
+`path` is the absolute path.
+`id` is a store selector ID, if available.
+The body is a normal type-specific body or null if there is no such body.
+
+The meaning of the values are otherwise the same as for the CreateStoreElement request.
+
+This request is paginated and requires authentication.
+
 === Responses
 
 Response codes are grouped by category by their first sixteen bits.
@@ -995,6 +1558,11 @@ This could be due to any sort of resource exhaustion: memory, disk, or any serve
 The conflict response (`0x0001000d`) indicates that the requested operation would conflict with some operation that either has already completed or is in progress.
 
 The semantics of this value are those of an HTTP 409 response.
+
+==== Unlistable
+
+The unlistable response (`0x0001000e`) indicates that the contents of the object cannot be listed or specified by name.
+This is used with stores, and specifically credential stores, when items may be searched but not listed.
 
 ==== NotEnabled
 
