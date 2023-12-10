@@ -743,7 +743,7 @@ impl Config {
         logger: &Logger,
         env: E,
     ) -> Option<PathBuf> {
-        match Self::find_runtime_dirs(logger, env).get(0) {
+        match Self::find_runtime_dirs(logger, env).first() {
             Some(s) => Some(s.clone()),
             None => {
                 trace!(logger, "runtime_dir: unable to find runtime directory");
