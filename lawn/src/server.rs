@@ -607,8 +607,8 @@ impl Server {
                 handler.flush_requests().await;
                 let m = valid_message!(handler, protocol::VersionRequest, message);
                 let supported = state.config().capabilities();
-                let requested: Result<BTreeSet<protocol::Capability>, _> =
-                    m.enable.iter().cloned().map(|c| c.try_into()).collect();
+                let requested: BTreeSet<protocol::Capability> =
+                    m.enable.iter().cloned().map(|c| c.into()).collect();
                 if m.version != 0x00000000 {
                     return Err(ResponseCode::ParametersNotSupported.into());
                 }
@@ -616,16 +616,12 @@ impl Server {
                     "server: {}: version: negotiated v{}; supported {:?}; requested {:?}; user_agent {:?}",
                     id, m.version, supported, requested, m.user_agent,
                 ));
-                match requested {
-                    // There are unsupported types.
-                    Ok(requested) if requested.difference(&supported).next().is_some() => {
-                        Err(ResponseCode::ParametersNotSupported.into())
-                    }
-                    Err(_) => Err(ResponseCode::ParametersNotSupported.into()),
-                    Ok(requested) => {
-                        handler.set_capabilities(&requested).await;
-                        Ok((ResponseType::Success, None))
-                    }
+                // There are unsupported types.
+                if requested.difference(&supported).next().is_some() {
+                    Err(ResponseCode::ParametersNotSupported.into())
+                } else {
+                    handler.set_capabilities(&requested).await;
+                    Ok((ResponseType::Success, None))
                 }
             }
             Some(MessageKind::CloseAlert) => {

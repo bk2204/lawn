@@ -146,7 +146,7 @@ impl Connection {
             .capabilities
             .iter()
             .cloned()
-            .filter_map(|c| c.try_into().ok())
+            .map(|c| c.into())
             .collect();
         let intersection = ours
             .intersection(&theirs)
