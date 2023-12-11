@@ -45,14 +45,16 @@ impl FakeEnvironment {
 
     fn env(&self, s: &str) -> Option<OsString> {
         let cwd = std::env::current_dir().unwrap();
+        let path = std::env::var_os("PATH").unwrap();
         let subpath: Cow<'static, [u8]> = match s {
             "HOME" => Some(Cow::Borrowed(b"home" as &[u8])),
             "XDG_RUNTIME_DIR" => Some(Cow::Borrowed(b"runtime" as &[u8])),
             "LAWN_TEST_DATA_DIR" => Some(Cow::Borrowed(b"data" as &[u8])),
             "PATH" => {
                 return Some(OsString::from_vec(format_bytes!(
-                    b"{}/../spec/fixtures/bin:/bin:/usr/bin:/sbin:/usr/sbin",
-                    cwd.as_os_str().as_bytes()
+                    b"{}/../spec/fixtures/bin:{}",
+                    cwd.as_os_str().as_bytes(),
+                    path.as_bytes(),
                 )))
             }
             _ => None,
