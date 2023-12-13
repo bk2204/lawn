@@ -2,6 +2,7 @@ use crate::encoding::escape;
 use bytes::Bytes;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 
 pub struct Template {
     text: Bytes,
@@ -45,7 +46,7 @@ impl Template {
         }
     }
 
-    pub fn expand(&self, context: &TemplateContext<'_, '_>) -> Result<Bytes, Error> {
+    pub fn expand(&self, context: &TemplateContext) -> Result<Bytes, Error> {
         if !self.needs_expansion {
             return Ok(self.text.clone());
         }
@@ -88,13 +89,17 @@ impl Template {
 
     fn expand_text_pattern(&self, id: &[u8], context: &TemplateContext) -> Result<Bytes, Error> {
         if id.starts_with(b"senv:") {
-            Ok(self.expand_env(&id[5..], context.senv))
+            Ok(self.expand_env(&id[5..], context.senv.as_deref()))
         } else if id.starts_with(b"cenv:") {
-            Ok(self.expand_env(&id[5..], context.cenv))
+            Ok(self.expand_env(&id[5..], context.cenv.as_deref()))
+        } else if id.starts_with(b"ctxsenv:") {
+            Ok(self.expand_env(&id[8..], context.ctxsenv.as_deref()))
         } else if id.starts_with(b"senv?:") {
-            Ok(self.has_entry(&id[6..], context.senv))
+            Ok(self.has_entry(&id[6..], context.senv.as_deref()))
         } else if id.starts_with(b"cenv?:") {
-            Ok(self.has_entry(&id[6..], context.cenv))
+            Ok(self.has_entry(&id[6..], context.cenv.as_deref()))
+        } else if id.starts_with(b"ctxsenv?:") {
+            Ok(self.has_entry(&id[9..], context.ctxsenv.as_deref()))
         } else if id.starts_with(b"sq:") {
             Ok(self.single_quote(&self.expand_text_pattern(&id[3..], context)?))
         } else {
@@ -137,15 +142,59 @@ impl Template {
 }
 
 #[derive(Default, Clone)]
-pub struct TemplateContext<'a, 'b> {
-    pub senv: Option<&'a BTreeMap<Bytes, Bytes>>,
-    pub cenv: Option<&'b BTreeMap<Bytes, Bytes>>,
-    pub args: Option<&'b [Bytes]>,
+pub struct TemplateContext {
+    pub senv: Option<Arc<BTreeMap<Bytes, Bytes>>>,
+    pub cenv: Option<Arc<BTreeMap<Bytes, Bytes>>>,
+    pub ctxsenv: Option<Arc<BTreeMap<Bytes, Bytes>>>,
+    pub args: Option<Arc<[Bytes]>>,
+}
+
+#[derive(Default)]
+pub struct TemplateContextBuilder {
+    ctx: TemplateContext,
+}
+
+#[allow(dead_code)]
+impl TemplateContextBuilder {
+    fn new() -> Self {
+        Self {
+            ctx: TemplateContext::default(),
+        }
+    }
+
+    fn server_env(self, env: Option<Arc<BTreeMap<Bytes, Bytes>>>) -> Self {
+        let mut s = self;
+        s.ctx.senv = env;
+        s
+    }
+
+    fn client_env(self, env: Option<Arc<BTreeMap<Bytes, Bytes>>>) -> Self {
+        let mut s = self;
+        s.ctx.cenv = env;
+        s
+    }
+
+    fn context_server_env(self, env: Option<Arc<BTreeMap<Bytes, Bytes>>>) -> Self {
+        let mut s = self;
+        s.ctx.ctxsenv = env;
+        s
+    }
+
+    fn args(self, args: Option<Arc<[Bytes]>>) -> Self {
+        let mut s = self;
+        s.ctx.args = args;
+        s
+    }
+
+    fn build(self) -> TemplateContext {
+        self.ctx
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Template, TemplateContext};
+    use std::sync::Arc;
 
     #[test]
     fn simple_expansion() {
@@ -177,8 +226,14 @@ mod tests {
         .cloned()
         .map(|(a, b)| (a.into(), b.into()))
         .collect();
-        ctx.senv = Some(&senv);
-        ctx.cenv = Some(&cenv);
+        let ctxenv = [("CREDENTIAL", "123456789")]
+            .iter()
+            .cloned()
+            .map(|(a, b)| (a.into(), b.into()))
+            .collect();
+        ctx.senv = Some(Arc::new(senv));
+        ctx.cenv = Some(Arc::new(cenv));
+        ctx.ctxsenv = Some(Arc::new(ctxenv));
         let cases = [
             ("My path is '%(senv:PATH)'", "My path is '/bin:/usr/bin'"),
             (
@@ -196,6 +251,10 @@ mod tests {
             (
                 "Do I have a random number? '%(cenv?:RANDOM)'",
                 "Do I have a random number? 'false'",
+            ),
+            (
+                "Do I have a credential? '%(ctxsenv?:CREDENTIAL)' '%(ctxsenv:CREDENTIAL)'",
+                "Do I have a credential? 'true' '123456789'",
             ),
             // This testcase was produced with git rev-parse --sq-quote.
             (

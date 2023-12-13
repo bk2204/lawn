@@ -1,8 +1,9 @@
 use crate::fs_proxy;
 use lawn_protocol::{handler, protocol};
+use std::borrow::{Borrow, Cow};
 use std::convert::{TryFrom, TryInto};
 use std::fmt;
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 use std::io;
 
 #[derive(Debug)]
@@ -113,11 +114,71 @@ impl From<Error> for i32 {
     }
 }
 
+impl From<crate::credential::CredentialError> for Error {
+    fn from(err: crate::credential::CredentialError) -> Error {
+        type E = crate::credential::CredentialError;
+        match err {
+            E::EmptyResponse(_) => {
+                let s = err.to_string();
+                Error::new_full(ErrorKind::MissingResponse, err, s)
+            }
+            E::ProtocolFailure(e) => e,
+            E::Conflict
+            | E::NotFound
+            | E::UnsupportedSerialization
+            | E::InvalidPath
+            | E::NotADirectory => {
+                let s = err.to_string();
+                Error::new_full(ErrorKind::CredentialError, err, s)
+            }
+        }
+    }
+}
+
+/// A trait to allow logging and scripting of error values.
+pub trait ExtendedError {
+    /// The types of errors.
+    ///
+    /// This provides a list of string error types that classify this error.  For example, a
+    /// credential error that wraps an I/O error might indicate `["credential-error", "io-error"].
+    fn error_types(&self) -> Cow<'static, [Cow<'static, str>]>;
+    /// The tag of an error.
+    ///
+    /// This tag represents the error as a simple dash-divided string that indicates this specific
+    /// error.  This will usually be a kebab-case version of the error kind.
+    fn error_tag(&self) -> Cow<'static, str>;
+}
+
 #[derive(Debug)]
-pub struct WrongTypeError(pub Error);
+pub struct WrongTypeError<T>(pub T);
+
+#[derive(Debug)]
+pub struct MissingElementError<T>(Cow<'static, str>, T);
+
+impl<T> Display for MissingElementError<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "missing element {}", self.0)
+    }
+}
+
+impl<T> MissingElementError<T> {
+    pub fn new<S: Into<Cow<'static, str>>>(name: S, element: T) -> Self {
+        MissingElementError(name.into(), element)
+    }
+
+    pub fn element_name(&self) -> &str {
+        self.0.borrow()
+    }
+
+    pub fn into_inner(self) -> T {
+        self.1
+    }
+}
+
+impl<T: Debug> std::error::Error for MissingElementError<T> {}
 
 impl TryFrom<Error> for handler::Error {
-    type Error = WrongTypeError;
+    type Error = WrongTypeError<Error>;
     fn try_from(e: Error) -> Result<handler::Error, Self::Error> {
         match e.kind {
             ErrorKind::HandlerError => match e.cause {
@@ -137,7 +198,7 @@ impl TryFrom<Error> for handler::Error {
 }
 
 impl TryFrom<Error> for protocol::Error {
-    type Error = WrongTypeError;
+    type Error = WrongTypeError<Error>;
     fn try_from(e: Error) -> Result<protocol::Error, Self::Error> {
         let err = handler::Error::try_from(e)?;
         if let handler::Error::ProtocolError(e) = err {
@@ -148,7 +209,7 @@ impl TryFrom<Error> for protocol::Error {
 }
 
 impl TryFrom<Error> for io::Error {
-    type Error = WrongTypeError;
+    type Error = WrongTypeError<Error>;
     fn try_from(e: Error) -> Result<io::Error, Self::Error> {
         let err = protocol::Error::try_from(e)?;
         let e: Result<io::Error, _> = err.try_into();
@@ -181,6 +242,8 @@ pub enum ErrorKind {
     InvalidConfigurationValue,
     ConfigurationSpawnError,
     FSProxyError,
+    CredentialError,
+    ScriptError,
 }
 
 impl From<ErrorKind> for i32 {

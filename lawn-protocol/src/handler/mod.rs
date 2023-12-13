@@ -517,6 +517,17 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
         body: &S,
         synchronous: Option<bool>,
     ) -> Result<Option<protocol::ResponseValue<D1, D2>>, Error> {
+        self.send_message_with_id(kind, body, synchronous)
+            .await
+            .map(|v| v.1)
+    }
+
+    pub async fn send_message_with_id<S: Serialize, D1: DeserializeOwned, D2: DeserializeOwned>(
+        &self,
+        kind: protocol::MessageKind,
+        body: &S,
+        synchronous: Option<bool>,
+    ) -> Result<(u32, Option<protocol::ResponseValue<D1, D2>>), Error> {
         let id = {
             let mut g = self.id.lock().await;
             let v = *g;
@@ -543,6 +554,16 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
     ) -> Result<Option<protocol::ResponseValue<D1, D2>>, Error> {
         self.send_message_simple_internal(kind, false, synchronous.unwrap_or(self.synchronous))
             .await
+            .map(|v| v.1)
+    }
+
+    pub async fn send_message_simple_with_id<D1: DeserializeOwned, D2: DeserializeOwned>(
+        &self,
+        kind: protocol::MessageKind,
+        synchronous: Option<bool>,
+    ) -> Result<(u32, Option<protocol::ResponseValue<D1, D2>>), Error> {
+        self.send_message_simple_internal(kind, false, synchronous.unwrap_or(self.synchronous))
+            .await
     }
 
     async fn send_message_simple_internal<D1: DeserializeOwned, D2: DeserializeOwned>(
@@ -550,7 +571,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
         kind: protocol::MessageKind,
         closing: bool,
         synchronous: bool,
-    ) -> Result<Option<protocol::ResponseValue<D1, D2>>, Error> {
+    ) -> Result<(u32, Option<protocol::ResponseValue<D1, D2>>), Error> {
         let id = {
             let mut g = self.id.lock().await;
             let v = *g;
@@ -584,7 +605,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
         data: &Bytes,
         closing: bool,
         synchronous: bool,
-    ) -> Result<Option<protocol::ResponseValue<D1, D2>>, Error> {
+    ) -> Result<(u32, Option<protocol::ResponseValue<D1, D2>>), Error> {
         let logger = self.config.logger();
         if !closing {
             let g = self.closing.read().await;
@@ -644,7 +665,7 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ProtocolHandler<T, U> {
             None => return Err(Error::NoResponseReceived),
         };
         match self.serializer.deserialize_response_typed(&m) {
-            Ok(resp) => Ok(resp),
+            Ok(resp) => Ok((id, resp)),
             Err(e) => Err(e.into()),
         }
     }

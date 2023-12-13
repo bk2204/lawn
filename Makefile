@@ -158,7 +158,7 @@ test/Dockerfile.%: test/Dockerfile.%.erb $(INCLUDES)
 
 clippy:
 	rm -rf target/debug target/release
-	cargo clippy $(FEATURE_ARG) -- -A clippy::unknown-clippy-lints -A clippy::needless_borrow -A clippy::bad_bit_mask -D warnings
+	cargo clippy $(FEATURE_ARG) -- -A clippy::unknown-clippy-lints -A clippy::manual-strip -A clippy::needless_borrow -A clippy::bad_bit_mask -D warnings
 
 fmt:
 	if rustfmt --help | grep -qse --check; \

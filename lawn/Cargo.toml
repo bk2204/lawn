@@ -20,11 +20,15 @@ name = "lawn"
 path = "src/main.rs"
 
 [dependencies]
+async-trait = "= 0.1.66"
+blake2 = "0.10"
 bytes = "1"
 clap = "2.32"
 serde = { version = "1.0", features = ["derive"] }
 serde_cbor = "0.11"
+serde_json = "1.0"
 serde_yaml = "0.8"
+format-bytes = "0.3"
 libc = "0.2"
 signal-hook-tokio = "0.3"
 lawn-constants = { path = "../lawn-constants", version = "0.3.0" }
@@ -32,8 +36,11 @@ lawn-9p = { path = "../lawn-9p", version = "0.3.0", features = ["unix"] }
 lawn-fs = { path = "../lawn-fs", version = "0.3.0", features = ["unix"] }
 lawn-protocol = { path = "../lawn-protocol", version = "0.3.0", features = ["async"] }
 lawn-sftp = { path = "../lawn-sftp", version = "0.3.0" }
+subtle = "2"
 tokio = { version = "1", features = [ "io-std", "macros", "net", "process", "rt", "rt-multi-thread", "signal", "time" ] }
 tokio-pipe = "0.2"
+thiserror = "1.0.39"
+url = "2.2"
 daemonize = "0.4"
 num-traits = "0.2"
 num-derive = "0.3"

@@ -1,0 +1,83 @@
+#!/usr/bin/env ruby
+
+require 'json'
+require 'uri'
+
+def read_data(fp)
+  entries = {}
+  fp.each_line do |ln|
+    key, value = ln.chomp.split('=', 2)
+    entries[key.to_sym] = value
+  end
+  $stderr.puts("git-backend: trace: read: #{entries.inspect}")
+  args = {
+    host: entries[:host],
+  }
+  args[:path] = entries[:path] unless entries[:path].nil?
+  if entries[:protocol] == "http"
+    [URI::HTTP.build(**args), entries[:username], entries[:password], entries]
+  else
+    [URI::HTTPS.build(**args), entries[:username], entries[:password], entries]
+  end
+end
+
+def fill(fpin, fpout, data)
+  url, user, _, entries = read_data(fpin)
+  if entry = data[url.to_s]
+    if user && entry[user]
+      entries[:username] = user
+      entries[:password] = entry[user]
+    elsif !user
+      entries[:username], entries[:password] = entry.first
+    end
+    $stderr.puts("git-backend: trace: fill: #{entries.inspect}")
+    entries.each do |k, v|
+      fpout.puts("#{k}=#{v}")
+    end
+  end
+  data
+end
+
+def approve(fpin, data)
+  url, user, pass, _ = read_data(fpin)
+  data[url.to_s] ||= {}
+  data[url.to_s][user] = pass
+  data
+end
+
+def reject(fpin, data)
+  url, user, _, _ = read_data(fpin)
+  data[url.to_s] ||= {}
+  data[url.to_s].delete(user)
+  data
+end
+
+DATA_FILE = File.join(ENV["LAWN_TEST_DATA_DIR"], "git")
+fp, data = if File.exist? DATA_FILE
+             fp = File.open(DATA_FILE, "r+")
+             contents = fp.read
+             data = contents.length == 0 ? {} : JSON.parse(contents)
+             [fp, data]
+           else
+             fp = File.open(DATA_FILE, "w+")
+             data = {}
+             [fp, data]
+           end
+
+$stderr.puts("git-backend: trace: start data: #{data.inspect}")
+
+case ARGV[0]
+when "fill"
+  data = fill($stdin, $stdout, data)
+when "approve"
+  data = approve($stdin, data)
+when "reject"
+  data = reject($stdin, data)
+else
+  raise "Sorry, I don't know how to do that (#{ARGV[0]})."
+end
+
+fp.rewind
+fp.truncate(0)
+$stderr.puts("git-backend: trace: end data: #{data.inspect}")
+fp.write(JSON.generate(data))

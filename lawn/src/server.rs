@@ -6,9 +6,13 @@ use crate::config;
 use crate::config::{Config, Logger};
 use crate::encoding::{escape, path};
 use crate::error::{Error, ErrorKind};
+use crate::store::credential::CredentialStore;
+use crate::store::StoreManager;
+use crate::store::{StoreElement, StoreElementEntry};
 use crate::unix;
 use bytes::Bytes;
 use daemonize::Daemonize;
+use lawn_constants::logger::AsLogStr;
 use lawn_protocol::config::Logger as LoggerTrait;
 use lawn_protocol::handler;
 use lawn_protocol::handler::{ExtensionError, ExtensionMap, ProtocolHandler};
@@ -17,8 +21,7 @@ use lawn_protocol::protocol::{Message, MessageKind, ResponseCode};
 use num_traits::cast::FromPrimitive;
 use serde_cbor::Value;
 use std::any::Any;
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::convert::TryInto;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::marker::Unpin;
@@ -98,6 +101,22 @@ impl Continuations {
 
 struct ExtensionContinuation {
     off: usize,
+}
+
+struct ListStoreContinuation {
+    next: Arc<dyn StoreElementEntry + Send + Sync>,
+    iter: Box<dyn Iterator<Item = Arc<dyn StoreElementEntry + Send + Sync>> + Send + Sync>,
+}
+
+struct SearchStoreContinuation {
+    next: Arc<dyn StoreElement + Send + Sync>,
+    iter: Box<dyn Iterator<Item = Arc<dyn StoreElement + Send + Sync>> + Send + Sync>,
+}
+
+struct AuthenticateStoreElementContinuation {
+    method: Bytes,
+    id: protocol::StoreID,
+    selector: protocol::StoreSelectorID,
 }
 
 pub struct Server {
@@ -250,6 +269,7 @@ impl Server {
             let mut fdwr = fdwr;
             let _ = fdwr.write_all(&[0x00]);
         }
+        let shared_state = SharedServerState::new(self.config.clone());
         logger.trace("server: starting main loop");
         loop {
             select! {
@@ -288,9 +308,10 @@ impl Server {
                         trace!(logger, "server: accepted connection, spawning handler {}", id);
                         let (tx, rx) = sync::mpsc::channel(1);
                         let config = self.config.clone();
+                        let shst = shared_state.clone();
                         let handle = task::spawn(async move {
                             let logger = config.logger();
-                            Self::run_job(config, id, rx, conn).await;
+                            Self::run_job(shst, id, rx, conn).await;
                             trace!(logger, "server: exiting handler {}", id);
                             id
                         });
@@ -331,13 +352,16 @@ impl Server {
     }
 
     async fn run_job(
-        config: Arc<Config>,
+        shared_state: Arc<SharedServerState>,
         id: u64,
         rx: sync::mpsc::Receiver<()>,
         conn: net::UnixStream,
     ) {
         let mut rx = rx;
-        let cfg = Arc::new(lawn_protocol::config::Config::new(true, config.logger()));
+        let cfg = Arc::new(lawn_protocol::config::Config::new(
+            true,
+            shared_state.config().logger(),
+        ));
         let (chandeathtx, mut chandeathrx) = sync::mpsc::channel(10);
         let (connread, connwrite) = conn.into_split();
         let state = Arc::new(ServerState {
@@ -348,9 +372,10 @@ impl Server {
                 false,
             )),
             channels: Arc::new(ChannelManager::new(Some(chandeathtx))),
-            config,
+            stores: Arc::new(StoreManager::new()),
             extensions: Arc::new(RwLock::new(ExtensionMap::new())),
             continuations: Continuations::new(),
+            shared_state,
         });
         let handler = state.handler();
         let channels = state.channels();
@@ -390,49 +415,72 @@ impl Server {
                         Ok(None) => (),
                         Ok(Some(msg)) => {
                             tokio::spawn(async move {
-                                let handler = state.handler();
+                                let msgid = msg.id;
                                 let logger = state.logger();
-                                trace!(logger, "server: {}: processing message {}", id, msg.id);
-                                match Self::process_message(state.clone(), id, &msg).await {
-                                    Ok((ResponseType::Close, body)) => {
-                                        trace!(logger, "server: {}: message {}: code {:08x} (closing)", id, msg.id, 0);
-                                        let _ = handler.send_success(msg.id, body).await;
-                                        handler.close(false).await;
+                                let handle = tokio::spawn(async move {
+                                    let handler = state.handler();
+                                    let logger = state.logger();
+                                    trace!(logger, "server: {}: processing message {}", id, msg.id);
+                                    match Self::process_message(state.clone(), id, &msg).await {
+                                        Ok((ResponseType::Close, body)) => {
+                                            trace!(logger, "server: {}: message {}: code {:08x} (closing)", id, msg.id, 0);
+                                            let _ = handler.send_success(msg.id, body).await;
+                                            handler.close(false).await;
+                                        }
+                                        Err(handler::Error::ProtocolError(protocol::Error{code, body: Some(body)})) => {
+                                            trace!(logger, "server: {}: message {}: code {:08x} (body)", id, msg.id, code as u32);
+                                            match handler.send_error_typed(msg.id, code, &body).await {
+                                                Ok(_) => (),
+                                                Err(_) => handler.close(true).await,
+                                            }
+                                        },
+                                        Err(handler::Error::ProtocolError(protocol::Error{code, body: None})) => {
+                                            trace!(logger, "server: {}: message {}: code {:08x}", id, msg.id, code as u32);
+                                            match handler.send_error_simple(msg.id, code).await {
+                                                Ok(_) => (),
+                                                Err(_) => handler.close(true).await,
+                                            }
+                                        },
+                                        Err(e) => {
+                                            trace!(logger, "server: {}: message {}: error: {} (closing)", id, msg.id, e);
+                                            handler.close(true).await;
+                                        },
+                                        Ok((ResponseType::Success, body)) => {
+                                            trace!(logger, "server: {}: message {}: code {:08x}", id, msg.id, 0);
+                                            match handler.send_success(msg.id, body).await {
+                                                Ok(_) => (),
+                                                Err(_) => handler.close(true).await,
+                                            }
+                                            trace!(logger, "server: {}: message {}: code {:08x} sent", id, msg.id, 0);
+                                        },
+                                        Ok((ResponseType::Partial, body)) => {
+                                            trace!(logger, "server: {}: message {}: code {:08x}", id, msg.id, 0);
+                                            match handler.send_continuation(msg.id, body).await {
+                                                Ok(_) => (),
+                                                Err(_) => handler.close(true).await,
+                                            }
+                                            trace!(logger, "server: {}: message {}: code {:08x} sent", id, msg.id, 0);
+                                        },
                                     }
-                                    Err(handler::Error::ProtocolError(protocol::Error{code, body: Some(body)})) => {
-                                        trace!(logger, "server: {}: message {}: code {:08x} (body)", id, msg.id, code as u32);
-                                        match handler.send_error_typed(msg.id, code, &body).await {
-                                            Ok(_) => (),
-                                            Err(_) => handler.close(true).await,
+                                });
+                                match handle.await {
+                                    Ok(_) => (),
+                                    Err(e) if e.is_cancelled() => {
+                                        trace!(logger, "server: {}: message {}: cancelled", id, msgid);
+                                    },
+                                    Err(e) if e.is_panic() => {
+                                        let e = e.into_panic();
+                                        if let Some(e) = e.downcast_ref::<&str>() {
+                                            trace!(logger, "server: {}: message {}: panic: {}", id, msgid, e);
+                                        } else if let Some(e) = e.downcast_ref::<String>() {
+                                            trace!(logger, "server: {}: message {}: panic: {}", id, msgid, e);
+                                        } else {
+                                            trace!(logger, "server: {}: message {}: unknown panic", id, msgid);
                                         }
                                     },
-                                    Err(handler::Error::ProtocolError(protocol::Error{code, body: None})) => {
-                                        trace!(logger, "server: {}: message {}: code {:08x}", id, msg.id, code as u32);
-                                        match handler.send_error_simple(msg.id, code).await {
-                                            Ok(_) => (),
-                                            Err(_) => handler.close(true).await,
-                                        }
-                                    },
-                                    Err(e) => {
-                                        trace!(logger, "server: {}: message {}: error: {} (closing)", id, msg.id, e);
-                                        handler.close(true).await;
-                                    },
-                                    Ok((ResponseType::Success, body)) => {
-                                        trace!(logger, "server: {}: message {}: code {:08x}", id, msg.id, 0);
-                                        match handler.send_success(msg.id, body).await {
-                                            Ok(_) => (),
-                                            Err(_) => handler.close(true).await,
-                                        }
-                                        trace!(logger, "server: {}: message {}: code {:08x} sent", id, msg.id, 0);
-                                    },
-                                    Ok((ResponseType::Partial, body)) => {
-                                        trace!(logger, "server: {}: message {}: code {:08x}", id, msg.id, 0);
-                                        match handler.send_continuation(msg.id, body).await {
-                                            Ok(_) => (),
-                                            Err(_) => handler.close(true).await,
-                                        }
-                                        trace!(logger, "server: {}: message {}: code {:08x} sent", id, msg.id, 0);
-                                    },
+                                    Err(_) => {
+                                        trace!(logger, "server: {}: message {}: unknown error", id, msgid);
+                                    }
                                 }
                             });
                         }
@@ -537,6 +585,7 @@ impl Server {
         let handler = state.handler();
         let serializer = handler.serializer();
         let channels = state.channels();
+        let stores = state.stores();
         let logger = state.logger();
         match MessageKind::from_u32(message.kind) {
             Some(MessageKind::Capability) => {
@@ -558,8 +607,8 @@ impl Server {
                 handler.flush_requests().await;
                 let m = valid_message!(handler, protocol::VersionRequest, message);
                 let supported = state.config().capabilities();
-                let requested: Result<BTreeSet<protocol::Capability>, _> =
-                    m.enable.iter().cloned().map(|c| c.try_into()).collect();
+                let requested: BTreeSet<protocol::Capability> =
+                    m.enable.iter().cloned().map(|c| c.into()).collect();
                 if m.version != 0x00000000 {
                     return Err(ResponseCode::ParametersNotSupported.into());
                 }
@@ -567,16 +616,12 @@ impl Server {
                     "server: {}: version: negotiated v{}; supported {:?}; requested {:?}; user_agent {:?}",
                     id, m.version, supported, requested, m.user_agent,
                 ));
-                match requested {
-                    // There are unsupported types.
-                    Ok(requested) if requested.difference(&supported).next().is_some() => {
-                        Err(ResponseCode::ParametersNotSupported.into())
-                    }
-                    Err(_) => Err(ResponseCode::ParametersNotSupported.into()),
-                    Ok(requested) => {
-                        handler.set_capabilities(&requested).await;
-                        Ok((ResponseType::Success, None))
-                    }
+                // There are unsupported types.
+                if requested.difference(&supported).next().is_some() {
+                    Err(ResponseCode::ParametersNotSupported.into())
+                } else {
+                    handler.set_capabilities(&requested).await;
+                    Ok((ResponseType::Success, None))
                 }
             }
             Some(MessageKind::CloseAlert) => {
@@ -644,6 +689,164 @@ impl Server {
                         };
                         let resp = protocol::ListExtensionRangesResponse { ranges: chunk };
                         Ok((kind, serializer.serialize_body(&resp)))
+                    }
+                    MessageKind::ListStoreElements => {
+                        let cont = state
+                            .continuations
+                            .remove::<ListStoreContinuation>(kind, id)
+                            .ok_or_else::<handler::Error, _>(|| {
+                                ResponseCode::ContinuationNotFound.into()
+                            })?;
+                        let mut it = cont.iter;
+                        let chunk: Vec<protocol::StoreElement> = [cont.next]
+                            .iter()
+                            .cloned()
+                            .chain(it.by_ref().take(99))
+                            .map(|elem| protocol::StoreElement {
+                                path: elem.path(),
+                                id: None,
+                                kind: String::from_utf8_lossy(&elem.kind()).to_string(),
+                                needs_authentication: elem.needs_authentication(),
+                                authentication_methods: None,
+                                meta: None,
+                            })
+                            .collect();
+                        let kind = match it.next() {
+                            Some(elem) => {
+                                state.continuations.insert(
+                                    MessageKind::ListStoreElements,
+                                    id,
+                                    ListStoreContinuation {
+                                        next: elem,
+                                        iter: it,
+                                    },
+                                );
+                                ResponseType::Partial
+                            }
+                            None => ResponseType::Success,
+                        };
+                        let resp = protocol::ListStoreElementsResponse { elements: chunk };
+                        Ok((kind, serializer.serialize_body(&resp)))
+                    }
+                    MessageKind::SearchStoreElements => {
+                        let cont = state
+                            .continuations
+                            .remove::<SearchStoreContinuation>(kind, id)
+                            .ok_or_else::<handler::Error, _>(|| {
+                                ResponseCode::ContinuationNotFound.into()
+                            })?;
+                        let mut it = cont.iter;
+                        let chunk: Vec<protocol::StoreElementWithBody<_>> = [cont.next]
+                            .iter()
+                            .cloned()
+                            .chain(it.by_ref().take(99))
+                            .filter_map(|elem| {
+                                let body = match elem.body() {
+                                    Ok(Some(body)) => body,
+                                    Ok(None) => return None,
+                                    Err(e) => return Some(Err(e)),
+                                };
+                                // TODO: convert when other store types are implemeneted
+                                let cse =
+                                    body.downcast_ref::<protocol::CredentialStoreElement>()?;
+                                Some(Ok(protocol::StoreElementWithBody {
+                                    path: elem.path(),
+                                    id: Some(elem.id()),
+                                    kind: String::from_utf8_lossy(&elem.kind()).to_string(),
+                                    needs_authentication: elem.needs_authentication(),
+                                    authentication_methods: None,
+                                    meta: None,
+                                    body: (*cse).clone(),
+                                }))
+                            })
+                            .collect::<Result<_, _>>()?;
+                        let kind = match it.next() {
+                            Some(elem) => {
+                                state.continuations.insert(
+                                    MessageKind::SearchStoreElements,
+                                    id,
+                                    SearchStoreContinuation {
+                                        next: elem,
+                                        iter: it,
+                                    },
+                                );
+                                ResponseType::Partial
+                            }
+                            None => ResponseType::Success,
+                        };
+                        let resp = protocol::SearchStoreElementsResponse { elements: chunk };
+                        Ok((kind, serializer.serialize_body(&resp)))
+                    }
+                    MessageKind::AuthenticateStoreElement => {
+                        let m = valid_message!(
+                            handler,
+                            protocol::ContinueRequest<protocol::AuthenticateStoreElementRequest>,
+                            message
+                        );
+                        let cont = state
+                            .continuations
+                            .remove::<AuthenticateStoreElementContinuation>(kind, id)
+                            .ok_or_else::<handler::Error, _>(|| {
+                                ResponseCode::ContinuationNotFound.into()
+                            })?;
+                        let msg = m
+                            .message
+                            .as_ref()
+                            .ok_or(ResponseCode::ParametersNotSupported)?;
+                        let st = match stores.get(cont.id) {
+                            Some(st) => st,
+                            None => return Err(ResponseCode::NotFound.into()),
+                        };
+                        if cont.method != msg.method
+                            || cont.id != msg.id
+                            || cont.selector != msg.selector
+                        {
+                            return Err(ResponseCode::Invalid.into());
+                        }
+                        match st.get(cont.selector) {
+                            Some(se) => {
+                                match se.authenticate(cont.method.clone(), msg.message.clone()) {
+                                    Ok((resp, more)) => {
+                                        let resp = protocol::AuthenticateStoreElementResponse {
+                                            method: cont.method.clone(),
+                                            message: resp,
+                                        };
+                                        let code = if more {
+                                            state.continuations.insert(
+                                                MessageKind::AuthenticateStoreElement,
+                                                id,
+                                                AuthenticateStoreElementContinuation {
+                                                    method: cont.method,
+                                                    id: cont.id,
+                                                    selector: cont.selector,
+                                                },
+                                            );
+                                            ResponseType::Partial
+                                        } else {
+                                            ResponseType::Success
+                                        };
+                                        Ok((code, serializer.serialize_body(&resp)))
+                                    }
+                                    Err(e) => {
+                                        trace!(
+                                            logger,
+                                            "server: {}: authenticate store element: error: {}",
+                                            id,
+                                            e
+                                        );
+                                        Err(e.into())
+                                    }
+                                }
+                            }
+                            None => {
+                                trace!(
+                                    logger,
+                                    "server: {}: authenticate store element: not present",
+                                    id
+                                );
+                                Err(ResponseCode::NotFound.into())
+                            }
+                        }
                     }
                     _ => Err(ResponseCode::ContinuationNotFound.into()),
                 }
@@ -871,6 +1074,554 @@ impl Server {
                 let resp = protocol::ListExtensionRangesResponse { ranges: chunk };
                 Ok((kind, serializer.serialize_body(&resp)))
             }
+            Some(MessageKind::OpenStore) => {
+                trace!(logger, "server: {}: open store", id);
+                assert_authenticated!(handler, message);
+                let m = valid_message!(handler, protocol::OpenStoreRequest, message);
+                logger.trace(&format!("server: {}: open store: {}", id, escape(&m.kind),));
+                let kind: &[u8] = &m.kind;
+                let res: Result<_, handler::Error> = match kind {
+                    b"credential"
+                        if handler
+                            .has_capability(&protocol::Capability::StoreCredential)
+                            .await =>
+                    {
+                        let id = stores.next_id();
+                        stores.insert(
+                            id,
+                            Arc::new(CredentialStore::new(
+                                id,
+                                state.config().clone(),
+                                state.shared_state.clone(),
+                            )),
+                        );
+                        Ok(id)
+                    }
+                    _ => return Err(ResponseCode::ParametersNotSupported.into()),
+                };
+                match res {
+                    Ok(id) => {
+                        let r = protocol::OpenStoreResponse { id };
+                        Ok((ResponseType::Success, serializer.serialize_body(&r)))
+                    }
+                    Err(_) => {
+                        trace!(logger, "server: {}: open store: failed", id);
+                        Err(ResponseCode::InvalidParameters.into())
+                    }
+                }
+            }
+            Some(MessageKind::ListStoreElements) => {
+                trace!(logger, "server: {}: list store elements", id);
+                assert_authenticated!(handler, message);
+                let m = valid_message!(handler, protocol::ListStoreElementsRequest, message);
+                trace!(logger, "server: {}: list store elements: {}", id, m.id.0);
+                let st = match stores.get(m.id) {
+                    Some(st) => st,
+                    None => return Err(ResponseCode::NotFound.into()),
+                };
+                let se = match m.selector {
+                    protocol::StoreSelector::Path(path) => match st.acquire(path)? {
+                        Some(se) => se,
+                        None => return Err(ResponseCode::NotFound.into()),
+                    },
+                    protocol::StoreSelector::ID(selector) => match st.get(selector) {
+                        Some(se) => se,
+                        None => return Err(ResponseCode::NotFound.into()),
+                    },
+                };
+                let mut it = match (se.is_directory(), se.contents()) {
+                    (false, _) => {
+                        trace!(
+                            logger,
+                            "server: {}: list store elements: not a directory",
+                            id
+                        );
+                        return Err(ResponseCode::NotSupported.into());
+                    }
+                    (true, Err(e)) => {
+                        trace!(
+                            logger,
+                            "server: {}: list store elements: directory with error: {}",
+                            id,
+                            e
+                        );
+                        return Err(e.into());
+                    }
+                    (true, Ok(None)) => {
+                        trace!(
+                            logger,
+                            "server: {}: list store elements: directory with no data",
+                            id
+                        );
+                        return Err(ResponseCode::NotSupported.into());
+                    }
+                    (true, Ok(Some(it))) => {
+                        trace!(logger, "server: {}: list store elements: found items", id);
+                        it
+                    }
+                };
+                let chunk: Vec<_> = it
+                    .by_ref()
+                    .take(100)
+                    .map(|elem| protocol::StoreElement {
+                        path: elem.path(),
+                        id: None,
+                        kind: String::from_utf8_lossy(&elem.kind()).to_string(),
+                        needs_authentication: elem.needs_authentication(),
+                        authentication_methods: elem
+                            .authentication_metadata()
+                            .map(|meta| meta.methods().to_owned()),
+                        meta: None,
+                    })
+                    .collect();
+                trace!(
+                    logger,
+                    "server: {}: list store elements: chunk size: {}",
+                    id,
+                    chunk.len()
+                );
+                let kind = match it.next() {
+                    Some(elem) => {
+                        state.continuations.insert(
+                            MessageKind::ListStoreElements,
+                            message.id,
+                            ListStoreContinuation {
+                                next: elem,
+                                iter: it,
+                            },
+                        );
+                        ResponseType::Partial
+                    }
+                    None => ResponseType::Success,
+                };
+                let resp = protocol::ListStoreElementsResponse { elements: chunk };
+                Ok((kind, serializer.serialize_body(&resp)))
+            }
+            Some(MessageKind::AcquireStoreElement) => {
+                trace!(logger, "server: {}: acquire store element", id);
+                assert_authenticated!(handler, message);
+                let m = valid_message!(handler, protocol::AcquireStoreElementRequest, message);
+                let st = match stores.get(m.id) {
+                    Some(st) => st,
+                    None => return Err(ResponseCode::NotFound.into()),
+                };
+                let selector = match st.acquire(m.selector) {
+                    Ok(Some(se)) => se.id(),
+                    Ok(None) => {
+                        trace!(logger, "server: {}: acquire store element: not found", id);
+                        return Err(ResponseCode::NotFound.into());
+                    }
+                    Err(e) => {
+                        trace!(
+                            logger,
+                            "server: {}: acquire store element: failed: {}",
+                            id,
+                            e
+                        );
+                        return Err(e.into());
+                    }
+                };
+                let resp = protocol::AcquireStoreElementResponse { selector };
+                Ok((ResponseType::Success, serializer.serialize_body(&resp)))
+            }
+            Some(MessageKind::CloseStoreElement) => {
+                trace!(logger, "server: {}: close store element", id);
+                assert_authenticated!(handler, message);
+                let m = valid_message!(handler, protocol::CloseStoreElementRequest, message);
+                let st = match stores.get(m.id) {
+                    Some(st) => st,
+                    None => return Err(ResponseCode::NotFound.into()),
+                };
+                match st.close(m.selector) {
+                    Ok(()) => Ok((ResponseType::Success, None)),
+                    Err(e) => {
+                        trace!(logger, "server: {}: open store element: error: {}", id, e);
+                        Err(e.into())
+                    }
+                }
+            }
+            Some(MessageKind::AuthenticateStoreElement) => {
+                trace!(logger, "server: {}: authenticate store element", id);
+                assert_authenticated!(handler, message);
+                let m = valid_message!(handler, protocol::AuthenticateStoreElementRequest, message);
+                let st = match stores.get(m.id) {
+                    Some(st) => st,
+                    None => return Err(ResponseCode::NotFound.into()),
+                };
+                let capabilities = state.config().capabilities();
+                let desired: protocol::Capability =
+                    (Bytes::from(b"auth" as &[u8]), Some(m.method.clone())).into();
+                if !capabilities.contains(&desired) {
+                    return Err(ResponseCode::ParametersNotSupported.into());
+                }
+                match st.get(m.selector) {
+                    Some(se) => match se.authenticate(m.method.clone(), m.message) {
+                        Ok((resp, more)) => {
+                            let resp = protocol::AuthenticateStoreElementResponse {
+                                method: m.method.clone(),
+                                message: resp,
+                            };
+                            let code = if more {
+                                state.continuations.insert(
+                                    MessageKind::AuthenticateStoreElement,
+                                    message.id,
+                                    AuthenticateStoreElementContinuation {
+                                        method: m.method,
+                                        id: m.id,
+                                        selector: m.selector,
+                                    },
+                                );
+                                ResponseType::Partial
+                            } else {
+                                ResponseType::Success
+                            };
+                            Ok((code, serializer.serialize_body(&resp)))
+                        }
+                        Err(e) => {
+                            trace!(
+                                logger,
+                                "server: {}: authenticate store element: error: {}",
+                                id,
+                                e
+                            );
+                            Err(e.into())
+                        }
+                    },
+                    None => {
+                        trace!(
+                            logger,
+                            "server: {}: authenticate store element: not present",
+                            id
+                        );
+                        Err(ResponseCode::NotFound.into())
+                    }
+                }
+            }
+            Some(MessageKind::CreateStoreElement) => {
+                trace!(logger, "server: {}: create store element", id);
+                assert_authenticated!(handler, message);
+                let m = valid_message!(handler, protocol::StoreElementBareRequest, message);
+                let st = match stores.get(m.id) {
+                    Some(st) => st,
+                    None => return Err(ResponseCode::NotFound.into()),
+                };
+                let path = match m.selector {
+                    protocol::StoreSelector::Path(path) => path,
+                    protocol::StoreSelector::ID(_) => {
+                        return Err(ResponseCode::ParametersNotSupported.into())
+                    }
+                };
+                let cred;
+                let value: Option<&dyn Any> = match &*m.kind {
+                    "directory" => None,
+                    "credential" => {
+                        cred = valid_message!(
+                            handler,
+                            protocol::CreateStoreElementRequest<protocol::CredentialStoreElement>,
+                            message
+                        );
+                        Some(&cred.body)
+                    }
+                    _ => {
+                        trace!(
+                            logger,
+                            "server: {}: create store element: unsupported type: {}",
+                            id,
+                            m.kind
+                        );
+                        return Err(ResponseCode::ParametersNotSupported.into());
+                    }
+                };
+                trace!(
+                    logger,
+                    "server: {}: create store element: creating element of type {} at {}",
+                    id,
+                    m.kind,
+                    path.as_ref().as_log_str(),
+                );
+                match st.create(path, &m.kind, m.meta.as_ref(), value) {
+                    Ok(se) => {
+                        let elem = protocol::StoreElement {
+                            path: se.path(),
+                            id: Some(se.id()),
+                            kind: String::from_utf8_lossy(se.kind()).to_string(),
+                            needs_authentication: se.needs_authentication(),
+                            authentication_methods: se
+                                .authentication_metadata()
+                                .map(|m| m.methods().to_owned()),
+                            meta: se.meta().as_deref().map(ToOwned::to_owned),
+                        };
+                        Ok((ResponseType::Success, serializer.serialize_body(&elem)))
+                    }
+                    Err(e) => {
+                        trace!(logger, "server: {}: create store element: error: {}", id, e);
+                        Err(e.into())
+                    }
+                }
+            }
+            Some(MessageKind::UpdateStoreElement) => {
+                trace!(logger, "server: {}: update store element", id);
+                assert_authenticated!(handler, message);
+                let m = valid_message!(handler, protocol::StoreElementBareRequest, message);
+                let st = match stores.get(m.id) {
+                    Some(st) => st,
+                    None => return Err(ResponseCode::NotFound.into()),
+                };
+                let se = match m.selector {
+                    protocol::StoreSelector::Path(path) => match st.acquire(path)? {
+                        Some(se) => se,
+                        None => return Err(ResponseCode::NotFound.into()),
+                    },
+                    protocol::StoreSelector::ID(selector) => match st.get(selector) {
+                        Some(se) => se,
+                        None => return Err(ResponseCode::NotFound.into()),
+                    },
+                };
+                if m.kind.as_bytes() != se.kind()
+                    || m.needs_authentication.is_some()
+                    || m.authentication_methods.is_some()
+                {
+                    trace!(
+                        logger,
+                        "server: {}: update store element: unsupported update data: {}",
+                        id,
+                        m.kind
+                    );
+                    return Err(ResponseCode::ParametersNotSupported.into());
+                }
+                let cred;
+                let value: Option<&dyn Any> = match &*m.kind {
+                    "directory" => None,
+                    "credential" => {
+                        cred = valid_message!(
+                            handler,
+                            protocol::UpdateStoreElementRequest<protocol::CredentialStoreElement>,
+                            message
+                        );
+                        Some(&cred.body)
+                    }
+                    _ => {
+                        trace!(
+                            logger,
+                            "server: {}: update store element: unsupported type: {}",
+                            id,
+                            m.kind
+                        );
+                        return Err(ResponseCode::ParametersNotSupported.into());
+                    }
+                };
+                match se.update(m.meta.as_ref(), value) {
+                    Ok(_) => Ok((ResponseType::Success, None)),
+                    Err(e) => {
+                        trace!(logger, "server: {}: update store element: error: {}", id, e);
+                        Err(e.into())
+                    }
+                }
+            }
+            Some(MessageKind::DeleteStoreElement) => {
+                trace!(logger, "server: {}: delete store element", id);
+                assert_authenticated!(handler, message);
+                let m = valid_message!(handler, protocol::DeleteStoreElementRequest, message);
+                let st = match stores.get(m.id) {
+                    Some(st) => st,
+                    None => return Err(ResponseCode::NotFound.into()),
+                };
+                let selector = match m.selector {
+                    protocol::StoreSelector::Path(path) => match st.acquire(path)? {
+                        Some(se) => se.id(),
+                        None => return Err(ResponseCode::NotFound.into()),
+                    },
+                    protocol::StoreSelector::ID(selector) => selector,
+                };
+                match st.delete(selector) {
+                    Ok(()) => Ok((ResponseType::Success, None)),
+                    Err(e) => {
+                        trace!(logger, "server: {}: delete store element: error: {}", id, e);
+                        Err(e.into())
+                    }
+                }
+            }
+            Some(MessageKind::ReadStoreElement) => {
+                trace!(logger, "server: {}: read store element", id);
+                assert_authenticated!(handler, message);
+                let m = valid_message!(handler, protocol::ReadStoreElementRequest, message);
+                let st = match stores.get(m.id) {
+                    Some(st) => st,
+                    None => return Err(ResponseCode::NotFound.into()),
+                };
+                let se = match m.selector {
+                    protocol::StoreSelector::Path(path) => match st.acquire(path)? {
+                        Some(se) => se,
+                        None => return Err(ResponseCode::NotFound.into()),
+                    },
+                    protocol::StoreSelector::ID(selector) => match st.get(selector) {
+                        Some(se) => se,
+                        None => return Err(ResponseCode::NotFound.into()),
+                    },
+                };
+                let elem = protocol::StoreElement {
+                    path: se.path(),
+                    id: Some(se.id()),
+                    kind: String::from_utf8_lossy(se.kind()).to_string(),
+                    needs_authentication: se.needs_authentication(),
+                    authentication_methods: se
+                        .authentication_metadata()
+                        .map(|m| m.methods().to_owned()),
+                    meta: se.meta().as_deref().map(ToOwned::to_owned),
+                };
+                match se.kind() {
+                    b"directory" => Ok((ResponseType::Success, serializer.serialize_body(&elem))),
+                    b"credential" => {
+                        let body = se.body()?;
+                        let cse: protocol::CredentialStoreElement = match body
+                            .map(|b| b.downcast::<protocol::CredentialStoreElement>().ok())
+                        {
+                            Some(Some(cse)) => *cse,
+                            Some(None) => {
+                                trace!(
+                                    logger,
+                                    "server: {}: read store element: unable to cast",
+                                    id,
+                                );
+                                return Err(ResponseCode::InternalError.into());
+                            }
+                            None => {
+                                trace!(
+                                    logger,
+                                    "server: {}: read store element: no body provided",
+                                    id,
+                                );
+                                return Err(ResponseCode::NotFound.into());
+                            }
+                        };
+                        let resp = protocol::StoreElementWithBody::new(elem, cse);
+                        Ok((ResponseType::Success, serializer.serialize_body(&resp)))
+                    }
+                    _ => {
+                        trace!(
+                            logger,
+                            "server: {}: read store element: unsupported type: {}",
+                            id,
+                            se.kind().as_log_str()
+                        );
+                        Err(ResponseCode::ParametersNotSupported.into())
+                    }
+                }
+            }
+            Some(MessageKind::SearchStoreElements) => {
+                trace!(logger, "server: {}: search store elements", id);
+                assert_authenticated!(handler, message);
+                let m = valid_message!(handler, protocol::SearchStoreElementsBareRequest, message);
+                let st = match stores.get(m.id) {
+                    Some(st) => st,
+                    None => return Err(ResponseCode::NotFound.into()),
+                };
+                trace!(
+                    logger,
+                    "server: {}: search store elements: selector {:?}",
+                    id,
+                    m.selector
+                );
+                let se = match m.selector {
+                    protocol::StoreSelector::Path(path) => match st.acquire(path)? {
+                        Some(se) => se,
+                        None => return Err(ResponseCode::NotFound.into()),
+                    },
+                    protocol::StoreSelector::ID(selector) => match st.get(selector) {
+                        Some(se) => se,
+                        None => return Err(ResponseCode::NotFound.into()),
+                    },
+                };
+                match m.kind.as_deref() {
+                    Some("credential") => {
+                        let m = valid_message!(
+                            handler,
+                            protocol::SearchStoreElementsRequest<
+                                protocol::CredentialStoreSearchElement,
+                            >,
+                            message
+                        );
+                        let mut it = match tokio::task::spawn_blocking(move || {
+                            let body: Option<&dyn Any> = match &m.body {
+                                Some(b) => Some(b),
+                                None => None,
+                            };
+                            se.search(m.kind.map(|k| k.into()), body, m.recurse)
+                        })
+                        .await
+                        {
+                            Ok(Ok(res)) => res,
+                            Ok(Err(e)) => {
+                                trace!(
+                                    logger,
+                                    "server: {}: search store element: search error: {}",
+                                    id,
+                                    e,
+                                );
+                                return Err(e.into());
+                            }
+                            Err(_) => return Err(ResponseCode::InternalError.into()),
+                        };
+                        let chunk = it
+                            .by_ref()
+                            .take(100)
+                            .filter_map(|elem| {
+                                let body = match elem.body() {
+                                    Ok(Some(body)) => body,
+                                    Ok(None) => return None,
+                                    Err(e) => return Some(Err(e)),
+                                };
+                                let cse =
+                                    body.downcast_ref::<protocol::CredentialStoreElement>()?;
+                                Some(Ok(protocol::StoreElementWithBody {
+                                    path: elem.path(),
+                                    id: Some(elem.id()),
+                                    kind: String::from_utf8_lossy(&elem.kind()).to_string(),
+                                    needs_authentication: elem.needs_authentication(),
+                                    authentication_methods: None,
+                                    meta: None,
+                                    body: cse.clone(),
+                                }))
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        let kind = match it.next() {
+                            Some(elem) => {
+                                state.continuations.insert(
+                                    MessageKind::ListStoreElements,
+                                    message.id,
+                                    SearchStoreContinuation {
+                                        next: elem,
+                                        iter: it,
+                                    },
+                                );
+                                ResponseType::Partial
+                            }
+                            None => ResponseType::Success,
+                        };
+                        let resp = protocol::SearchStoreElementsResponse { elements: chunk };
+                        Ok((kind, serializer.serialize_body(&resp)))
+                    }
+                    _ => {
+                        trace!(
+                            logger,
+                            "server: {}: search store element: unsupported type: {}",
+                            id,
+                            se.kind().as_log_str()
+                        );
+                        Err(ResponseCode::ParametersNotSupported.into())
+                    }
+                }
+            }
+            Some(MessageKind::CloseStore) => {
+                logger.trace(&format!("server: {}: close store", id));
+                assert_authenticated!(handler, message);
+                let m = valid_message!(handler, protocol::CloseStoreRequest, message);
+                match stores.remove(m.id) {
+                    Some(ch) => std::mem::drop(ch),
+                    None => return Err(ResponseCode::NotFound.into()),
+                };
+                Ok((ResponseType::Success, None))
+            }
             Some(_) | None => {
                 logger.trace(&format!(
                     "server: {}: unknown message kind {:08x}",
@@ -892,8 +1643,8 @@ impl Server {
         if allowed != requested {
             return Err(ResponseCode::ParametersNotSupported.into());
         }
-        let args = match &m.args {
-            Some(args) if !args.is_empty() => args,
+        let args: Arc<[Bytes]> = match &m.args {
+            Some(args) if !args.is_empty() => args.clone().into(),
             _ => return Err(ResponseCode::InvalidParameters.into()),
         };
         let config = state.config();
@@ -901,7 +1652,8 @@ impl Server {
             Some(cmd) => cmd,
             None => return Err(ResponseCode::NotFound.into()),
         };
-        let ctx = config.template_context(m.env.as_ref(), Some(args));
+        let env = m.env.as_ref().map(|e| Arc::new(e.clone()));
+        let ctx = config.template_context(env, Some(args.clone()));
         let logger = state.logger();
         let channels = state.channels();
         let cmd = match config::Command::new(&cfgcmd, &ctx) {
@@ -1228,12 +1980,44 @@ impl Server {
     }
 }
 
+/// State shared across multiple connection instances.
+///
+/// This struct contains data which can be shared across multiple server connections, notably data
+/// for cached credentials and the configuration.
+#[allow(dead_code)]
+pub struct SharedServerState {
+    credentials: RwLock<BTreeMap<Bytes, Arc<dyn Any + Send + Sync>>>,
+    config: Arc<Config>,
+}
+
+impl SharedServerState {
+    /// Create a new shared server state.
+    fn new(config: Arc<Config>) -> Arc<Self> {
+        Arc::new(SharedServerState {
+            credentials: Default::default(),
+            config,
+        })
+    }
+
+    /// Get the credentials stored in this state.
+    #[allow(dead_code)]
+    pub fn credentials(&self) -> &RwLock<BTreeMap<Bytes, Arc<dyn Any + Send + Sync>>> {
+        &self.credentials
+    }
+
+    /// Get the configuration stored in this state.
+    pub fn config(&self) -> Arc<Config> {
+        self.config.clone()
+    }
+}
+
 struct ServerState<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> {
     handler: Arc<ProtocolHandler<T, U>>,
     channels: Arc<ChannelManager>,
-    config: Arc<Config>,
+    stores: Arc<StoreManager>,
     extensions: Arc<RwLock<ExtensionMap>>,
     continuations: Continuations,
+    shared_state: Arc<SharedServerState>,
 }
 
 impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ServerState<T, U> {
@@ -1245,11 +2029,15 @@ impl<T: AsyncRead + Unpin, U: AsyncWrite + Unpin> ServerState<T, U> {
         self.channels.clone()
     }
 
+    fn stores(&self) -> Arc<StoreManager> {
+        self.stores.clone()
+    }
+
     fn config(&self) -> Arc<Config> {
-        self.config.clone()
+        self.shared_state.config.clone()
     }
 
     fn logger(&self) -> Arc<Logger> {
-        self.config.logger()
+        self.shared_state.config.logger()
     }
 }

@@ -99,10 +99,15 @@ pub enum ResponseCode {
     ///
     /// The semantics for this message are equivalent to an HTTP 409 response.
     Conflict = 0x0001000d,
+    /// The contents of the object cannot be listed or specified by name.
+    ///
+    /// For example, when using a Git-protocol credential helper, it is not possible to enumerate
+    /// all credentials or pick a credential by ID.
+    Unlistable = 0x0001000e,
 
     /// The message type was not enabled.
     NotEnabled = 0x00020000,
-    /// The message type was not supported.
+    /// The message type or operation was not supported.
     NotSupported = 0x00020001,
     /// The parameters were not supported.
     ParametersNotSupported = 0x00020002,
@@ -262,16 +267,58 @@ pub enum MessageKind {
 
     /// Lists all allocated ranges of IDs for extensions.
     ListExtensionRanges = 0x00020002,
+
+    /// Open a store and associate an ID with it.
+    OpenStore = 0x00030000,
+
+    /// Close a store and associate an ID with it.
+    CloseStore = 0x00030001,
+
+    /// Lists all elements of a given type in the given store.
+    ListStoreElements = 0x00030002,
+
+    /// Acquire a handle to an element in the given store.
+    AcquireStoreElement = 0x00030003,
+
+    /// Release the handle of a store element.
+    CloseStoreElement = 0x00030004,
+
+    /// Authenticate to a store element if that's required to open it.
+    AuthenticateStoreElement = 0x00030005,
+
+    /// Create a store element.
+    CreateStoreElement = 0x00030006,
+
+    /// Delete a store element.
+    DeleteStoreElement = 0x00030007,
+
+    /// Update a store element.
+    UpdateStoreElement = 0x00030008,
+
+    /// Read a store element.
+    ReadStoreElement = 0x00030009,
+
+    /// Rename a store element.
+    RenameStoreElement = 0x0003000a,
+
+    /// Copy a store element.
+    CopyStoreElement = 0x0003000b,
+
+    /// Search store elements.
+    SearchStoreElements = 0x0003000c,
 }
 
 #[derive(Debug, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
 pub enum Capability {
     AuthExternal,
+    AuthKeyboardInteractive,
+    AuthPlain,
     ChannelCommand,
     Channel9P,
     ChannelSFTP,
     ChannelClipboard,
     ExtensionAllocate,
+    StoreCredential,
     Other(Bytes, Option<Bytes>),
 }
 
@@ -280,11 +327,14 @@ impl Capability {
     pub fn implemented() -> BTreeSet<Capability> {
         [
             Self::AuthExternal,
+            Self::AuthKeyboardInteractive,
+            Self::AuthPlain,
             Self::ChannelCommand,
             Self::ChannelClipboard,
             Self::Channel9P,
             Self::ChannelSFTP,
             Self::ExtensionAllocate,
+            Self::StoreCredential,
         ]
         .iter()
         .cloned()
@@ -295,11 +345,14 @@ impl Capability {
         matches!(
             self,
             Self::AuthExternal
+                | Self::AuthKeyboardInteractive
+                | Self::AuthPlain
                 | Self::ChannelCommand
                 | Self::ChannelClipboard
                 | Self::Channel9P
                 | Self::ChannelSFTP
                 | Self::ExtensionAllocate
+                | Self::StoreCredential
         )
     }
 }
@@ -311,6 +364,11 @@ impl From<Capability> for (Bytes, Option<Bytes>) {
                 (b"auth" as &[u8]).into(),
                 Some((b"EXTERNAL" as &[u8]).into()),
             ),
+            Capability::AuthKeyboardInteractive => (
+                (b"auth" as &[u8]).into(),
+                Some((b"keyboard-interactive" as &[u8]).into()),
+            ),
+            Capability::AuthPlain => ((b"auth" as &[u8]).into(), Some((b"PLAIN" as &[u8]).into())),
             Capability::ChannelCommand => (
                 (b"channel" as &[u8]).into(),
                 Some((b"command" as &[u8]).into()),
@@ -323,6 +381,10 @@ impl From<Capability> for (Bytes, Option<Bytes>) {
             Capability::ChannelClipboard => (
                 (b"channel" as &[u8]).into(),
                 Some((b"clipboard" as &[u8]).into()),
+            ),
+            Capability::StoreCredential => (
+                (b"store" as &[u8]).into(),
+                Some((b"credential" as &[u8]).into()),
             ),
             Capability::ExtensionAllocate => (
                 (b"extension" as &[u8]).into(),
@@ -337,10 +399,13 @@ impl From<(&[u8], Option<&[u8]>)> for Capability {
     fn from(data: (&[u8], Option<&[u8]>)) -> Capability {
         match data {
             (b"auth", Some(b"EXTERNAL")) => Capability::AuthExternal,
+            (b"auth", Some(b"PLAIN")) => Capability::AuthPlain,
+            (b"auth", Some(b"keyboard-interactive")) => Capability::AuthKeyboardInteractive,
             (b"channel", Some(b"command")) => Capability::ChannelCommand,
             (b"channel", Some(b"9p")) => Capability::Channel9P,
             (b"channel", Some(b"sftp")) => Capability::ChannelSFTP,
             (b"channel", Some(b"clipboard")) => Capability::ChannelClipboard,
+            (b"store", Some(b"credential")) => Capability::StoreCredential,
             (b"extension", Some(b"allocate")) => Capability::ExtensionAllocate,
             (name, subtype) => {
                 Capability::Other(name.to_vec().into(), subtype.map(|s| s.to_vec().into()))
@@ -630,6 +695,344 @@ pub enum ClipboardChannelOperation {
     Paste,
 }
 
+#[derive(Serialize, Deserialize, Hash, Debug, Eq, PartialEq, Ord, PartialOrd, Clone, Copy)]
+#[serde(transparent)]
+pub struct StoreID(pub u32);
+
+#[derive(Serialize, Deserialize, Hash, Debug, Eq, PartialEq, Ord, PartialOrd, Clone, Copy)]
+#[serde(transparent)]
+pub struct StoreSelectorID(pub u32);
+
+#[derive(Serialize, Deserialize, Debug, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub enum StoreSelector {
+    Path(Bytes),
+    #[serde(rename = "id")]
+    ID(StoreSelectorID),
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct OpenStoreRequest {
+    pub kind: Bytes,
+    pub path: Option<Bytes>,
+    pub meta: Option<BTreeMap<Bytes, Value>>,
+}
+
+#[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct OpenStoreResponse {
+    pub id: StoreID,
+}
+
+#[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct CloseStoreRequest {
+    pub id: StoreID,
+}
+
+#[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct ListStoreElementsRequest {
+    pub id: StoreID,
+    pub selector: StoreSelector,
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct ListStoreElementsResponse {
+    pub elements: Vec<StoreElement>,
+}
+
+impl IntoIterator for ListStoreElementsResponse {
+    type Item = StoreElement;
+    type IntoIter = std::vec::IntoIter<StoreElement>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.elements.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a ListStoreElementsResponse {
+    type Item = &'a StoreElement;
+    type IntoIter = std::slice::Iter<'a, StoreElement>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.elements.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut ListStoreElementsResponse {
+    type Item = &'a mut StoreElement;
+    type IntoIter = std::slice::IterMut<'a, StoreElement>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.elements.iter_mut()
+    }
+}
+
+#[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct AcquireStoreElementRequest {
+    pub id: StoreID,
+    pub selector: Bytes,
+}
+
+#[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct AcquireStoreElementResponse {
+    pub selector: StoreSelectorID,
+}
+
+#[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct CloseStoreElementRequest {
+    pub id: StoreID,
+    pub selector: StoreSelectorID,
+}
+
+#[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct AuthenticateStoreElementRequest {
+    pub id: StoreID,
+    pub selector: StoreSelectorID,
+    pub method: Bytes,
+    pub message: Option<Bytes>,
+}
+
+#[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct AuthenticateStoreElementResponse {
+    pub method: Bytes,
+    pub message: Option<Bytes>,
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct StoreElementBareRequest {
+    pub id: StoreID,
+    pub selector: StoreSelector,
+    pub kind: String,
+    pub needs_authentication: Option<bool>,
+    pub authentication_methods: Option<Vec<Bytes>>,
+    pub meta: Option<BTreeMap<Bytes, Value>>,
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct CreateStoreElementRequest<T> {
+    pub id: StoreID,
+    pub selector: StoreSelector,
+    pub kind: String,
+    pub needs_authentication: Option<bool>,
+    pub authentication_methods: Option<Vec<Bytes>>,
+    pub meta: Option<BTreeMap<Bytes, Value>>,
+    pub body: T,
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct DeleteStoreElementRequest {
+    pub id: StoreID,
+    pub selector: StoreSelector,
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct UpdateStoreElementRequest<T> {
+    pub id: StoreID,
+    pub selector: StoreSelector,
+    pub kind: String,
+    pub needs_authentication: Option<bool>,
+    pub authentication_methods: Option<Vec<Bytes>>,
+    pub meta: Option<BTreeMap<Bytes, Value>>,
+    pub body: T,
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct ReadStoreElementRequest {
+    pub id: StoreID,
+    pub selector: StoreSelector,
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct ReadStoreElementResponse<T> {
+    pub kind: String,
+    pub needs_authentication: Option<bool>,
+    pub authentication_methods: Option<Vec<Bytes>>,
+    pub meta: Option<BTreeMap<Bytes, Value>>,
+    pub body: T,
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub enum StoreSearchRecursionLevel {
+    Boolean(bool),
+    Levels(u32),
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct SearchStoreElementsBareRequest {
+    pub id: StoreID,
+    pub selector: StoreSelector,
+    pub recurse: StoreSearchRecursionLevel,
+    pub kind: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct SearchStoreElementsRequest<T> {
+    pub id: StoreID,
+    pub selector: StoreSelector,
+    pub recurse: StoreSearchRecursionLevel,
+    pub kind: Option<String>,
+    pub body: Option<T>,
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct SearchStoreElementsResponse<T> {
+    pub elements: Vec<StoreElementWithBody<T>>,
+}
+
+impl<T> IntoIterator for SearchStoreElementsResponse<T> {
+    type Item = StoreElementWithBody<T>;
+    type IntoIter = std::vec::IntoIter<StoreElementWithBody<T>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.elements.into_iter()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a SearchStoreElementsResponse<T> {
+    type Item = &'a StoreElementWithBody<T>;
+    type IntoIter = std::slice::Iter<'a, StoreElementWithBody<T>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.elements.iter()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a mut SearchStoreElementsResponse<T> {
+    type Item = &'a mut StoreElementWithBody<T>;
+    type IntoIter = std::slice::IterMut<'a, StoreElementWithBody<T>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.elements.iter_mut()
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct StoreElement {
+    pub path: Bytes,
+    pub id: Option<StoreSelectorID>,
+    pub kind: String,
+    pub needs_authentication: Option<bool>,
+    pub authentication_methods: Option<Vec<Bytes>>,
+    pub meta: Option<BTreeMap<Bytes, Value>>,
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct StoreElementWithBody<T> {
+    pub path: Bytes,
+    pub id: Option<StoreSelectorID>,
+    pub kind: String,
+    pub needs_authentication: Option<bool>,
+    pub authentication_methods: Option<Vec<Bytes>>,
+    pub meta: Option<BTreeMap<Bytes, Value>>,
+    pub body: T,
+}
+
+impl<T> StoreElementWithBody<T> {
+    pub fn new(elem: StoreElement, body: T) -> Self {
+        Self {
+            path: elem.path,
+            id: elem.id,
+            kind: elem.kind,
+            needs_authentication: elem.needs_authentication,
+            authentication_methods: elem.authentication_methods,
+            meta: elem.meta,
+            body,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub enum SearchStoreElementType {
+    Literal(Value),
+    Set(BTreeSet<SearchStoreElementType>),
+    Sequence(Vec<SearchStoreElementType>),
+    // The unit value here exists to keep the same form across all serializations.
+    Any(()),
+    None(()),
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone, Debug)]
+#[serde(rename_all = "kebab-case")]
+pub struct CredentialStoreSearchElement {
+    pub username: SearchStoreElementType,
+    pub secret: SearchStoreElementType,
+    pub authtype: SearchStoreElementType,
+    pub kind: SearchStoreElementType,
+    pub protocol: SearchStoreElementType,
+    pub host: SearchStoreElementType,
+    pub title: SearchStoreElementType,
+    pub description: SearchStoreElementType,
+    pub path: SearchStoreElementType,
+    pub service: SearchStoreElementType,
+    pub extra: BTreeMap<String, SearchStoreElementType>,
+    pub id: SearchStoreElementType,
+}
+
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct CredentialStoreLocation {
+    pub protocol: Option<String>,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub path: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct CredentialStoreElement {
+    pub username: Option<Bytes>,
+    pub secret: Option<Bytes>,
+    pub authtype: Option<String>,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub location: Vec<CredentialStoreLocation>,
+    pub service: Option<String>,
+    pub extra: BTreeMap<String, Value>,
+    pub id: Bytes,
+}
+
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Ord, PartialOrd, Clone)]
+pub struct KeyboardInteractiveAuthenticationPrompt {
+    pub prompt: String,
+    pub echo: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Ord, PartialOrd, Clone)]
+pub struct KeyboardInteractiveAuthenticationRequest {
+    pub name: String,
+    pub instruction: String,
+    pub prompts: Vec<KeyboardInteractiveAuthenticationPrompt>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Ord, PartialOrd, Clone)]
+pub struct KeyboardInteractiveAuthenticationResponse {
+    pub responses: Vec<String>,
+}
+
 /// A message for the protocol.
 #[derive(Clone, Debug)]
 pub struct Message {
@@ -861,9 +1264,13 @@ impl ProtocolSerializer {
 
 #[cfg(test)]
 mod tests {
-    use super::{ChannelID, Empty, Message, ProtocolSerializer, Response, ResponseValue};
+    use super::{
+        ChannelID, Empty, Message, ProtocolSerializer, Response, ResponseValue,
+        SearchStoreElementType, StoreID, StoreSelector, StoreSelectorID,
+    };
     use bytes::Bytes;
     use serde::{de::DeserializeOwned, Deserialize, Serialize};
+    use serde_cbor::Value;
     use std::convert::TryFrom;
     use std::fmt::Debug;
 
@@ -1006,6 +1413,53 @@ mod tests {
             "ChannelID all ones u32",
             &ChannelID(0xfedcba98u32),
             b"\x1a\xfe\xdc\xba\x98",
+        );
+        assert_round_trip("StoreID 0", &StoreID(0), b"\x00");
+        assert_round_trip(
+            "StoreID pattern",
+            &StoreID(0xfedcba98u32),
+            b"\x1a\xfe\xdc\xba\x98",
+        );
+        assert_round_trip("StoreSelectorID 0", &StoreSelectorID(0), b"\x00");
+        assert_round_trip(
+            "StoreSelectorID pattern",
+            &StoreSelectorID(0xfedcba98u32),
+            b"\x1a\xfe\xdc\xba\x98",
+        );
+        assert_round_trip(
+            "StoreSelector path",
+            &StoreSelector::Path(Bytes::from(b"/dev/null" as &[u8])),
+            b"\xa1\x64path\x49/dev/null",
+        );
+        assert_round_trip(
+            "StoreSelector ID",
+            &StoreSelector::ID(StoreSelectorID(0xfedcba98u32)),
+            b"\xa1\x62id\x1a\xfe\xdc\xba\x98",
+        );
+        assert_round_trip(
+            "SearchStoreElementType literal text",
+            &SearchStoreElementType::Literal(Value::Text(String::from("abc123"))),
+            b"\xa1\x67literal\x66abc123",
+        );
+        assert_round_trip(
+            "SearchStoreElementType literal bytes",
+            &SearchStoreElementType::Literal(Value::Bytes("abc123".into())),
+            b"\xa1\x67literal\x46abc123",
+        );
+        assert_round_trip(
+            "SearchStoreElementType literal null",
+            &SearchStoreElementType::Literal(Value::Null),
+            b"\xa1\x67literal\xf6",
+        );
+        assert_round_trip(
+            "SearchStoreElementType any",
+            &SearchStoreElementType::Any(()),
+            b"\xa1\x63any\xf6",
+        );
+        assert_round_trip(
+            "SearchStoreElementType none",
+            &SearchStoreElementType::None(()),
+            b"\xa1\x64none\xf6",
         );
     }
 
