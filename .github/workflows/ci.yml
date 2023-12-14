@@ -2,17 +2,17 @@ name: ci
 on: [push, pull_request]
 
 jobs:
-  build-bullseye:
-    name: Linux (Debian bullseye amd64)
+  build-bookworm:
+    name: Linux (Debian bookworm amd64)
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
     - uses: ruby/setup-ruby@v1
       with:
         ruby-version: 3.1
-    - run: make ci-bullseye
-  build-bullseye-arm64:
-    name: Linux (Debian bullseye arm64)
+    - run: make ci-bookworm
+  build-bookworm-arm64:
+    name: Linux (Debian bookworm arm64)
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
@@ -24,7 +24,7 @@ jobs:
         sudo systemctl restart docker.service
         docker version -f '{{.Server.Experimental}}'
     - uses: docker/setup-qemu-action@v2
-    - run: make ci-bullseye
+    - run: make ci-bookworm
       env:
         PLATFORM: linux/arm64
   build-oldest:
