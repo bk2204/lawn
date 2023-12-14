@@ -971,12 +971,11 @@ impl Backend for LibcBackend {
         }
     }
 
-    fn remove(&self, meta: &Metadata, fid: FID) -> Result<()> {
+    fn remove(&self, _meta: &Metadata, fid: FID) -> Result<()> {
         trace!(self.logger, "FS remove: fid {:?}", fid);
         let g = self.fid.guard();
         match self.fid.get(&fid, &g) {
             Some(fk) => {
-                let _ = self.clunk(meta, fid);
                 let idi = match fk.id_info() {
                     Some(p) => p,
                     _ => return Err(Error::EOPNOTSUPP),
@@ -2303,6 +2302,7 @@ mod tests {
             .unwrap();
         verify_file(&mut inst, fid(3), b"dir/file");
         inst.server.remove(&inst.next_meta(), fid(3)).unwrap();
+        inst.server.clunk(&inst.next_meta(), fid(3)).unwrap();
         verify_closed(&mut inst, fid(3));
     }
 
