@@ -128,7 +128,7 @@ ci-%: test/Dockerfile.%.stamp
 
 ci-freebsd:
 	vagrant init generic/freebsd$(FREEBSD_VERSION)
-	vagrant up
+	for i in $$(seq 10); do vagrant up && break; vagrant halt || true; done
 	vagrant ssh -- sudo pkg install -y curl git gmake rubygem-asciidoctor rubygem-rspec rust
 	vagrant ssh -- git init /home/vagrant/lawn
 	GIT_SSH_COMMAND='f() { shift; vagrant ssh -- "$$@"; };f' git push vagrant@localhost:/home/vagrant/lawn HEAD:refs/heads/dev
@@ -136,7 +136,7 @@ ci-freebsd:
 
 ci-netbsd:
 	vagrant init generic/netbsd$(NETBSD_VERSION)
-	vagrant up
+	for i in $$(seq 10); do vagrant up && break; vagrant halt || true; done
 	vagrant ssh -- sudo /usr/pkg/bin/pkgin update
 	vagrant ssh -- sudo /usr/pkg/bin/pkgin -y install mozilla-rootcerts-openssl curl git gmake ruby31-asciidoctor ruby31-rspec rust
 	vagrant ssh -- git init /home/vagrant/lawn
