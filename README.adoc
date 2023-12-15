@@ -24,7 +24,7 @@ Note that while Lawn has some access control built in, it is only designed for t
 If you expose the socket on an untrusted machine, you may very well end up with a security problem.
 Please don't do that.
 
-Lawn should run on any Unix system with Rust 1.48.0 or newer.
+Lawn should run on any Unix system with Rust 1.63.0 or newer.
 If it doesn't work on your Unix system, let us know, and we'll try to get it fixed.
 
 Note that this tool is currently highly Unix specific and makes copious use of Unix sockets, Unix error codes, and the Unix-based Rust extensions.

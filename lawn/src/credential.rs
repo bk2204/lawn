@@ -1318,20 +1318,15 @@ impl Clone for CredentialParserError {
     }
 }
 
-#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Default, Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub enum FieldRequest {
     LiteralBytes(Bytes),
     LiteralString(String),
     Set(BTreeSet<FieldRequest>),
     Sequence(Vec<FieldRequest>),
+    #[default]
     Any,
     None,
-}
-
-impl Default for FieldRequest {
-    fn default() -> Self {
-        FieldRequest::Any
-    }
 }
 
 impl FieldRequest {

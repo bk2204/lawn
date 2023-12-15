@@ -1,5 +1,5 @@
 # Test configuration.
-GROUPS := bullseye stable nightly oldest
+GROUPS := bookworm stable nightly oldest
 DOCKER_FILES := $(patsubst %,test/Dockerfile.%,$(GROUPS))
 DOCKER_STAMPS := $(patsubst %,test/Dockerfile.%.stamp,$(GROUPS))
 CI_TARGETS := $(patsubst %,ci-%,$(GROUPS))

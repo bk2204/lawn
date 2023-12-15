@@ -1091,7 +1091,7 @@ impl Server {
                             id,
                             Arc::new(CredentialStore::new(
                                 id,
-                                state.config().clone(),
+                                state.config(),
                                 state.shared_state.clone(),
                             )),
                         );
