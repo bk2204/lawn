@@ -158,7 +158,7 @@ impl MemoryCredentialBackend {
         token: Option<&str>,
         shared_state: Arc<SharedServerState>,
     ) -> Self {
-        let st = shared_state.clone();
+        let st = shared_state;
         let key = Self::key_from_name(name.clone());
         let mut creds = st.credentials().write().unwrap();
         let logger = config.logger();

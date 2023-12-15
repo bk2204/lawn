@@ -456,7 +456,7 @@ impl<
             kind,
             path
         );
-        if let Some(path) = path.clone() {
+        if let Some(path) = path {
             if kind != "directory" {
                 trace!(
                     logger,
@@ -664,7 +664,7 @@ impl<
         store_id: StoreID,
         name: &[u8],
     ) -> Result<Option<Arc<dyn CredentialVault + Send + Sync>>, CredentialParserError> {
-        if self.clone().list_vaults()?.iter().any(|nm| *nm == name) {
+        if self.list_vaults()?.iter().any(|nm| *nm == name) {
             let vault = Arc::new(CommandCredentialVault {
                 store_id,
                 id: self.clone().next_id(),

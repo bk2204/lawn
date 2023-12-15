@@ -597,15 +597,14 @@ impl Store for CredentialStore {
                 Some(CredentialPathComponentType::VaultDirectory)
                 | Some(CredentialPathComponentType::Entry) => {
                     let b = backend.ok_or(protocol::Error::from(ResponseCode::NotFound))?;
-                    b.acquire_at_path(self.id, path.clone())
-                        .map_err(|e| match e {
-                            CredentialParserError::Unlistable => ResponseCode::Unlistable.into(),
-                            CredentialParserError::Unauthenticated => {
-                                ResponseCode::NeedsAuthentication.into()
-                            }
-                            CredentialParserError::NoSuchHandle => ResponseCode::NotFound.into(),
-                            _ => ResponseCode::InternalError.into(),
-                        })
+                    b.acquire_at_path(self.id, path).map_err(|e| match e {
+                        CredentialParserError::Unlistable => ResponseCode::Unlistable.into(),
+                        CredentialParserError::Unauthenticated => {
+                            ResponseCode::NeedsAuthentication.into()
+                        }
+                        CredentialParserError::NoSuchHandle => ResponseCode::NotFound.into(),
+                        _ => ResponseCode::InternalError.into(),
+                    })
                 }
                 None => Err(ResponseCode::NotFound.into()),
             };

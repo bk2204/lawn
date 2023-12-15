@@ -67,7 +67,7 @@ impl GitCredentialBackend {
             None,
         );
         proto.clone().send_approve_reject_request(req)?;
-        proto.clone().close_writer();
+        proto.close_writer();
         let _ = child.wait();
         let components: &[&[u8]] = &[b"", self.backend_name(), b"-", &req.id];
         let path = StorePath::from_components(components).unwrap().into_inner();
