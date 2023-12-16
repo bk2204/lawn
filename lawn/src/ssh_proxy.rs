@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use crate::config::Config;
 use crate::encoding::escape;
 use num_derive::FromPrimitive;
@@ -21,10 +22,63 @@ enum MessageKind {
     ExtensionFailure = 28,
 }
 
+// Based on the Rust standard library.
+#[inline]
+fn advance_slices(bufs: &[io::IoSlice<'_>], n: usize) -> (usize, usize) {
+    // Number of buffers to remove.
+    let mut remove = 0;
+    // Remaining length before reaching n. This prevents overflow
+    // that could happen if the length of slices in `bufs` were instead
+    // accumulated. Those slice may be aliased and, if they are large
+    // enough, their added length may overflow a `usize`.
+    let mut left = n;
+    for buf in bufs.iter() {
+        if let Some(remainder) = left.checked_sub(buf.len()) {
+            left = remainder;
+            remove += 1;
+        } else {
+            break;
+        }
+    }
+
+    (remove, left)
+}
+
+async fn write_full<W: AsyncWriteExt + Unpin + Send>(data: &[&[u8]], w: &mut W) -> io::Result<()> {
+    let mut len: usize = data.iter().map(|x| x.len()).sum();
+    let mut slices: Vec<io::IoSlice<'_>> = data.iter().map(|item| io::IoSlice::new(item)).collect();
+    let mut total_remove = 0;
+    while len > 0 {
+        let nwritten = w.write_vectored(&slices[total_remove..]).await?;
+        len -= nwritten;
+        if len == 0 {
+            break;
+        }
+        let (remove, left) = advance_slices(&slices[total_remove..], nwritten);
+        total_remove += remove;
+        slices[0] = io::IoSlice::new(&data[total_remove][left..]);
+    }
+    Ok(())
+}
+
+#[async_trait]
+trait Writable {
+    async fn write_full<W: AsyncWriteExt + Unpin + Send>(&self, w: &mut W) -> io::Result<()>;
+}
+
 struct SSHMessage {
     len: u32,
     kind: u8,
     data: Vec<u8>,
+}
+
+#[async_trait]
+impl Writable for SSHMessage {
+    async fn write_full<W: AsyncWriteExt + Unpin + Send>(&self, w: &mut W) -> io::Result<()> {
+        let lenbuf = self.len.to_be_bytes();
+        let data = [&lenbuf, std::slice::from_ref(&self.kind), &self.data];
+        write_full(&data, w).await
+    }
 }
 
 struct Message {
@@ -32,6 +86,22 @@ struct Message {
     id: u32,
     next: u32,
     data: Vec<u8>,
+}
+
+#[async_trait]
+impl Writable for Message {
+    async fn write_full<W: AsyncWriteExt + Unpin + Send>(&self, w: &mut W) -> io::Result<()> {
+        let lenbuf = self.len.to_be_bytes();
+        let idbuf = self.id.to_be_bytes();
+        let nextbuf = self.next.to_be_bytes();
+        let data: &[&[u8]] = &[
+            &lenbuf,
+            &idbuf,
+            &nextbuf,
+            &self.data,
+        ];
+        write_full(&data, w).await
+    }
 }
 
 #[allow(clippy::enum_variant_names)]
@@ -410,12 +480,8 @@ impl Proxy {
         message: &SSHMessage,
         sock: &Mutex<UnixStream>,
     ) -> Result<(), Error> {
-        let mut buf = [0u8; 5];
-        buf[0..4].copy_from_slice(&message.len.to_be_bytes());
-        buf[4..5].copy_from_slice(&message.kind.to_be_bytes());
         let mut ssh = sock.lock().await;
-        ssh.write_all(&buf).await?;
-        ssh.write_all(&message.data).await?;
+        message.write_full(&mut *ssh).await?;
         Ok(())
     }
 
