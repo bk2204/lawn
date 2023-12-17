@@ -247,6 +247,7 @@ impl Proxy {
         multiplex: std::os::unix::net::UnixStream,
     ) -> Result<std::os::unix::net::UnixStream, Error> {
         let logger = config.logger();
+        let _ = multiplex.set_nonblocking(true);
         let sock = UnixStream::from_std(multiplex).unwrap();
         let (mrd, mwr) = sock.into_split();
         let mwr = Mutex::new(mwr);
@@ -268,7 +269,9 @@ impl Proxy {
         trace!(logger, "SSH client probe: ok");
         let mrd = mrd.into_inner();
         let mwr = mwr.into_inner();
-        Ok(mrd.reunite(mwr).unwrap().into_std().unwrap())
+        let std = mrd.reunite(mwr).unwrap().into_std().unwrap();
+        let _ = std.set_nonblocking(false);
+        Ok(std)
     }
 
     /// Runs a client to completion.
