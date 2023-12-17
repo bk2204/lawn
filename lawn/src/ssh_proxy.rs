@@ -81,6 +81,21 @@ impl Writable for SSHMessage {
     }
 }
 
+struct BorrowedSSHMessage<'a> {
+    len: u32,
+    kind: u8,
+    data: &'a [u8],
+}
+
+#[async_trait]
+impl<'a> Writable for BorrowedSSHMessage<'a> {
+    async fn write_full<W: AsyncWriteExt + Unpin + Send>(&self, w: &mut W) -> io::Result<()> {
+        let lenbuf = self.len.to_be_bytes();
+        let data = [&lenbuf, std::slice::from_ref(&self.kind), &self.data];
+        write_full(&data, w).await
+    }
+}
+
 struct Message {
     len: u32,
     id: u32,
@@ -500,6 +515,33 @@ impl Proxy {
             data: vec![0u8; (len - 1) as usize],
         };
         ssh.read_exact(&mut msg.data).await?;
+        Ok(msg)
+    }
+
+    async fn read_borrowed_ssh_message<'a>(sock: &Mutex<UnixStream>, v: &'a mut Vec<u8>) -> Result<BorrowedSSHMessage<'a>, Error> {
+        use tokio::io::AsyncReadExt;
+        let mut ssh = sock.lock().await;
+        let mut buf = [0u8; 5];
+        ssh.read_exact(&mut buf).await?;
+        let len = u32::from_be_bytes(buf[0..4].try_into().unwrap());
+        if !(1..((1 << 24) + 12)).contains(&len) {
+            return Err(Error::InvalidSize);
+        }
+        let datalen = (len - 1) as usize;
+        v.clear();
+        if v.capacity() < datalen {
+            v.reserve(datalen - v.capacity());
+        }
+        {
+            let slice = unsafe { std::mem::transmute::<_, &mut [u8]>(&mut v.spare_capacity_mut()[0..datalen]) };
+            ssh.read_exact(slice).await?;
+            unsafe { v.set_len(datalen) };
+        }
+        let msg = BorrowedSSHMessage {
+            len,
+            kind: buf[4],
+            data: &v[0..datalen],
+        };
         Ok(msg)
     }
 }
