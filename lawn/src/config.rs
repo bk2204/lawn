@@ -469,7 +469,7 @@ impl Config {
                 .and_then(|v| v.poll_ms)
                 .unwrap_or(50)
         };
-        Duration::from_micros(val)
+        Duration::from_millis(val)
     }
 
     pub fn proxy_server_read_timeout(&self) -> Duration {
@@ -484,7 +484,7 @@ impl Config {
                 .and_then(|v| v.server_read_ms)
                 .unwrap_or(15)
         };
-        Duration::from_micros(val)
+        Duration::from_millis(val)
     }
 
     fn clipboard_command_from_str(s: &str) -> Option<ClipboardBackend> {
