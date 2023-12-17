@@ -12,7 +12,6 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::select;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::Mutex;
@@ -278,24 +277,66 @@ impl Proxy {
     ///
     /// A proxy client is a service that runs on the client side of the connection and wraps
     /// messages into the SSH protocol for use on the other side.
-    pub async fn run_client(&self) -> Result<(), Error> {
-        let mut interval = tokio::time::interval(self.config.proxy_poll_timeout());
-        let mut ours_read = self.ours_read.lock().await;
-        let logger = self.config.logger();
+    pub async fn run_client(self: Arc<Self>) -> Result<(), Error> {
         let mut buf = vec![0u8; 65536];
+        let logger = self.config.logger();
+        let timeout = self.config.proxy_poll_timeout();
+        let this = self.clone();
+        tokio::spawn(async move {
+            let logger = this.config.logger();
+            let mut multiplex_read = this.multiplex_read.lock().await;
+            let mut sock = this.ours_write.lock().await;
+            loop {
+                let m = match Self::read_ssh_message_unlocked(&mut *multiplex_read).await {
+                    Ok(m) => {
+                        trace!(
+                            logger,
+                            "proxy client: read ssh: {:?} bytes; message {:02x}",
+                            m.len,
+                            m.kind
+                        );
+                        m
+                    }
+                    Err(e) => {
+                        trace!(logger, "proxy client: read ssh: error: {:?}", e);
+                        return;
+                    }
+                };
+                if m.kind == MessageKind::Success as u8 && !m.data.is_empty() {
+                    let _ = sock.write_all(&m.data).await;
+                }
+            }
+        });
         loop {
-            select! {
-                res = ours_read.read(&mut buf) => {
-                    trace!(logger, "proxy client: read: {:?}", res);
+            let ours_read = self.ours_read.lock().await;
+            let res = tokio::time::timeout(timeout, ours_read.readable()).await;
+            match res {
+                Ok(Ok(())) => {
+                    let res = ours_read.try_read(&mut buf);
+                    trace!(logger, "proxy client: read ours: {:?}", res);
                     match res {
+                        Ok(0) => {
+                            trace!(logger, "proxy client: read ours: EOF");
+                            return Ok(());
+                        }
                         Ok(n) => {
                             let _ = self.send_client_message(Some(&buf[0..n])).await;
-                        },
-                        Err(e) if e.kind() == io::ErrorKind::ConnectionReset => return Ok(()),
-                        Err(e) => return Err(e.into()),
+                        }
+                        Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {
+                            return Ok(());
+                        }
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                            let _ = self.send_client_message(None).await;
+                        }
+                        Err(e) => {
+                            return Err(e.into());
+                        }
                     }
                 }
-                _ = interval.tick() => {
+                Ok(Err(e)) => {
+                    trace!(logger, "proxy client: error polling for reading: {}", e);
+                }
+                Err(_) => {
                     trace!(logger, "proxy client: tick");
                     let _ = self.send_client_message(None).await;
                 }
@@ -313,11 +354,6 @@ impl Proxy {
         );
         self.write_ssh_message_of_type(MessageKind::Extension, buf, &self.multiplex_write)
             .await?;
-        let m = Self::read_ssh_message(&self.multiplex_read).await?;
-        if m.kind == MessageKind::Success as u8 && !m.data.is_empty() {
-            let mut sock = self.ours_write.lock().await;
-            let _ = sock.write_all(&m.data).await;
-        }
         Ok(())
     }
 
