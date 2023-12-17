@@ -321,6 +321,7 @@ impl Proxy {
                         }
                         Ok(n) => {
                             let _ = self.send_client_message(Some(&buf[0..n])).await;
+                            let _ = self.send_client_message(None).await;
                         }
                         Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {
                             return Ok(());
@@ -419,7 +420,7 @@ impl Proxy {
             };
             match item {
                 ResponseType::Lawn | ResponseType::LawnPing => {
-                    if count == 0 && item == ResponseType::Lawn {
+                    if count == 0 {
                         // There's no other Lawn message in the queue.  Let's wait a bit to see if one
                         // comes in.
                         let _ =
