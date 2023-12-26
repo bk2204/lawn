@@ -386,8 +386,9 @@ impl Proxy {
                 }
             }
         });
+        let mut v = Vec::with_capacity(65536);
         loop {
-            let res = Self::read_ssh_message(&self.multiplex_read).await;
+            let res = Self::read_borrowed_ssh_message(&self.multiplex_read, &mut v).await;
             match res {
                 Ok(msg) => {
                     self.process_server_ssh_message(&msg, tx.clone(), mdtx.clone())
@@ -489,7 +490,7 @@ impl Proxy {
 
     async fn process_server_ssh_message(
         &self,
-        message: &SSHMessage,
+        message: &BorrowedSSHMessage<'_>,
         chan: mpsc::Sender<oneshot::Sender<SSHMessage>>,
         mdchan: mpsc::Sender<ResponseType>,
     ) -> Result<(), Error> {
@@ -580,7 +581,7 @@ impl Proxy {
     ///
     /// Returns `Some(Some(mgs))` if the message is for our extension and contains data,
     /// `Some(None)` if it is for our extension and contains no data, and `None` otherwise.
-    fn parse_extension_message(&self, message: &SSHMessage) -> Option<Option<Vec<u8>>> {
+    fn parse_extension_message(&self, message: &BorrowedSSHMessage<'_>) -> Option<Option<Vec<u8>>> {
         let logger = self.config.logger();
         if message.kind == MessageKind::Extension as u8 {
             trace!(logger, "proxy: extension");
@@ -647,7 +648,7 @@ impl Proxy {
     }
 
     async fn write_ssh_message_with_closure<F: std::future::Future<Output = ()>>(
-        message: &SSHMessage,
+        message: &BorrowedSSHMessage<'_>,
         sock: &Mutex<OwnedWriteHalf>,
         f: F,
     ) -> Result<(), Error> {
@@ -682,8 +683,8 @@ impl Proxy {
         Ok(msg)
     }
 
-    async fn read_borrowed_ssh_message<'a>(
-        sock: &Mutex<UnixStream>,
+    async fn read_borrowed_ssh_message<'a, T: AsyncReadExt + Unpin>(
+        sock: &Mutex<T>,
         v: &'a mut Vec<u8>,
     ) -> Result<BorrowedSSHMessage<'a>, Error> {
         let mut ssh = sock.lock().await;
