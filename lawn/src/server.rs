@@ -1541,15 +1541,15 @@ impl Server {
                             >,
                             message
                         );
-                        let mut it = match tokio::task::spawn_blocking(move || {
+                        let res = tokio::task::spawn_blocking(move || {
                             let body: Option<&dyn Any> = match &m.body {
                                 Some(b) => Some(b),
                                 None => None,
                             };
                             se.search(m.kind.map(|k| k.into()), body, m.recurse)
                         })
-                        .await
-                        {
+                        .await;
+                        let mut it = match res {
                             Ok(Ok(res)) => res,
                             Ok(Err(e)) => {
                                 trace!(

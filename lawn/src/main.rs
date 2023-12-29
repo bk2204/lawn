@@ -115,6 +115,7 @@ fn find_server_socket(
                         let config = config.clone();
                         let _eg = handle.enter();
                         let (sa, sb) = tokio::net::UnixStream::pair().unwrap();
+                        let _ = sock.set_nonblocking(true);
                         tokio::spawn(async {
                             let p = ssh_proxy::Proxy::new(
                                 config,
