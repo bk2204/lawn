@@ -12,6 +12,7 @@ extern crate tokio;
 use crate::client::Connection;
 use crate::credential::protocol::git::GitProtocolHandler;
 use crate::encoding::{escape, osstr, path};
+use crate::socket::{LawnSocket, LawnSocketDiscoverer, LawnSocketKind};
 use bytes::Bytes;
 use clap::{App, Arg, ArgMatches};
 use lawn_protocol::config::Logger;
@@ -21,8 +22,7 @@ use lawn_protocol::protocol::{
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Handle;
@@ -36,6 +36,7 @@ mod error;
 mod fs_proxy;
 mod serializer;
 mod server;
+mod socket;
 mod ssh_proxy;
 mod store;
 mod task;
@@ -82,112 +83,22 @@ fn runtime() -> tokio::runtime::Runtime {
         .unwrap()
 }
 
-fn prune_socket(p: &Path, logger: Arc<config::Logger>) {
-    trace!(logger, "autopruning socket {}", escape(path(p)));
-    let _ = std::fs::remove_file(p);
-}
-
 fn find_server_socket(
     handle: &Handle,
     socket: Option<&OsStr>,
     config: Arc<config::Config>,
-) -> Option<UnixStream> {
-    let logger = config.logger();
+) -> Option<LawnSocket> {
+    let discoverer = LawnSocketDiscoverer::new(config.clone(), handle);
     if let Some(socket) = socket {
-        debug!(logger, "trying specified socket {}", escape(osstr(socket)));
-        return match UnixStream::connect(socket) {
-            Ok(sock) => Some(sock),
-            Err(_) => None,
-        };
+        return discoverer.socket_from_path(socket);
     }
-    if let Some(path) = std::env::var_os("SSH_AUTH_SOCK") {
-        debug!(logger, "trying SSH socket {}", escape(osstr(&*path)));
-        match UnixStream::connect(path) {
-            Ok(sock) => {
-                let log = logger.clone();
-                let cfg = config.clone();
-                let res = handle.block_on(async move {
-                    debug!(log, "SSH socket: performing client probe");
-                    ssh_proxy::Proxy::client_probe(cfg.clone(), sock).await
-                });
-                let res = match res {
-                    Ok(sock) => {
-                        let config = config.clone();
-                        let _eg = handle.enter();
-                        let (sa, sb) = tokio::net::UnixStream::pair().unwrap();
-                        let _ = sock.set_nonblocking(true);
-                        tokio::spawn(async {
-                            let p = ssh_proxy::Proxy::new(
-                                config,
-                                None,
-                                sa,
-                                tokio::net::UnixStream::from_std(sock).unwrap(),
-                            );
-                            let _ = p.run_client().await;
-                        });
-                        Ok(sb)
-                    }
-                    Err(e) => {
-                        debug!(logger, "failed to connect to SSH socket");
-                        Err(e)
-                    }
-                };
-                if let Ok(sock) = res {
-                    return Some(sock.into_std().unwrap());
-                }
-            }
-            Err(e) => {
-                debug!(logger, "SSH socket: failed to connect: {}", e);
-            }
+    match discoverer.autodiscover(config.autoprune_sockets()) {
+        Some(mut socket) => {
+            socket.spawn_proxies(handle).ok()?;
+            Some(socket)
         }
+        None => None,
     }
-    let mut wanted = None;
-    for p in config.sockets() {
-        match p.file_name() {
-            Some(file) => {
-                if !file.as_bytes().starts_with(b"server") {
-                    continue;
-                }
-            }
-            None => continue,
-        }
-        trace!(logger, "trying socket {}", escape(path(&*p)));
-        match UnixStream::connect(&p) {
-            Ok(sock) => {
-                debug!(
-                    logger,
-                    "successfully connected to socket {}",
-                    escape(path(&*p))
-                );
-                if wanted.is_none() {
-                    if config.autoprune_sockets() {
-                        wanted = Some(sock);
-                    } else {
-                        return Some(sock);
-                    }
-                }
-            }
-            Err(e) => match wanted {
-                Some(_) => {
-                    if config.autoprune_sockets() {
-                        prune_socket(&p, logger.clone());
-                    }
-                }
-                None => {
-                    debug!(
-                        logger,
-                        "failed to connect to socket {}: {}",
-                        escape(path(&*p)),
-                        e
-                    );
-                    if config.autoprune_sockets() {
-                        prune_socket(&p, logger.clone());
-                    }
-                }
-            },
-        }
-    }
-    wanted
 }
 
 fn autospawn_server(config: Arc<config::Config>) -> Result<(), Error> {
@@ -236,7 +147,7 @@ fn find_or_autostart_server(
     handle: &Handle,
     socket: Option<&OsStr>,
     config: Arc<config::Config>,
-) -> Result<UnixStream, Error> {
+) -> Result<LawnSocket, Error> {
     if let Some(socket) = find_server_socket(handle, socket, config.clone()) {
         return Ok(socket);
     }
@@ -272,19 +183,19 @@ fn dispatch_credential_script(
     let logger = config.logger();
     logger.trace("Starting runtime");
     let runtime = runtime();
-    let socket =
+    let mut socket =
         find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
     runtime.block_on(async {
         let client = client::Client::new(config);
-        match socket
-            .peer_addr()
-            .ok()
-            .and_then(|x| x.as_pathname().map(|x| x.to_owned()))
-        {
-            Some(name) => debug!(logger, "Connecting to socket {}", escape(path(&*name))),
-            None => debug!(logger, "Connecting to anonymous socket"),
-        }
-        let conn = client.connect_to_socket(socket, false).await?;
+        debug!(
+            logger,
+            "Connecting to {} {}",
+            socket.kind(),
+            escape(osstr(socket.path()))
+        );
+        let conn = client
+            .connect_to_socket(socket.lawn_socket().unwrap(), false)
+            .await?;
         let _ = conn.negotiate_default_version().await;
         let _ = conn.auth_external().await;
         let runner = crate::credential::script::ScriptRunner::new(
@@ -336,19 +247,19 @@ fn dispatch_credential_git(
     let logger = config.logger();
     logger.trace("Starting runtime");
     let runtime = runtime();
-    let socket =
+    let mut socket =
         find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
     runtime.block_on(async {
         let client = client::Client::new(config);
-        match socket
-            .peer_addr()
-            .ok()
-            .and_then(|x| x.as_pathname().map(|x| x.to_owned()))
-        {
-            Some(name) => logger.debug(&format!("Connecting to socket {}", escape(path(&*name)))),
-            None => logger.debug("Connecting to anonymous socket"),
-        }
-        let conn = client.connect_to_socket(socket, false).await?;
+        debug!(
+            logger,
+            "Connecting to {} {}",
+            socket.kind(),
+            escape(osstr(socket.path()))
+        );
+        let conn = client
+            .connect_to_socket(socket.lawn_socket().unwrap(), false)
+            .await?;
         let _ = conn.negotiate_default_version().await;
         let _ = conn.auth_external().await;
         let creds = credential::CredentialClient::new(conn).await?;
@@ -515,20 +426,20 @@ fn dispatch_query_test_connection(
     let logger = config.logger();
     logger.trace("Starting runtime");
     let runtime = runtime();
-    let socket =
+    let mut socket =
         find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
     runtime.block_on(async {
         let client = client::Client::new(config);
-        match socket.peer_addr() {
-            Ok(addr) => match addr.as_pathname() {
-                Some(p) => logger.message(&format!("Testing socket {}", escape(path(p)))),
-                None => logger.message("Testing anonymous socket"),
-            },
-            Err(_) => {
-                logger.message("Testing SSH socket");
-            }
-        }
-        let conn = match client.connect_to_socket(socket, true).await {
+        message!(
+            logger,
+            "Testing {} {}",
+            socket.kind(),
+            escape(osstr(socket.path()))
+        );
+        let conn = match client
+            .connect_to_socket(socket.lawn_socket().unwrap(), true)
+            .await
+        {
             Ok(conn) => {
                 logger.message("Connection: ok");
                 conn
@@ -624,8 +535,7 @@ fn dispatch_proxy(
     let socket =
         find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
     let res: Result<i32, Error> = runtime.block_on(async move {
-        let addr = socket.peer_addr().unwrap();
-        let ours = addr.as_pathname().unwrap();
+        let ours = socket.path();
         let multiplex = find_vacant_socket(config.clone(), "ssh")?;
 
         trace!(logger, "using {} as SSH socket", escape(path(&*multiplex)));
@@ -722,12 +632,15 @@ fn dispatch_mount(
     let logger = config.logger();
     logger.trace("Starting runtime");
     let runtime = runtime();
-    let socket =
+    let mut socket =
         find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
     let res: Result<i32, Error> = runtime.block_on(async move {
         let target = m.value_of_os("target").unwrap();
-        let addr = socket.peer_addr().unwrap();
-        let ours = addr.as_pathname();
+        let ours = if socket.kind() == LawnSocketKind::Lawn {
+            Some(socket.path())
+        } else {
+            None
+        };
         let fs_sock = find_vacant_socket(config.clone(), prefix)?;
         let fs_sock_loc = fs_sock.clone();
         trace!(
@@ -773,6 +686,7 @@ fn dispatch_mount(
                     }
                 }
                 ProxyType::ProxyFromBoundSocket(psock) => {
+                    let socket = socket.lawn_socket().unwrap();
                     let _ = socket.set_nonblocking(true);
                     let conn = Connection::new(
                         config.clone(),
@@ -870,19 +784,19 @@ fn dispatch_clip(
     let logger = config.logger();
     logger.trace("Starting runtime");
     let runtime = runtime();
-    let socket =
+    let mut socket =
         find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
     let res = runtime.block_on(async move {
         let client = client::Client::new(config);
-        match socket
-            .peer_addr()
-            .ok()
-            .and_then(|x| x.as_pathname().map(|x| x.to_owned()))
-        {
-            Some(name) => logger.debug(&format!("Connecting to socket {}", escape(path(&*name)))),
-            None => logger.debug("Connecting to anonymous socket"),
-        }
-        let conn = client.connect_to_socket(socket, false).await?;
+        debug!(
+            logger,
+            "Connecting to {} {}",
+            socket.kind(),
+            escape(osstr(socket.path()))
+        );
+        let conn = client
+            .connect_to_socket(socket.lawn_socket().unwrap(), false)
+            .await?;
         let _ = conn.negotiate_default_version().await;
         let _ = conn.auth_external().await;
         conn.run_clipboard(tokio::io::stdin(), tokio::io::stdout(), op, target)
@@ -903,19 +817,19 @@ fn dispatch_run(
     let logger = config.logger();
     logger.trace("Starting runtime");
     let runtime = runtime();
-    let socket =
+    let mut socket =
         find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
     let res = runtime.block_on(async move {
         let client = client::Client::new(config);
-        match socket
-            .peer_addr()
-            .ok()
-            .and_then(|x| x.as_pathname().map(|x| x.to_owned()))
-        {
-            Some(name) => logger.debug(&format!("Connecting to socket {}", escape(path(&*name)))),
-            None => logger.debug("Connecting to anonymous socket"),
-        }
-        let conn = client.connect_to_socket(socket, false).await?;
+        debug!(
+            logger,
+            "Connecting to {} {}",
+            socket.kind(),
+            escape(osstr(socket.path()))
+        );
+        let conn = client
+            .connect_to_socket(socket.lawn_socket().unwrap(), false)
+            .await?;
         let _ = conn.negotiate_default_version().await;
         let _ = conn.auth_external().await;
         conn.run_command(

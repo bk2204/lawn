@@ -108,6 +108,16 @@ impl From<handler::Error> for Error {
     }
 }
 
+impl From<crate::socket::UnknownSocketKind> for Error {
+    fn from(err: crate::socket::UnknownSocketKind) -> Error {
+        Error {
+            kind: ErrorKind::SocketConnectionFailure,
+            message: None,
+            cause: Some(err.into()),
+        }
+    }
+}
+
 impl From<Error> for i32 {
     fn from(e: Error) -> i32 {
         e.kind.into()
