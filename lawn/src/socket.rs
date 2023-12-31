@@ -112,6 +112,14 @@ impl<'a> LawnSocketDiscoverer<'a> {
     }
 
     pub fn socket_from_lawn_environment(&self, env_data: &[u8]) -> Option<LawnSocket> {
+        self.socket_from_lawn_environment_extended(env_data, false)
+    }
+
+    fn socket_from_lawn_environment_extended(
+        &self,
+        env_data: &[u8],
+        unknown_fields: bool,
+    ) -> Option<LawnSocket> {
         let logger = self.config.logger();
         debug!(logger, "parsing socket from environment");
         let mut items = env_data.splitn(3, |b| *b == b':');
@@ -140,7 +148,11 @@ impl<'a> LawnSocketDiscoverer<'a> {
                 let data: Result<LawnSocketData, _> = serde_cbor::from_slice(&cbor);
                 match data {
                     Ok(data) => {
-                        if data.auth.is_some() || data.username.is_some() || data.pass.is_some() {
+                        if !unknown_fields
+                            && (data.auth.is_some()
+                                || data.username.is_some()
+                                || data.pass.is_some())
+                        {
                             None
                         } else {
                             self.socket_from_data(data)
@@ -489,6 +501,51 @@ mod tests {
             LawnSocketKind::Lawn,
             "expected kind for val 3"
         );
-        assert!(discoverer.socket_from_lawn_environment(b"v0:c:pmJza2RsYXduZHNvY2tJL2Rldi9udWxsY2N0eEZhYmMxMjNkYXV0aEVQTEFJTmR1c2VyRHVzZXJkcGFzc0RwYXNz").is_none());
+        assert_eq!(
+            socket.data.context.unwrap().as_ref(),
+            b"abc123",
+            "expected context for val 3"
+        );
+        assert!(socket.data.auth.is_none(), "expected auth for val 3");
+        assert!(socket.data.username.is_none(), "expected usernam for val 3");
+        assert!(socket.data.pass.is_none(), "expected pass for val 3");
+
+        const FULL_DATA: &[u8] = b"v0:c:pmJza2RsYXduZHNvY2tJL2Rldi9udWxsY2N0eEZhYmMxMjNkYXV0aEVQTEFJTmR1c2VyRHVzZXJkcGFzc0RwYXNz";
+        // Contains fields we don't yet support.
+        assert!(discoverer.socket_from_lawn_environment(FULL_DATA).is_none());
+
+        let socket = discoverer
+            .socket_from_lawn_environment_extended(FULL_DATA, true)
+            .unwrap();
+        assert_eq!(
+            socket.path().as_bytes(),
+            b"/dev/null",
+            "expected path for val 4"
+        );
+        assert_eq!(
+            socket.kind(),
+            LawnSocketKind::Lawn,
+            "expected kind for val 4"
+        );
+        assert_eq!(
+            socket.data.context.unwrap().as_ref(),
+            b"abc123",
+            "expected context for val 4"
+        );
+        assert_eq!(
+            socket.data.auth.unwrap().as_ref(),
+            b"PLAIN",
+            "expected auth for val 4"
+        );
+        assert_eq!(
+            socket.data.username.unwrap().as_ref(),
+            b"user",
+            "expected usernam for val 4"
+        );
+        assert_eq!(
+            socket.data.pass.unwrap().as_ref(),
+            b"pass",
+            "expected pass for val 4"
+        );
     }
 }
