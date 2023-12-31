@@ -21,6 +21,7 @@ enum ParsingState {
 #[derive(Clone, Debug)]
 pub enum Error {
     InvalidCharacter(usize),
+    InvalidRadixCharacter,
     UnknownPattern(Bytes),
 }
 
@@ -29,6 +30,9 @@ impl fmt::Display for Error {
         match self {
             Self::InvalidCharacter(off) => {
                 write!(f, "invalid character in template at byte {}", off)
+            }
+            Self::InvalidRadixCharacter => {
+                write!(f, "invalid byte when parsing radix")
             }
             Self::UnknownPattern(pattern) => write!(f, "unknown pattern '{}'", escape(pattern)),
         }
@@ -78,6 +82,7 @@ impl Template {
                 (ParsingState::Inside, c) => {
                     id.push(c);
                 }
+                (ParsingState::CloseParen, b'%') => state = ParsingState::Percent,
                 (ParsingState::CloseParen, c) => {
                     state = ParsingState::Normal;
                     s.push(c);
@@ -85,6 +90,12 @@ impl Template {
             }
         }
         Ok(s.into())
+    }
+
+    fn parse_byte_value(&self, data: &[u8], radix: u32) -> Result<Bytes, Error> {
+        let s = std::str::from_utf8(data).map_err(|_| Error::InvalidRadixCharacter)?;
+        let val = u8::from_str_radix(s, radix).map_err(|_| Error::InvalidRadixCharacter)?;
+        Ok(Bytes::copy_from_slice(std::slice::from_ref(&val)))
     }
 
     fn expand_text_pattern(&self, id: &[u8], context: &TemplateContext) -> Result<Bytes, Error> {
@@ -102,6 +113,16 @@ impl Template {
             Ok(self.has_entry(&val, context.ctxsenv.as_deref()))
         } else if let Some(val) = id.strip_prefix(b"sq:") {
             Ok(self.single_quote(&self.expand_text_pattern(&val, context)?))
+        } else if let Some(val) = id.strip_prefix(b"byte:0x") {
+            self.parse_byte_value(val, 16)
+        } else if let Some(val) = id.strip_prefix(b"byte:0o") {
+            self.parse_byte_value(val, 8)
+        } else if let Some(val) = id.strip_prefix(b"byte:0b") {
+            self.parse_byte_value(val, 2)
+        } else if let Some(val) = id.strip_prefix(b"byte:") {
+            self.parse_byte_value(val, 10)
+        } else if id == b"nl" {
+            Ok(Bytes::from(b"\n".as_slice()))
         } else {
             Err(Error::UnknownPattern(id.to_vec().into()))
         }
@@ -264,6 +285,10 @@ mod tests {
             (
                 "printf \"%%s/.local/share/remote-files\" \"$HOME\"",
                 "printf \"%s/.local/share/remote-files\" \"$HOME\"",
+            ),
+            (
+                "This string has a carriage%(byte:13)return, new%(nl)line, and some weird %(byte:0xc2)%(byte:0o251) %(byte:0xc2)%(byte:0b10100000) bytes.",
+                "This string has a carriage\rreturn, new\nline, and some weird © \u{00a0} bytes.",
             ),
         ];
         for (input, output) in &cases {
