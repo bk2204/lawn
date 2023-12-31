@@ -6,7 +6,7 @@ use base64::Engine;
 use bytes::Bytes;
 use lawn_constants::logger::AsLogStr;
 use serde::{Deserialize, Serialize};
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::fmt;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
@@ -15,8 +15,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tokio::runtime::Handle;
 
-#[derive(Serialize, Deserialize, PartialEq, Eq, Copy, Clone, Debug, Hash)]
+#[derive(Default, Serialize, Deserialize, PartialEq, Eq, Copy, Clone, Debug, Hash)]
 pub enum LawnSocketKind {
+    #[default]
     #[serde(rename = "lawn")]
     Lawn,
     #[serde(rename = "ssh")]
@@ -55,7 +56,7 @@ impl fmt::Display for UnknownSocketKind {
 
 impl std::error::Error for UnknownSocketKind {}
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub struct LawnSocketData {
     #[serde(rename = "sk")]
@@ -142,8 +143,7 @@ impl<'a> LawnSocketDiscoverer<'a> {
                         if data.auth.is_some() || data.username.is_some() || data.pass.is_some() {
                             None
                         } else {
-                            let path = OsStr::from_bytes(&data.path);
-                            self.socket(data.kind, path)
+                            self.socket_from_data(data)
                         }
                     }
                     Err(e) => {
@@ -204,11 +204,10 @@ impl<'a> LawnSocketDiscoverer<'a> {
                 if data.kind() == LawnSocketKind::SSHProxy {
                     if let Some(sock) = self.probe_ssh_socket(data.path().as_bytes()) {
                         return Some(LawnSocket {
-                            kind: LawnSocketKind::SSHProxy,
                             config: self.config.clone(),
                             socket: Some(sock),
                             lawn_socket: None,
-                            path: data.path().to_owned(),
+                            data: data.data,
                         });
                     }
                 } else {
@@ -220,11 +219,14 @@ impl<'a> LawnSocketDiscoverer<'a> {
             if let Some(sock) = self.probe_ssh_socket(path) {
                 let path = OsStr::from_bytes(&path);
                 return Some(LawnSocket {
-                    kind: LawnSocketKind::SSHProxy,
                     config: self.config.clone(),
                     socket: Some(sock),
                     lawn_socket: None,
-                    path: path.to_owned(),
+                    data: LawnSocketData {
+                        path: path.as_bytes().to_owned().into(),
+                        kind: LawnSocketKind::SSHProxy,
+                        ..Default::default()
+                    },
                 });
             }
         }
@@ -253,8 +255,11 @@ impl<'a> LawnSocketDiscoverer<'a> {
                     if wanted.is_none() {
                         wanted = Some(LawnSocket {
                             socket: Some(sock),
-                            path: p.as_os_str().to_owned(),
-                            kind: LawnSocketKind::Lawn,
+                            data: LawnSocketData {
+                                path: p.as_os_str().as_bytes().to_owned().into(),
+                                kind: LawnSocketKind::Lawn,
+                                ..Default::default()
+                            },
                             config: self.config.clone(),
                             lawn_socket: None,
                         });
@@ -296,8 +301,11 @@ impl<'a> LawnSocketDiscoverer<'a> {
     fn socket(&self, kind: LawnSocketKind, path: &OsStr) -> Option<LawnSocket> {
         if !self.connection_test {
             return Some(LawnSocket {
-                path: path.to_owned(),
-                kind,
+                data: LawnSocketData {
+                    path: path.as_bytes().to_owned().into(),
+                    kind,
+                    ..Default::default()
+                },
                 socket: None,
                 config: self.config.clone(),
                 lawn_socket: None,
@@ -305,8 +313,31 @@ impl<'a> LawnSocketDiscoverer<'a> {
         }
         match UnixStream::connect(path) {
             Ok(sock) => Some(LawnSocket {
-                path: path.to_owned(),
-                kind,
+                data: LawnSocketData {
+                    path: path.as_bytes().to_owned().into(),
+                    kind,
+                    ..Default::default()
+                },
+                socket: Some(sock),
+                config: self.config.clone(),
+                lawn_socket: None,
+            }),
+            Err(_) => None,
+        }
+    }
+
+    fn socket_from_data(&self, data: LawnSocketData) -> Option<LawnSocket> {
+        if !self.connection_test {
+            return Some(LawnSocket {
+                data,
+                socket: None,
+                config: self.config.clone(),
+                lawn_socket: None,
+            });
+        }
+        match UnixStream::connect(OsStr::from_bytes(&data.path)) {
+            Ok(sock) => Some(LawnSocket {
+                data,
                 socket: Some(sock),
                 config: self.config.clone(),
                 lawn_socket: None,
@@ -317,8 +348,7 @@ impl<'a> LawnSocketDiscoverer<'a> {
 }
 
 pub struct LawnSocket {
-    path: OsString,
-    kind: LawnSocketKind,
+    data: LawnSocketData,
     socket: Option<UnixStream>,
     config: Arc<Config>,
     lawn_socket: Option<UnixStream>,
@@ -326,7 +356,7 @@ pub struct LawnSocket {
 
 impl LawnSocket {
     pub fn spawn_proxies(&mut self, handle: &Handle) -> Result<(), Error> {
-        if self.kind != LawnSocketKind::SSHProxy {
+        if self.data.kind != LawnSocketKind::SSHProxy {
             return Ok(());
         }
         let config = self.config.clone();
@@ -359,7 +389,7 @@ impl LawnSocket {
         if let Some(s) = self.lawn_socket.take() {
             return Some(s);
         }
-        if self.kind == LawnSocketKind::Lawn {
+        if self.data.kind == LawnSocketKind::Lawn {
             if let Some(s) = self.socket.take() {
                 return Some(s);
             }
@@ -368,11 +398,11 @@ impl LawnSocket {
     }
 
     pub fn path(&self) -> &OsStr {
-        &self.path
+        OsStr::from_bytes(&self.data.path)
     }
 
     pub fn kind(&self) -> LawnSocketKind {
-        self.kind
+        self.data.kind
     }
 }
 
