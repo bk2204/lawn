@@ -88,20 +88,20 @@ impl Template {
     }
 
     fn expand_text_pattern(&self, id: &[u8], context: &TemplateContext) -> Result<Bytes, Error> {
-        if id.starts_with(b"senv:") {
-            Ok(self.expand_env(&id[5..], context.senv.as_deref()))
-        } else if id.starts_with(b"cenv:") {
-            Ok(self.expand_env(&id[5..], context.cenv.as_deref()))
-        } else if id.starts_with(b"ctxsenv:") {
-            Ok(self.expand_env(&id[8..], context.ctxsenv.as_deref()))
-        } else if id.starts_with(b"senv?:") {
-            Ok(self.has_entry(&id[6..], context.senv.as_deref()))
-        } else if id.starts_with(b"cenv?:") {
-            Ok(self.has_entry(&id[6..], context.cenv.as_deref()))
-        } else if id.starts_with(b"ctxsenv?:") {
-            Ok(self.has_entry(&id[9..], context.ctxsenv.as_deref()))
-        } else if id.starts_with(b"sq:") {
-            Ok(self.single_quote(&self.expand_text_pattern(&id[3..], context)?))
+        if let Some(val) = id.strip_prefix(b"senv:") {
+            Ok(self.expand_env(val, context.senv.as_deref()))
+        } else if let Some(val) = id.strip_prefix(b"cenv:") {
+            Ok(self.expand_env(&val, context.cenv.as_deref()))
+        } else if let Some(val) = id.strip_prefix(b"ctxsenv:") {
+            Ok(self.expand_env(&val, context.ctxsenv.as_deref()))
+        } else if let Some(val) = id.strip_prefix(b"senv?:") {
+            Ok(self.has_entry(&val, context.senv.as_deref()))
+        } else if let Some(val) = id.strip_prefix(b"cenv?:") {
+            Ok(self.has_entry(&val, context.cenv.as_deref()))
+        } else if let Some(val) = id.strip_prefix(b"ctxsenv?:") {
+            Ok(self.has_entry(&val, context.ctxsenv.as_deref()))
+        } else if let Some(val) = id.strip_prefix(b"sq:") {
+            Ok(self.single_quote(&self.expand_text_pattern(&val, context)?))
         } else {
             Err(Error::UnknownPattern(id.to_vec().into()))
         }
