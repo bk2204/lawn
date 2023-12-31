@@ -14,6 +14,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::io::{Read, Write};
+use std::ops::Deref;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::process::ExitStatusExt;
@@ -263,7 +264,45 @@ impl ConfigBuilder {
             }),
             env_vars,
             prng,
+            template_contexts: Arc::new(RwLock::new(BTreeMap::new())),
         })
+    }
+}
+
+pub struct TemplateContextGuard {
+    template_contexts: Arc<RwLock<BTreeMap<Bytes, Arc<TemplateContext>>>>,
+    id: Bytes,
+    context: Arc<TemplateContext>,
+}
+
+impl TemplateContextGuard {
+    pub fn context(&self) -> &TemplateContext {
+        &self.context
+    }
+
+    pub fn context_id(&self) -> Bytes {
+        self.id.clone()
+    }
+}
+
+impl AsRef<TemplateContext> for TemplateContextGuard {
+    fn as_ref(&self) -> &TemplateContext {
+        &self.context
+    }
+}
+
+impl Deref for TemplateContextGuard {
+    type Target = TemplateContext;
+
+    fn deref(&self) -> &TemplateContext {
+        &self.context
+    }
+}
+
+impl Drop for TemplateContextGuard {
+    fn drop(&mut self) {
+        let mut g = self.template_contexts.write().unwrap();
+        g.remove(&self.id);
     }
 }
 
@@ -272,6 +311,7 @@ pub struct Config {
     data: RwLock<ConfigData>,
     env_vars: Arc<BTreeMap<Bytes, Bytes>>,
     prng: Arc<Mutex<dyn RNG + Send + Sync>>,
+    template_contexts: Arc<RwLock<BTreeMap<Bytes, Arc<TemplateContext>>>>,
 }
 
 impl Config {
@@ -333,6 +373,7 @@ impl Config {
                 0,
                 rand::rngs::OsRng,
             ))),
+            template_contexts: Arc::new(RwLock::new(BTreeMap::new())),
         })
     }
 
@@ -344,12 +385,27 @@ impl Config {
         &self,
         cenv: Option<Arc<BTreeMap<Bytes, Bytes>>>,
         args: Option<Arc<[Bytes]>>,
-    ) -> TemplateContext {
-        TemplateContext {
+    ) -> TemplateContextGuard {
+        let id = {
+            let mut buf = [0u8; 32];
+            let mut g = self.prng.lock().unwrap();
+            g.fill_bytes(&mut buf);
+            Bytes::copy_from_slice(&buf)
+        };
+        let ctx = Arc::new(TemplateContext {
             senv: Some(self.env_vars.clone()),
             cenv,
             args,
             ctxsenv: None,
+        });
+        {
+            let mut g = self.template_contexts.write().unwrap();
+            g.insert(id.clone(), ctx.clone());
+        }
+        TemplateContextGuard {
+            template_contexts: self.template_contexts.clone(),
+            id,
+            context: ctx,
         }
     }
 
