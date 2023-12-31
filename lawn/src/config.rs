@@ -5,6 +5,7 @@ use bytes::{Bytes, BytesMut};
 use lawn_constants::logger::Logger as LoggerTrait;
 use lawn_constants::logger::{LogFormat, LogLevel};
 use lawn_protocol::protocol::{Capability, ClipboardChannelOperation, ClipboardChannelTarget};
+use rand::{CryptoRng, RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -22,6 +23,18 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime};
 
 pub const VERSION: &str = concat!("Lawn/", env!("CARGO_PKG_VERSION"));
+
+#[allow(clippy::upper_case_acronyms)]
+pub trait RNG: CryptoRng + RngCore + Send + Sync {}
+
+impl<T> RNG for T
+where
+    T: CryptoRng,
+    T: RngCore,
+    T: Send,
+    T: Sync,
+{
+}
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ClipboardBackend {
@@ -114,6 +127,7 @@ pub struct ConfigBuilder {
     stderr: Option<Box<dyn Write + Sync + Send>>,
     create: bool,
     capabilities: Option<BTreeSet<Capability>>,
+    prng: Option<Arc<Mutex<dyn RNG + Send + Sync>>>,
 }
 
 impl ConfigBuilder {
@@ -127,6 +141,7 @@ impl ConfigBuilder {
             stderr: None,
             create: false,
             capabilities: None,
+            prng: None,
         }
     }
 
@@ -171,6 +186,11 @@ impl ConfigBuilder {
 
     pub fn create_runtime_dir(&mut self, create: bool) -> &mut Self {
         self.create = create;
+        self
+    }
+
+    pub fn prng(&mut self, prng: Arc<Mutex<dyn RNG + Send + Sync>>) -> &mut Self {
+        self.prng = Some(prng);
         self
     }
 
@@ -221,6 +241,13 @@ impl ConfigBuilder {
         let env_vars = self
             .env_vars
             .ok_or_else(|| Self::missing_config_option("env"))?;
+        let prng = self.prng.unwrap_or_else(|| {
+            Arc::new(Mutex::new(rand::rngs::adapter::ReseedingRng::new(
+                rand_chacha::ChaCha20Core::from_entropy(),
+                0,
+                rand::rngs::OsRng,
+            )))
+        });
         Ok(Config {
             logger: Arc::new(logger),
             data: RwLock::new(ConfigData {
@@ -235,6 +262,7 @@ impl ConfigBuilder {
                 credential_backends: None,
             }),
             env_vars,
+            prng,
         })
     }
 }
@@ -243,6 +271,7 @@ pub struct Config {
     logger: Arc<Logger>,
     data: RwLock<ConfigData>,
     env_vars: Arc<BTreeMap<Bytes, Bytes>>,
+    prng: Arc<Mutex<dyn RNG + Send + Sync>>,
 }
 
 impl Config {
@@ -299,7 +328,16 @@ impl Config {
                     .map(|(k, v)| (k.as_bytes().to_vec().into(), v.as_bytes().to_vec().into()))
                     .collect(),
             ),
+            prng: Arc::new(Mutex::new(rand::rngs::adapter::ReseedingRng::new(
+                rand_chacha::ChaCha20Core::from_entropy(),
+                0,
+                rand::rngs::OsRng,
+            ))),
         })
+    }
+
+    pub fn prng(&self) -> Arc<Mutex<dyn RNG + Send + Sync>> {
+        self.prng.clone()
     }
 
     pub fn template_context(

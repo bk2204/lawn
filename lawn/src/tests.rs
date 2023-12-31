@@ -7,6 +7,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use format_bytes::format_bytes;
 use lawn_protocol::protocol::{self, Capability, ResponseCode};
+use rand::SeedableRng;
+use rand_chacha::ChaCha20Rng;
 use std::borrow::Cow;
 use std::collections::btree_map::IntoIter as BTreeMapIter;
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,7 +19,7 @@ use std::io;
 use std::io::{Cursor, Read, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub struct FakeEnvironmentIter {
@@ -114,6 +116,7 @@ impl TestInstance {
         builder.stdout(Box::new(io::Cursor::new(Vec::new())));
         builder.stderr(Box::new(io::stdout()));
         builder.config_file(&config_file);
+        builder.prng(Arc::new(Mutex::new(ChaCha20Rng::seed_from_u64(2204))));
         let cfg = Arc::new(builder.build().unwrap());
         cfg.set_detach(false);
         Self { dir, config: cfg }
@@ -198,6 +201,16 @@ where
         h.await.unwrap();
         s2.shutdown().await;
     })
+}
+
+#[test]
+fn prng_is_reproducible_in_tests() {
+    let ti = Arc::new(TestInstance::new(None, None));
+    let prng = ti.config().prng();
+    let mut buf = [0u8; 32];
+    let mut g = prng.lock().unwrap();
+    g.fill_bytes(&mut buf);
+    assert_eq!(&buf, b"\x91\x44\x06\x81\x06\x91\x7a\x26\xfa\xee\x99\xba\xaf\x34\x48\x37\x20\xe6\xcc\x70\x4d\xfd\x68\x7d\xc4\xca\x04\x1f\x11\xde\x94\x7a", "expected data");
 }
 
 #[test]
