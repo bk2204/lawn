@@ -21,6 +21,7 @@ path = "src/main.rs"
 
 [dependencies]
 async-trait = "= 0.1.66"
+base64 = "0.21"
 blake2 = "0.10"
 bytes = "1"
 clap = { version = "2.32", default-features = false }

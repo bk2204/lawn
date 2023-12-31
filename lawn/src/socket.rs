@@ -1,7 +1,11 @@
 use crate::config::Config;
 use crate::error::{Error, ErrorKind};
 use crate::ssh_proxy;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
+use bytes::Bytes;
 use lawn_constants::logger::AsLogStr;
+use serde::{Deserialize, Serialize};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::os::unix::ffi::OsStrExt;
@@ -11,9 +15,11 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tokio::runtime::Handle;
 
-#[derive(PartialEq, Eq, Copy, Clone, Debug, Hash)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Copy, Clone, Debug, Hash)]
 pub enum LawnSocketKind {
+    #[serde(rename = "lawn")]
     Lawn,
+    #[serde(rename = "ssh")]
     SSHProxy,
 }
 
@@ -49,14 +55,49 @@ impl fmt::Display for UnknownSocketKind {
 
 impl std::error::Error for UnknownSocketKind {}
 
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct LawnSocketData {
+    #[serde(rename = "sk")]
+    kind: LawnSocketKind,
+    #[serde(rename = "sock")]
+    path: Bytes,
+    #[serde(rename = "ctx")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context: Option<Bytes>,
+    #[serde(rename = "auth")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auth: Option<Bytes>,
+    #[serde(rename = "user")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    username: Option<Bytes>,
+    #[serde(rename = "pass")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pass: Option<Bytes>,
+}
+
 pub struct LawnSocketDiscoverer<'a> {
     config: Arc<Config>,
     handle: &'a Handle,
+    connection_test: bool,
 }
 
 impl<'a> LawnSocketDiscoverer<'a> {
     pub fn new(config: Arc<Config>, handle: &'a Handle) -> Self {
-        Self { config, handle }
+        Self {
+            config,
+            handle,
+            connection_test: true,
+        }
+    }
+
+    #[allow(dead_code)]
+    fn new_for_test(config: Arc<Config>, handle: &'a Handle) -> Self {
+        Self {
+            config,
+            handle,
+            connection_test: false,
+        }
     }
 
     pub fn socket_from_path(&self, path: &OsStr) -> Option<LawnSocket> {
@@ -69,39 +110,122 @@ impl<'a> LawnSocketDiscoverer<'a> {
         self.socket(LawnSocketKind::Lawn, path)
     }
 
+    pub fn socket_from_lawn_environment(&self, env_data: &[u8]) -> Option<LawnSocket> {
+        let logger = self.config.logger();
+        debug!(logger, "parsing socket from environment");
+        let mut items = env_data.splitn(3, |b| *b == b':');
+        match items.next() {
+            Some(b"v0") => {
+                trace!(logger, "found v0 socket info");
+            }
+            _ => return None,
+        }
+        match (items.next(), items.next()) {
+            // "s" for "simple socket".
+            (Some(b"s"), Some(socket_path)) => {
+                trace!(
+                    logger,
+                    "found v0 simple socket with path {}",
+                    socket_path.as_log_str()
+                );
+                let path = OsStr::from_bytes(socket_path);
+                self.socket_from_path(path)
+            }
+            // "c" for "CBOR".  This is url64-encoded.
+            (Some(b"c"), Some(cbor)) => {
+                trace!(logger, "found v0 url64-encoded CBOR metadata");
+                let cbor = URL_SAFE_NO_PAD.decode(cbor).ok()?;
+                trace!(logger, "v0 url64-encoded CBOR metadata decoded ok");
+                let data: Result<LawnSocketData, _> = serde_cbor::from_slice(&cbor);
+                match data {
+                    Ok(data) => {
+                        if data.auth.is_some() || data.username.is_some() || data.pass.is_some() {
+                            None
+                        } else {
+                            let path = OsStr::from_bytes(&data.path);
+                            self.socket(data.kind, path)
+                        }
+                    }
+                    Err(e) => {
+                        trace!(logger, "failed to decode CBOR metadata: {}", e);
+                        None
+                    }
+                }
+            }
+            (Some(kind), _) => {
+                trace!(
+                    logger,
+                    "failed to decode environment type: {}",
+                    kind.as_log_str()
+                );
+                None
+            }
+            _ => {
+                trace!(logger, "truncated socket value");
+                None
+            }
+        }
+    }
+
+    fn probe_ssh_socket(&self, path: &[u8]) -> Option<UnixStream> {
+        let logger = self.config.logger();
+        debug!(logger, "trying SSH socket {}", path.as_log_str());
+        let path = OsStr::from_bytes(&path);
+        match UnixStream::connect(path) {
+            Ok(sock) => {
+                let log = logger.clone();
+                let cfg = self.config.clone();
+                let res = self.handle.block_on(async move {
+                    debug!(log, "SSH socket: performing client probe");
+                    ssh_proxy::Proxy::client_probe(cfg.clone(), sock).await
+                });
+                match res {
+                    Ok(sock) => Some(sock),
+                    Err(_) => {
+                        debug!(logger, "failed to connect to SSH socket");
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                debug!(logger, "SSH socket: failed to connect: {}", e);
+                None
+            }
+        }
+    }
+
     pub fn autodiscover(&self, prune: bool) -> Option<LawnSocket> {
         let logger = self.config.logger();
         debug!(logger, "performing socket autodiscovery");
         let senv = self.config.template_context(None, None).senv.unwrap();
-        if let Some(path) = senv.get(b"SSH_AUTH_SOCK" as &[u8]) {
-            debug!(logger, "trying SSH socket {}", path.as_ref().as_log_str());
-            let path = OsStr::from_bytes(&path);
-            match UnixStream::connect(path) {
-                Ok(sock) => {
-                    let log = logger.clone();
-                    let cfg = self.config.clone();
-                    let res = self.handle.block_on(async move {
-                        debug!(log, "SSH socket: performing client probe");
-                        ssh_proxy::Proxy::client_probe(cfg.clone(), sock).await
-                    });
-                    match res {
-                        Ok(sock) => {
-                            return Some(LawnSocket {
-                                kind: LawnSocketKind::SSHProxy,
-                                config: self.config.clone(),
-                                socket: Some(sock),
-                                lawn_socket: None,
-                                path: path.to_owned(),
-                            });
-                        }
-                        Err(_) => {
-                            debug!(logger, "failed to connect to SSH socket");
-                        }
+        if let Some(value) = senv.get(b"LAWN" as &[u8]) {
+            debug!(logger, "trying LAWN environment variable");
+            if let Some(data) = self.socket_from_lawn_environment(&value) {
+                if data.kind() == LawnSocketKind::SSHProxy {
+                    if let Some(sock) = self.probe_ssh_socket(data.path().as_bytes()) {
+                        return Some(LawnSocket {
+                            kind: LawnSocketKind::SSHProxy,
+                            config: self.config.clone(),
+                            socket: Some(sock),
+                            lawn_socket: None,
+                            path: data.path().to_owned(),
+                        });
                     }
+                } else {
+                    return Some(data);
                 }
-                Err(e) => {
-                    debug!(logger, "SSH socket: failed to connect: {}", e);
-                }
+            }
+        }
+        if let Some(path) = senv.get(b"SSH_AUTH_SOCK" as &[u8]) {
+            if let Some(sock) = self.probe_ssh_socket(path) {
+                let path = OsStr::from_bytes(&path);
+                return Some(LawnSocket {
+                    kind: LawnSocketKind::SSHProxy,
+                    config: self.config.clone(),
+                    socket: Some(sock),
+                    lawn_socket: None,
+                    path: path.to_owned(),
+                });
             }
         }
         let mut wanted = None;
@@ -170,6 +294,15 @@ impl<'a> LawnSocketDiscoverer<'a> {
     }
 
     fn socket(&self, kind: LawnSocketKind, path: &OsStr) -> Option<LawnSocket> {
+        if !self.connection_test {
+            return Some(LawnSocket {
+                path: path.to_owned(),
+                kind,
+                socket: None,
+                config: self.config.clone(),
+                lawn_socket: None,
+            });
+        }
         match UnixStream::connect(path) {
             Ok(sock) => Some(LawnSocket {
                 path: path.to_owned(),
@@ -240,5 +373,92 @@ impl LawnSocket {
 
     pub fn kind(&self) -> LawnSocketKind {
         self.kind
+    }
+}
+
+#[cfg(not(miri))]
+#[cfg(test)]
+mod tests {
+    use super::{LawnSocketDiscoverer, LawnSocketKind};
+    use crate::tests::TestInstance;
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn socket_from_path() {
+        let ti = TestInstance::new(None, None);
+        let rt = runtime();
+        let discoverer = LawnSocketDiscoverer::new_for_test(ti.config(), rt.handle());
+        let socket = discoverer
+            .socket_from_path(OsStr::from_bytes(b"/dev/null"))
+            .unwrap();
+        assert_eq!(socket.path().as_bytes(), b"/dev/null", "expected path");
+        assert_eq!(socket.kind(), LawnSocketKind::Lawn, "expected kind");
+    }
+
+    #[test]
+    fn socket_from_lawn_environment_simple_path() {
+        let ti = TestInstance::new(None, None);
+        let rt = runtime();
+        let discoverer = LawnSocketDiscoverer::new_for_test(ti.config(), rt.handle());
+        let socket = discoverer
+            .socket_from_lawn_environment(b"v0:s:/dev/null")
+            .unwrap();
+        assert_eq!(socket.path().as_bytes(), b"/dev/null", "expected path");
+        assert_eq!(socket.kind(), LawnSocketKind::Lawn, "expected kind");
+    }
+
+    #[test]
+    fn socket_from_lawn_environment_cbor() {
+        let ti = TestInstance::new(None, None);
+        let rt = runtime();
+        let discoverer = LawnSocketDiscoverer::new_for_test(ti.config(), rt.handle());
+        let socket = discoverer
+            .socket_from_lawn_environment(b"v0:c:omJza2RsYXduZHNvY2tJL2Rldi9udWxs")
+            .unwrap();
+        assert_eq!(
+            socket.path().as_bytes(),
+            b"/dev/null",
+            "expected path for val 1"
+        );
+        assert_eq!(
+            socket.kind(),
+            LawnSocketKind::Lawn,
+            "expected kind for val 1"
+        );
+        let socket = discoverer
+            .socket_from_lawn_environment(b"v0:c:omJza2Nzc2hkc29ja0wvbm9uZXhpc3RlbnQ")
+            .unwrap();
+        assert_eq!(
+            socket.path().as_bytes(),
+            b"/nonexistent",
+            "expected path for val 2"
+        );
+        assert_eq!(
+            socket.kind(),
+            LawnSocketKind::SSHProxy,
+            "expected kind for val 2"
+        );
+        let socket = discoverer
+            .socket_from_lawn_environment(b"v0:c:o2Jza2RsYXduZHNvY2tJL2Rldi9udWxsY2N0eEZhYmMxMjM")
+            .unwrap();
+        assert_eq!(
+            socket.path().as_bytes(),
+            b"/dev/null",
+            "expected path for val 3"
+        );
+        assert_eq!(
+            socket.kind(),
+            LawnSocketKind::Lawn,
+            "expected kind for val 3"
+        );
+        assert!(discoverer.socket_from_lawn_environment(b"v0:c:pmJza2RsYXduZHNvY2tJL2Rldi9udWxsY2N0eEZhYmMxMjNkYXV0aEVQTEFJTmR1c2VyRHVzZXJkcGFzc0RwYXNz").is_none());
     }
 }
