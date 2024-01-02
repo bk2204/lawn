@@ -306,6 +306,12 @@ pub enum MessageKind {
 
     /// Search store elements.
     SearchStoreElements = 0x0003000c,
+
+    /// Read a server context.
+    ReadServerContext = 0x00040000,
+
+    /// Write a server context.
+    WriteServerContext = 0x00040001,
 }
 
 #[derive(Debug, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
@@ -319,6 +325,7 @@ pub enum Capability {
     ChannelClipboard,
     ExtensionAllocate,
     StoreCredential,
+    ContextTemplate,
     Other(Bytes, Option<Bytes>),
 }
 
@@ -390,6 +397,10 @@ impl From<Capability> for (Bytes, Option<Bytes>) {
                 (b"extension" as &[u8]).into(),
                 Some((b"allocate" as &[u8]).into()),
             ),
+            Capability::ContextTemplate => (
+                (b"context" as &[u8]).into(),
+                Some((b"template" as &[u8]).into()),
+            ),
             Capability::Other(name, subtype) => (name, subtype),
         }
     }
@@ -407,6 +418,7 @@ impl From<(&[u8], Option<&[u8]>)> for Capability {
             (b"channel", Some(b"clipboard")) => Capability::ChannelClipboard,
             (b"store", Some(b"credential")) => Capability::StoreCredential,
             (b"extension", Some(b"allocate")) => Capability::ExtensionAllocate,
+            (b"context", Some(b"template")) => Capability::ContextTemplate,
             (name, subtype) => {
                 Capability::Other(name.to_vec().into(), subtype.map(|s| s.to_vec().into()))
             }
@@ -1031,6 +1043,54 @@ pub struct KeyboardInteractiveAuthenticationRequest {
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Ord, PartialOrd, Clone)]
 pub struct KeyboardInteractiveAuthenticationResponse {
     pub responses: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct ReadServerContextRequest {
+    pub kind: String,
+    pub id: Option<Bytes>,
+    pub meta: Option<BTreeMap<Bytes, Value>>,
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct ReadServerContextResponse {
+    pub id: Option<Bytes>,
+    pub meta: Option<BTreeMap<Bytes, Value>>,
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct ReadServerContextResponseWithBody<T> {
+    pub id: Option<Bytes>,
+    pub meta: Option<BTreeMap<Bytes, Value>>,
+    pub body: Option<T>,
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct WriteServerContextRequest {
+    pub kind: String,
+    pub id: Option<Bytes>,
+    pub meta: Option<BTreeMap<Bytes, Value>>,
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct WriteServerContextResponseWithBody<T> {
+    pub id: Option<Bytes>,
+    pub meta: Option<BTreeMap<Bytes, Value>>,
+    pub body: Option<T>,
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct TemplateServerContextBody {
+    pub senv: Option<BTreeMap<Bytes, Bytes>>,
+    pub cenv: Option<BTreeMap<Bytes, Bytes>>,
+    pub ctxsenv: Option<BTreeMap<Bytes, Bytes>>,
+    pub args: Option<Vec<Bytes>>,
 }
 
 /// A message for the protocol.
