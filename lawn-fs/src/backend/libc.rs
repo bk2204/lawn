@@ -1628,8 +1628,8 @@ mod tests {
     use crate::backend::{
         Backend, FileType, Metadata, OpenMode, Plan9Type, ProtocolType, StatValidity, Tag, FID,
     };
+    use lawn_constants::error::{Error, ExtendedError};
     use lawn_constants::logger::{LogFormat, LogLevel};
-    use lawn_constants::Error;
     use rustix::fd::{AsFd, OwnedFd};
     use std::collections::HashSet;
     use std::ffi::OsStr;
@@ -1706,6 +1706,10 @@ mod tests {
         fn trace(&self, msg: &str) {
             eprintln!("{}", msg);
         }
+        fn script_message(&self, _tag: Option<&[u8]>, _msg: &[&[u8]]) {}
+        fn script_error(&self, _tag: Option<&[u8]>, _err: &dyn ExtendedError) {}
+        fn serialized(&self, _msg: &[u8]) {}
+        fn serialized_error(&self, _msg: &dyn ExtendedError) {}
     }
 
     type Server = LibcBackend;

@@ -1,13 +1,16 @@
 #![allow(dead_code)]
 use crate::error::{Error, ErrorKind};
+use crate::serializer::script::ScriptEncoder;
 use crate::template::{Template, TemplateContext};
 use bytes::{Bytes, BytesMut};
+use lawn_constants::error::ExtendedError;
 use lawn_constants::logger::Logger as LoggerTrait;
 use lawn_constants::logger::{LogFormat, LogLevel};
 use lawn_protocol::protocol::{Capability, ClipboardChannelOperation, ClipboardChannelTarget};
 use rand::{CryptoRng, RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
+use std::borrow::{Borrow, Cow};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::OsStr;
 use std::ffi::OsString;
@@ -20,6 +23,7 @@ use std::os::unix::fs::FileTypeExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime};
 
@@ -448,6 +452,11 @@ impl Config {
     }
 
     #[allow(clippy::mutable_key_type)]
+    pub fn template_contexts(&self) -> Arc<RwLock<BTreeMap<Bytes, Arc<TemplateContext>>>> {
+        self.template_contexts.clone()
+    }
+
+    #[allow(clippy::mutable_key_type)]
     pub fn env_vars(&self) -> &BTreeMap<Bytes, Bytes> {
         &self.env_vars
     }
@@ -873,12 +882,38 @@ impl Config {
     }
 }
 
+#[derive(Serialize)]
+struct SerializedError {
+    error: SerializedInternalError,
+}
+
+#[derive(Serialize)]
+struct SerializedInternalError {
+    types: Vec<String>,
+    tag: String,
+    message: String,
+}
+
+impl<T: ExtendedError + std::error::Error> From<&T> for SerializedError {
+    fn from(err: &T) -> SerializedError {
+        SerializedError {
+            error: SerializedInternalError {
+                types: err.error_types().iter().map(|s| s.to_string()).collect(),
+                tag: err.error_tag().to_string(),
+                message: format!("{}", err),
+            },
+        }
+    }
+}
+
 pub struct Logger {
     output: Mutex<Box<dyn Write + Sync + Send>>,
     error: Mutex<Box<dyn Write + Sync + Send>>,
     verbosity: i32,
     level: LogLevel,
     format: RwLock<LogFormat>,
+    encoder: ScriptEncoder,
+    tag_counter: AtomicU32,
 }
 
 impl Logger {
@@ -903,19 +938,32 @@ impl Logger {
             verbosity,
             level,
             format: RwLock::new(LogFormat::Text),
+            encoder: ScriptEncoder::new(),
+            tag_counter: AtomicU32::new(0),
         }
     }
 
     fn write(&self, desired: i32, io: &Mutex<Box<dyn Write + Sync + Send>>, msg: &str) {
+        self.write_bytes(desired, io, msg.as_bytes())
+    }
+
+    fn write_bytes(&self, desired: i32, io: &Mutex<Box<dyn Write + Sync + Send>>, msg: &[u8]) {
         if self.verbosity >= desired {
             let mut m = io.lock().unwrap();
-            let _ = m.write_all(msg.as_bytes());
+            let _ = m.write_all(msg);
         }
     }
 
     fn set_format(&self, format: LogFormat) {
         let mut g = self.format.write().unwrap();
         *g = format;
+    }
+
+    fn gen_tag<'a>(&self, buf: &'a mut [u8; 16]) -> &'a [u8] {
+        let val = self.tag_counter.fetch_add(1, Ordering::AcqRel);
+        let mut c = std::io::Cursor::new(buf.as_mut_slice());
+        let _ = write!(c, "_x{:08x}", val);
+        &buf[..10]
     }
 }
 
@@ -964,6 +1012,71 @@ impl lawn_protocol::config::Logger for Logger {
             &self.error,
             &format!("trace: {:09.9}: {}\n", time.as_secs_f64(), msg),
         );
+    }
+
+    fn script_message(&self, tag: Option<&[u8]>, msg: &[&[u8]]) {
+        let mut buf = [0u8; 16];
+        let tag = tag.unwrap_or_else(|| self.gen_tag(&mut buf));
+        let mut io = self.output.lock().unwrap();
+        let _ = io.write_all(tag);
+        let _ = io.write_all(b" ok ");
+        for (i, val) in msg.iter().enumerate() {
+            let _ = io.write_all(val.as_ref());
+            if i != msg.len() - 1 {
+                let _ = io.write_all(b" ");
+            }
+        }
+        let _ = io.write_all(b"\n");
+        let _ = io.flush();
+    }
+
+    fn script_error(&self, tag: Option<&[u8]>, err: &dyn ExtendedError) {
+        let mut buf = [0u8; 16];
+        let tag = tag.unwrap_or_else(|| self.gen_tag(&mut buf));
+        let mut io = self.output.lock().unwrap();
+        let _ = io.write_all(tag);
+        let _ = io.write_all(b" err ");
+        let error_types = err.error_types();
+        let error_types: &[Cow<'static, str>] = error_types.borrow();
+        let error_types = error_types.join(":");
+        let _ = io.write_all(error_types.as_bytes());
+        let _ = io.write_all(b" ");
+        let _ = io.write_all(err.error_tag().as_bytes());
+        let _ = io.write_all(b" ");
+        let _ = io.write_all(self.encoder.encode(&format!("{}", err)).borrow());
+        let _ = io.write_all(b"\n");
+        let _ = io.flush();
+    }
+
+    fn serialized(&self, msg: &[u8]) {
+        if self.format() == LogFormat::CBOR {
+            self.write_bytes(0, &self.output, msg);
+        }
+    }
+
+    fn serialized_error(&self, err: &dyn ExtendedError) {
+        if self.format() == LogFormat::CBOR {
+            let err = SerializedError::from(&err);
+            match serde_cbor::to_vec(&err) {
+                Ok(msg) => self.serialized_message(&msg),
+                Err(e) => error!(self, "error serializing CBOR: {}", e),
+            }
+        }
+    }
+}
+
+pub trait SerializedLogger {
+    fn serialized_message<S: serde::Serialize>(&self, msg: &S);
+}
+
+impl<T: LoggerTrait> SerializedLogger for T {
+    fn serialized_message<S: serde::Serialize>(&self, msg: &S) {
+        if self.format() == LogFormat::CBOR {
+            match serde_cbor::to_vec(msg) {
+                Ok(msg) => self.serialized_message(&msg),
+                Err(e) => error!(self, "error serializing CBOR: {}", e),
+            }
+        }
     }
 }
 
@@ -1391,7 +1504,9 @@ pub struct ConfigCredentialBackend {
 #[cfg(test)]
 mod tests {
     use super::{Config, ConfigFile};
+    use lawn_constants::error::ExtendedError;
     use lawn_constants::logger::{LogFormat, LogLevel, Logger};
+    #[cfg(not(miri))]
     use serde_yaml::Value;
     use std::collections::BTreeMap;
     use std::ffi::OsString;
@@ -1503,6 +1618,22 @@ mod tests {
 
         fn trace(&self, _msg: &str) {
             panic!("trace");
+        }
+
+        fn script_message(&self, _tag: Option<&[u8]>, _msg: &[&[u8]]) {
+            panic!("script_message");
+        }
+
+        fn script_error(&self, _tag: Option<&[u8]>, _err: &dyn ExtendedError) {
+            panic!("script_error");
+        }
+
+        fn serialized(&self, _msg: &[u8]) {
+            panic!("serialized");
+        }
+
+        fn serialized_error(&self, _msg: &dyn ExtendedError) {
+            panic!("serialized_error");
         }
     }
 
