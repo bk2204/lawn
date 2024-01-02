@@ -1622,6 +1622,48 @@ impl Server {
                 };
                 Ok((ResponseType::Success, None))
             }
+            Some(MessageKind::ReadServerContext) => {
+                trace!(logger, "server: {}: read server context", id);
+                assert_authenticated!(handler, message);
+                let m = valid_message!(handler, protocol::ReadServerContextRequest, message);
+                trace!(logger, "server: {}: read server context: {}", id, m.kind);
+                if !handler
+                    .has_capability(&protocol::Capability::ContextTemplate)
+                    .await
+                {
+                    return Err(ResponseCode::ParametersNotSupported.into());
+                }
+                match &*m.kind {
+                    "template" => match m.id {
+                        Some(id) => {
+                            let tctxs = state.config().template_contexts();
+                            let tctxs = tctxs.read().unwrap();
+                            match tctxs.get(&id).clone() {
+                                Some(ctx) => {
+                                    let body =
+                                        protocol::TemplateServerContextBody::from(ctx.as_ref());
+                                    let resp = protocol::ReadServerContextResponseWithBody {
+                                        id: Some(id.clone()),
+                                        meta: None,
+                                        body: Some(body),
+                                    };
+                                    Ok((ResponseType::Success, serializer.serialize_body(&resp)))
+                                }
+                                None => Err(ResponseCode::NotFound.into()),
+                            }
+                        }
+                        None => Err(ResponseCode::NotFound.into()),
+                    },
+                    _ => Err(ResponseCode::ParametersNotSupported.into()),
+                }
+            }
+            Some(MessageKind::WriteServerContext) => {
+                trace!(logger, "server: {}: write server context", id);
+                assert_authenticated!(handler, message);
+                let m = valid_message!(handler, protocol::WriteServerContextRequest, message);
+                trace!(logger, "server: {}: write server context: {}", id, m.kind);
+                Err(ResponseCode::ParametersNotSupported.into())
+            }
             Some(_) | None => {
                 logger.trace(&format!(
                     "server: {}: unknown message kind {:08x}",

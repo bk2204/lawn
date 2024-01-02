@@ -990,6 +990,63 @@ fn rejects_store_auth_with_disallowed_types() {
     }
 }
 
+#[test]
+fn can_read_template_contexts() {
+    let mut capabilities = Capability::implemented();
+    capabilities.insert(Capability::ContextTemplate);
+
+    let mut cb = ConfigBuilder::new();
+    cb.capabilities(capabilities);
+
+    let ti = Arc::new(TestInstance::new(Some(cb), None));
+    with_server(ti.clone(), async move {
+        // Basic setup.
+        let c = ti.connection().await;
+        c.ping().await.unwrap();
+        let resp = c.negotiate_default_version().await.unwrap();
+        assert_eq!(resp.version, &[0], "version is correct");
+        assert_eq!(
+            resp.user_agent.unwrap(),
+            config::VERSION,
+            "user-agent is correct"
+        );
+        c.auth_external().await.unwrap();
+
+        let args: Arc<[Bytes]> = vec![
+            Bytes::from(b"foo".as_slice()),
+            Bytes::from(b"bar".as_slice()),
+        ]
+        .into_boxed_slice()
+        .into();
+        let mut cenv = BTreeMap::new();
+        cenv.insert(
+            Bytes::from(b"quux".as_slice()),
+            Bytes::from(b"42".as_slice()),
+        );
+        let cenv = Arc::new(cenv);
+
+        let cfg = ti.config();
+        let g = cfg.template_context(Some(cenv.clone()), Some(args.clone()));
+        let id = g.context_id();
+
+        let ctx = c.read_template_context(id.clone()).await.unwrap().unwrap();
+        assert!(ctx.senv.is_some(), "server environment exists");
+        assert_eq!(
+            ctx.cenv.unwrap(),
+            *cenv,
+            "client environment is as expected"
+        );
+        assert_eq!(ctx.args.unwrap(), *args, "args are as expected");
+
+        std::mem::drop(g);
+
+        assert!(
+            c.read_template_context(id.clone()).await.unwrap().is_none(),
+            "template context is absent"
+        );
+    });
+}
+
 async fn script_runner<'a, 'b>(
     conn: Arc<client::Connection>,
     msg: &'a [u8],

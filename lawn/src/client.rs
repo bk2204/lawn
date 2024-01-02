@@ -331,6 +331,37 @@ impl Connection {
         }
     }
 
+    pub async fn read_template_context(
+        &self,
+        id: Bytes,
+    ) -> Result<Option<protocol::TemplateServerContextBody>, Error> {
+        let req = protocol::ReadServerContextRequest {
+            kind: "template".into(),
+            id: Some(id),
+            meta: None,
+        };
+        match self
+            .send_message_simple::<_, protocol::ReadServerContextResponseWithBody<protocol::TemplateServerContextBody>>(MessageKind::ReadServerContext,
+                Some(&req))
+            .await
+        {
+            Ok(Some(resp)) => {
+                match resp.body {
+                    Some(body) => Ok(Some(body)),
+                    None => Err(Error::new(ErrorKind::MissingResponse)),
+                }
+            }
+            Ok(None) => Err(Error::new(ErrorKind::MissingResponse)),
+            Err(e) => {
+                match protocol::Error::try_from(e) {
+                    Ok(protocol::Error{ code: protocol::ResponseCode::NotFound, .. }) => Ok(None),
+                    Ok(e) => Err(handler::Error::ProtocolError(e).into()),
+                    Err(e) => Err(e.0.into()),
+                }
+            }
+        }
+    }
+
     pub async fn run_clipboard<
         I: AsyncReadExt + Unpin + Send + 'static,
         O: AsyncWriteExt + Unpin + Send + 'static,

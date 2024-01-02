@@ -1,5 +1,6 @@
 use crate::encoding::escape;
 use bytes::Bytes;
+use lawn_protocol::protocol;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
@@ -168,6 +169,29 @@ pub struct TemplateContext {
     pub cenv: Option<Arc<BTreeMap<Bytes, Bytes>>>,
     pub ctxsenv: Option<Arc<BTreeMap<Bytes, Bytes>>>,
     pub args: Option<Arc<[Bytes]>>,
+}
+
+impl<'a> From<&'a TemplateContext> for protocol::TemplateServerContextBody {
+    fn from(ctx: &'a TemplateContext) -> protocol::TemplateServerContextBody {
+        protocol::TemplateServerContextBody {
+            senv: ctx.senv.as_deref().map(|x| (*x).clone()),
+            cenv: ctx.cenv.as_deref().map(|x| (*x).clone()),
+            ctxsenv: ctx.ctxsenv.as_deref().map(|x| (*x).clone()),
+            args: ctx.args.as_deref().map(|x| x.to_vec()),
+        }
+    }
+}
+
+impl<'a> From<&'a mut TemplateContext> for protocol::TemplateServerContextBody {
+    fn from(ctx: &'a mut TemplateContext) -> protocol::TemplateServerContextBody {
+        protocol::TemplateServerContextBody::from(ctx as &TemplateContext)
+    }
+}
+
+impl From<TemplateContext> for protocol::TemplateServerContextBody {
+    fn from(ctx: TemplateContext) -> protocol::TemplateServerContextBody {
+        protocol::TemplateServerContextBody::from(&ctx)
+    }
 }
 
 #[derive(Default)]
