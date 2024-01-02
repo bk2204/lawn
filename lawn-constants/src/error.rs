@@ -4,6 +4,7 @@ extern crate num_derive;
 extern crate rustix;
 
 use num_derive::FromPrimitive;
+use std::borrow::Cow;
 use std::fmt;
 use std::io;
 
@@ -947,5 +948,61 @@ impl From<rustix::io::Errno> for Error {
             rustix::io::Errno::FTYPE => Self::ELOOP,
             _ => Self::EINVAL,
         }
+    }
+}
+
+/// A trait to allow logging and scripting of error values.
+pub trait ExtendedError: std::error::Error {
+    /// The types of errors.
+    ///
+    /// This provides a list of string error types that classify this error.  For example, a
+    /// credential error that wraps an I/O error might indicate `["credential-error", "io-error"].
+    fn error_types(&self) -> Cow<'static, [Cow<'static, str>]>;
+    /// The tag of an error.
+    ///
+    /// This tag represents the error as a simple dash-divided string that indicates this specific
+    /// error.  This will usually be a kebab-case version of the error kind.
+    fn error_tag(&self) -> Cow<'static, str>;
+}
+
+impl<T: ExtendedError + ?Sized> ExtendedError for &T {
+    fn error_types(&self) -> Cow<'static, [Cow<'static, str>]> {
+        (*self).error_types()
+    }
+
+    fn error_tag(&self) -> Cow<'static, str> {
+        (*self).error_tag()
+    }
+}
+
+impl ExtendedError for Error {
+    fn error_types(&self) -> Cow<'static, [Cow<'static, str>]> {
+        Cow::Borrowed(&[Cow::Borrowed("errno")])
+    }
+
+    fn error_tag(&self) -> Cow<'static, str> {
+        let s = format!("{:?}", self);
+        s.to_ascii_lowercase().into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Error, ExtendedError};
+    use std::borrow::{Borrow, Cow};
+
+    #[test]
+    fn test_extended_errors() {
+        let e = Error::EIO;
+        let v = e.error_types();
+        let types: &[Cow<'static, str>] = v.borrow();
+        assert_eq!(types, &[Cow::Borrowed("errno")]);
+        assert_eq!(e.error_tag(), "eio");
+
+        let e = Error::ELOOP;
+        let v = e.error_types();
+        let types: &[Cow<'static, str>] = v.borrow();
+        assert_eq!(types, &[Cow::Borrowed("errno")]);
+        assert_eq!(e.error_tag(), "eloop");
     }
 }
