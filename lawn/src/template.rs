@@ -169,6 +169,8 @@ pub struct TemplateContext {
     pub cenv: Option<Arc<BTreeMap<Bytes, Bytes>>>,
     pub ctxsenv: Option<Arc<BTreeMap<Bytes, Bytes>>>,
     pub args: Option<Arc<[Bytes]>>,
+    pub kind: Option<String>,
+    pub extra: Option<serde_cbor::Value>,
 }
 
 impl<'a> From<&'a TemplateContext> for protocol::TemplateServerContextBody {
@@ -191,6 +193,56 @@ impl<'a> From<&'a mut TemplateContext> for protocol::TemplateServerContextBody {
 impl From<TemplateContext> for protocol::TemplateServerContextBody {
     fn from(ctx: TemplateContext) -> protocol::TemplateServerContextBody {
         protocol::TemplateServerContextBody::from(&ctx)
+    }
+}
+
+impl<'a, T> From<&'a TemplateContext> for protocol::TemplateServerContextBodyWithBody<T> {
+    fn from(ctx: &'a TemplateContext) -> protocol::TemplateServerContextBodyWithBody<T> {
+        protocol::TemplateServerContextBodyWithBody {
+            senv: ctx.senv.as_deref().map(|x| (*x).clone()),
+            cenv: ctx.cenv.as_deref().map(|x| (*x).clone()),
+            ctxsenv: ctx.ctxsenv.as_deref().map(|x| (*x).clone()),
+            args: ctx.args.as_deref().map(|x| x.to_vec()),
+            body: None,
+        }
+    }
+}
+
+impl<'a, T> From<&'a mut TemplateContext> for protocol::TemplateServerContextBodyWithBody<T> {
+    fn from(ctx: &'a mut TemplateContext) -> protocol::TemplateServerContextBodyWithBody<T> {
+        protocol::TemplateServerContextBodyWithBody::from(ctx as &TemplateContext)
+    }
+}
+
+impl<T> From<TemplateContext> for protocol::TemplateServerContextBodyWithBody<T> {
+    fn from(ctx: TemplateContext) -> protocol::TemplateServerContextBodyWithBody<T> {
+        protocol::TemplateServerContextBodyWithBody::from(&ctx)
+    }
+}
+
+impl From<protocol::TemplateServerContextBody> for TemplateContext {
+    fn from(ctx: protocol::TemplateServerContextBody) -> TemplateContext {
+        TemplateContext {
+            senv: ctx.senv.map(Arc::new),
+            cenv: ctx.cenv.map(Arc::new),
+            ctxsenv: ctx.ctxsenv.map(Arc::new),
+            args: ctx.args.map(|v| v.into_boxed_slice().into()),
+            kind: None,
+            extra: None,
+        }
+    }
+}
+
+impl<T> From<protocol::TemplateServerContextBodyWithBody<T>> for TemplateContext {
+    fn from(ctx: protocol::TemplateServerContextBodyWithBody<T>) -> TemplateContext {
+        TemplateContext {
+            senv: ctx.senv.map(Arc::new),
+            cenv: ctx.cenv.map(Arc::new),
+            ctxsenv: ctx.ctxsenv.map(Arc::new),
+            args: ctx.args.map(|v| v.into_boxed_slice().into()),
+            kind: None,
+            extra: None,
+        }
     }
 }
 

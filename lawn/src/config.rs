@@ -401,6 +401,8 @@ impl Config {
             cenv,
             args,
             ctxsenv: None,
+            kind: None,
+            extra: None,
         });
         {
             let mut g = self.template_contexts.write().unwrap();

@@ -1640,14 +1640,40 @@ impl Server {
                             let tctxs = tctxs.read().unwrap();
                             match tctxs.get(&id).clone() {
                                 Some(ctx) => {
-                                    let body =
-                                        protocol::TemplateServerContextBody::from(ctx.as_ref());
-                                    let resp = protocol::ReadServerContextResponseWithBody {
-                                        id: Some(id.clone()),
-                                        meta: None,
-                                        body: Some(body),
-                                    };
-                                    Ok((ResponseType::Success, serializer.serialize_body(&resp)))
+                                    if let (Some(kind), Some(extra)) = (&ctx.kind, &ctx.extra) {
+                                        let mut meta = BTreeMap::new();
+                                        meta.insert(
+                                            Bytes::from("template-type"),
+                                            serde_cbor::Value::Text(kind.clone()),
+                                        );
+                                        let mut body = protocol::TemplateServerContextBodyWithBody::<
+                                            &serde_cbor::Value,
+                                        >::from(
+                                            ctx.as_ref()
+                                        );
+                                        body.body = Some(extra);
+                                        let resp = protocol::ReadServerContextResponseWithBody {
+                                            id: Some(id.clone()),
+                                            meta: Some(meta),
+                                            body: Some(body),
+                                        };
+                                        Ok((
+                                            ResponseType::Success,
+                                            serializer.serialize_body(&resp),
+                                        ))
+                                    } else {
+                                        let body =
+                                            protocol::TemplateServerContextBody::from(ctx.as_ref());
+                                        let resp = protocol::ReadServerContextResponseWithBody {
+                                            id: Some(id.clone()),
+                                            meta: None,
+                                            body: Some(body),
+                                        };
+                                        Ok((
+                                            ResponseType::Success,
+                                            serializer.serialize_body(&resp),
+                                        ))
+                                    }
                                 }
                                 None => Err(ResponseCode::NotFound.into()),
                             }

@@ -1029,7 +1029,11 @@ fn can_read_template_contexts() {
         let g = cfg.template_context(Some(cenv.clone()), Some(args.clone()));
         let id = g.context_id();
 
-        let ctx = c.read_template_context(id.clone()).await.unwrap().unwrap();
+        let (_kind, ctx) = c
+            .read_template_context::<serde_cbor::Value>(id.clone())
+            .await
+            .unwrap()
+            .unwrap();
         assert!(ctx.senv.is_some(), "server environment exists");
         assert_eq!(
             ctx.cenv.unwrap(),
@@ -1041,7 +1045,10 @@ fn can_read_template_contexts() {
         std::mem::drop(g);
 
         assert!(
-            c.read_template_context(id.clone()).await.unwrap().is_none(),
+            c.read_template_context::<serde_cbor::Value>(id.clone())
+                .await
+                .unwrap()
+                .is_none(),
             "template context is absent"
         );
     });

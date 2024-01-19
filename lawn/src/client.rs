@@ -331,34 +331,49 @@ impl Connection {
         }
     }
 
-    pub async fn read_template_context(
+    pub async fn read_template_context<T: DeserializeOwned>(
         &self,
         id: Bytes,
-    ) -> Result<Option<protocol::TemplateServerContextBody>, Error> {
+    ) -> Result<
+        Option<(
+            Option<String>,
+            protocol::TemplateServerContextBodyWithBody<T>,
+        )>,
+        Error,
+    > {
         let req = protocol::ReadServerContextRequest {
             kind: "template".into(),
             id: Some(id),
             meta: None,
         };
         match self
-            .send_message_simple::<_, protocol::ReadServerContextResponseWithBody<protocol::TemplateServerContextBody>>(MessageKind::ReadServerContext,
-                Some(&req))
+            .send_message_simple::<_, protocol::ReadServerContextResponseWithBody<
+                protocol::TemplateServerContextBodyWithBody<T>,
+            >>(MessageKind::ReadServerContext, Some(&req))
             .await
         {
-            Ok(Some(resp)) => {
-                match resp.body {
-                    Some(body) => Ok(Some(body)),
-                    None => Err(Error::new(ErrorKind::MissingResponse)),
+            Ok(Some(resp)) => match resp.body {
+                Some(body) => {
+                    if let Some(serde_cbor::Value::Text(kind)) = resp
+                        .meta
+                        .and_then(|mut m| m.remove(b"template-type".as_slice()))
+                    {
+                        Ok(Some((Some(kind), body)))
+                    } else {
+                        Ok(Some((None, body)))
+                    }
                 }
-            }
+                None => Err(Error::new(ErrorKind::MissingResponse)),
+            },
             Ok(None) => Err(Error::new(ErrorKind::MissingResponse)),
-            Err(e) => {
-                match protocol::Error::try_from(e) {
-                    Ok(protocol::Error{ code: protocol::ResponseCode::NotFound, .. }) => Ok(None),
-                    Ok(e) => Err(handler::Error::ProtocolError(e).into()),
-                    Err(e) => Err(e.0.into()),
-                }
-            }
+            Err(e) => match protocol::Error::try_from(e) {
+                Ok(protocol::Error {
+                    code: protocol::ResponseCode::NotFound,
+                    ..
+                }) => Ok(None),
+                Ok(e) => Err(handler::Error::ProtocolError(e).into()),
+                Err(e) => Err(e.0),
+            },
         }
     }
 

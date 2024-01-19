@@ -1093,6 +1093,16 @@ pub struct TemplateServerContextBody {
     pub args: Option<Vec<Bytes>>,
 }
 
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct TemplateServerContextBodyWithBody<T> {
+    pub senv: Option<BTreeMap<Bytes, Bytes>>,
+    pub cenv: Option<BTreeMap<Bytes, Bytes>>,
+    pub ctxsenv: Option<BTreeMap<Bytes, Bytes>>,
+    pub args: Option<Vec<Bytes>>,
+    pub body: Option<T>,
+}
+
 /// A message for the protocol.
 #[derive(Clone, Debug)]
 pub struct Message {
