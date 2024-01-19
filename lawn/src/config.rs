@@ -3,6 +3,7 @@ use crate::error::{Error, ErrorKind};
 use crate::serializer::script::ScriptEncoder;
 use crate::template::{Template, TemplateContext};
 use bytes::{Bytes, BytesMut};
+use format_bytes::format_bytes;
 use lawn_constants::error::ExtendedError;
 use lawn_constants::logger::Logger as LoggerTrait;
 use lawn_constants::logger::{LogFormat, LogLevel};
@@ -966,6 +967,32 @@ impl Logger {
         let mut c = std::io::Cursor::new(buf.as_mut_slice());
         let _ = write!(c, "_x{:08x}", val);
         &buf[..10]
+    }
+
+    pub fn script_message_bytes(&self, tag: Option<&[u8]>, msg: &[Bytes]) {
+        let mut buf = [0u8; 16];
+        let tag = tag.unwrap_or_else(|| self.gen_tag(&mut buf));
+        let mut io = self.output.lock().unwrap();
+        let _ = io.write_all(tag);
+        let _ = io.write_all(b" ok ");
+        for (i, val) in msg.iter().enumerate() {
+            let _ = io.write_all(val.as_ref());
+            if i != msg.len() - 1 {
+                let _ = io.write_all(b" ");
+            }
+        }
+        let _ = io.write_all(b"\n");
+        let _ = io.flush();
+    }
+
+    pub fn message_bytes(&self, msg: &[u8]) {
+        let format = {
+            let g = self.format.read().unwrap();
+            *g
+        };
+        if format == LogFormat::Text {
+            self.write_bytes(0, &self.output, &format_bytes!(b"{}\n", msg));
+        }
     }
 }
 
