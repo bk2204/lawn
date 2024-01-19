@@ -18,6 +18,7 @@
 /// includes the string `err`, includes a colon-separated set of error types (classes of error, if
 /// you will), a string error tag (representing the specific error), and a string error message.
 use bytes::Bytes;
+use format_bytes::format_bytes;
 use std::borrow::Cow;
 use std::convert::{TryFrom, TryInto};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -145,9 +146,17 @@ impl Encodable for Vec<u8> {
 }
 
 impl Encodable for Bytes {
-    // TODO: encode properly.
     fn encode(&self) -> Cow<'_, [u8]> {
-        Cow::Borrowed(self.as_ref())
+        Cow::Owned(ScriptEncoder::encode_bytes(self.as_ref()))
+    }
+}
+
+impl<T: Encodable> Encodable for Option<T> {
+    fn encode(&self) -> Cow<'_, [u8]> {
+        match self {
+            Some(obj) => Cow::Owned(format_bytes!(b"@{}", obj.encode())),
+            None => Cow::Borrowed(b"nil".as_slice()),
+        }
     }
 }
 
