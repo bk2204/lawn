@@ -1,6 +1,8 @@
 use crate::encoding::escape;
 use bytes::Bytes;
+use lawn_constants::error::ExtendedError;
 use lawn_protocol::protocol;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
@@ -41,6 +43,20 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+impl ExtendedError for Error {
+    fn error_types(&self) -> Cow<'static, [Cow<'static, str>]> {
+        Cow::Borrowed(&[Cow::Borrowed("template")])
+    }
+
+    fn error_tag(&self) -> Cow<'static, str> {
+        match self {
+            Self::InvalidCharacter(..) => Cow::Borrowed("invalid-character"),
+            Self::InvalidRadixCharacter => Cow::Borrowed("invalid-radix-character"),
+            Self::UnknownPattern(..) => Cow::Borrowed("unknown-pattern"),
+        }
+    }
+}
 
 impl Template {
     pub fn new(s: &[u8]) -> Template {
