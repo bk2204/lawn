@@ -7,7 +7,9 @@ use format_bytes::format_bytes;
 use lawn_constants::error::ExtendedError;
 use lawn_constants::logger::Logger as LoggerTrait;
 use lawn_constants::logger::{LogFormat, LogLevel};
-use lawn_protocol::protocol::{Capability, ClipboardChannelOperation, ClipboardChannelTarget};
+use lawn_protocol::protocol::{
+    Capability, ClipboardChannelOperation, ClipboardChannelTarget, Empty,
+};
 use rand::{CryptoRng, RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
@@ -391,29 +393,49 @@ impl Config {
         cenv: Option<Arc<BTreeMap<Bytes, Bytes>>>,
         args: Option<Arc<[Bytes]>>,
     ) -> TemplateContextGuard {
+        self.template_context_with_data(cenv, args, None::<(&str, &Empty)>)
+            .unwrap()
+    }
+
+    pub fn template_context_with_data<S: Serialize>(
+        &self,
+        cenv: Option<Arc<BTreeMap<Bytes, Bytes>>>,
+        args: Option<Arc<[Bytes]>>,
+        data: Option<(&str, &S)>,
+    ) -> Result<TemplateContextGuard, Error> {
         let id = {
             let mut buf = [0u8; 32];
             let mut g = self.prng.lock().unwrap();
             g.fill_bytes(&mut buf);
             Bytes::copy_from_slice(&buf)
         };
+        let (kind, extra) = match data {
+            Some((s, obj)) => (
+                Some(s.to_string()),
+                Some(
+                    serde_cbor::value::to_value(obj)
+                        .map_err(|e| Error::new_with_cause(ErrorKind::TemplateError, e))?,
+                ),
+            ),
+            None => (None, None),
+        };
         let ctx = Arc::new(TemplateContext {
             senv: Some(self.env_vars.clone()),
             cenv,
             args,
             ctxsenv: None,
-            kind: None,
-            extra: None,
+            kind,
+            extra,
         });
         {
             let mut g = self.template_contexts.write().unwrap();
             g.insert(id.clone(), ctx.clone());
         }
-        TemplateContextGuard {
+        Ok(TemplateContextGuard {
             template_contexts: self.template_contexts.clone(),
             id,
             context: ctx,
-        }
+        })
     }
 
     pub fn format(&self) -> LogFormat {
