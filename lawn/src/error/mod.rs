@@ -1,5 +1,6 @@
 use crate::fs_proxy;
 use lawn_protocol::{handler, protocol};
+use serde::Serialize;
 use std::borrow::{Borrow, Cow};
 use std::convert::{TryFrom, TryInto};
 use std::fmt;
@@ -215,7 +216,21 @@ impl TryFrom<Error> for io::Error {
     }
 }
 
-#[derive(Debug, Clone)]
+impl ExtendedError for Error {
+    fn error_types(&self) -> Cow<'static, [Cow<'static, str>]> {
+        // TODO: convert internal error type to ExtendedError and emit these values.
+        Cow::Borrowed(&[Cow::Borrowed("lawn")])
+    }
+
+    fn error_tag(&self) -> Cow<'static, str> {
+        // This is a little gross, but it gets the exact output we're looking for.
+        let s = serde_json::to_string(&self.kind).unwrap();
+        Cow::Owned(s[1..s.len() - 1].to_owned())
+    }
+}
+
+#[derive(Serialize, Debug, Clone, Copy)]
+#[serde(rename_all = "kebab-case")]
 pub enum ErrorKind {
     Unimplemented,
     ServerCreationFailure,
@@ -236,16 +251,42 @@ pub enum ErrorKind {
     UnknownProtocolType,
     MissingArguments,
     IncompatibleArguments,
+    InvalidArgumentValue,
     NotRootMachine,
     InvalidConfigurationValue,
     ConfigurationSpawnError,
+    #[serde(rename = "fs-proxy-error")]
     FSProxyError,
     CredentialError,
     ScriptError,
+    MissingContext,
 }
 
 impl From<ErrorKind> for i32 {
     fn from(_e: ErrorKind) -> i32 {
         2
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Error, ErrorKind};
+    use lawn_constants::error::ExtendedError;
+    use std::borrow::{Borrow, Cow};
+
+    #[test]
+    fn implements_extended_error_correctly() {
+        let cases = &[
+            (ErrorKind::NotRootMachine, "not-root-machine"),
+            (ErrorKind::FSProxyError, "fs-proxy-error"),
+            (ErrorKind::CredentialError, "credential-error"),
+        ];
+        for (kind, s) in cases {
+            let e = Error::new(*kind);
+            let types = e.error_types();
+            let types: &[Cow<'static, str>] = types.borrow();
+            assert_eq!(types, [Cow::Borrowed("lawn")].as_slice());
+            assert_eq!(e.error_tag(), *s);
+        }
     }
 }
