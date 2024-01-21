@@ -15,6 +15,7 @@ use crate::encoding::{escape, osstr, path};
 use crate::socket::{LawnSocket, LawnSocketDiscoverer, LawnSocketKind};
 use bytes::Bytes;
 use clap::{App, Arg, ArgMatches};
+use lawn_constants::logger::LogFormat;
 use lawn_protocol::config::Logger;
 use lawn_protocol::protocol::{
     ClipboardChannelOperation, ClipboardChannelTarget, StoreSearchRecursionLevel,
@@ -74,6 +75,22 @@ fn config(verbosity: i32) -> Result<Arc<config::Config>, Error> {
         Box::new(std::io::stderr()),
         config.as_ref(),
     )?))
+}
+
+fn set_log_format(config: &config::Config, matches: &ArgMatches) -> Result<LogFormat, Error> {
+    let format = match matches.value_of("format") {
+        Some("cbor") => LogFormat::CBOR,
+        Some("default") | Some("text") | None => LogFormat::Text,
+        Some("script") => LogFormat::Scriptable,
+        _ => {
+            return Err(Error::new_with_message(
+                ErrorKind::InvalidArgumentValue,
+                r#"the --format argument accepts only "default", "text", "cbor", and "script""#,
+            ))
+        }
+    };
+    config.set_format(format);
+    Ok(format)
 }
 
 fn runtime() -> tokio::runtime::Runtime {
@@ -843,7 +860,7 @@ fn dispatch_run(
     std::process::exit(res);
 }
 
-fn dispatch(verbosity: &mut i32) -> Result<(), Error> {
+fn dispatch(verbosity: &mut i32, handled: &mut bool) -> Result<(), Error> {
     let matches = App::new("lawn")
         .version(env!("CARGO_PKG_VERSION"))
         .arg(
@@ -859,6 +876,12 @@ fn dispatch(verbosity: &mut i32) -> Result<(), Error> {
                 .short("q")
                 .multiple(true)
                 .help("Make the command less verbose"),
+        )
+        .arg(
+            Arg::with_name("format")
+                .long("format")
+                .takes_value(true)
+                .help("Provide the logging format (default, text, script, or cbor)")
         )
         .arg(Arg::with_name("socket").long("socket").takes_value(true).help("Specify the path to the Lawn socket"))
         .arg(Arg::with_name("no-detach").long("no-detach").help("Do not detach from the terminal when starting a server"))
@@ -920,7 +943,10 @@ fn dispatch(verbosity: &mut i32) -> Result<(), Error> {
     if matches.is_present("no-detach") {
         config.set_detach(false);
     }
-    match matches.subcommand() {
+    let format = set_log_format(&config, &matches)?;
+    let logger = config.logger();
+    *handled = true;
+    let res = match matches.subcommand() {
         ("credential", Some(m)) => dispatch_credential(config, &matches, m),
         ("server", Some(m)) => dispatch_server(config, &matches, m),
         ("query", Some(m)) => dispatch_query(config, &matches, m),
@@ -929,15 +955,31 @@ fn dispatch(verbosity: &mut i32) -> Result<(), Error> {
         ("proxy", Some(m)) => dispatch_proxy(config, &matches, m),
         ("run", Some(m)) => dispatch_run(config, &matches, m),
         _ => Err(Error::new(ErrorKind::Unimplemented)),
+    };
+    match (res, format) {
+        (Ok(()), _) => Ok(()),
+        (Err(e), LogFormat::Text) => {
+            error!(logger, "{}", e);
+            Err(e)
+        }
+        (Err(e), LogFormat::CBOR) | (Err(e), LogFormat::JSON) => {
+            logger.serialized_error(&e);
+            Ok(())
+        }
+        (Err(e), LogFormat::Scriptable) => {
+            logger.script_error(None, &e);
+            Ok(())
+        }
     }
 }
 
 fn main() {
     let mut verbosity = 0;
-    match dispatch(&mut verbosity) {
+    let mut handled = false;
+    match dispatch(&mut verbosity, &mut handled) {
         Ok(()) => (),
         Err(e) => {
-            if verbosity > -2 {
+            if verbosity > -2 && !handled {
                 eprintln!("error: {}", e);
             }
             std::process::exit(e.into());
