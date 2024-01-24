@@ -6,6 +6,7 @@ use crate::config;
 use crate::config::{Config, Logger};
 use crate::encoding::{escape, path};
 use crate::error::{Error, ErrorKind};
+use crate::socket::{LawnSocketData, LawnSocketKind};
 use crate::store::credential::CredentialStore;
 use crate::store::StoreManager;
 use crate::store::{StoreElement, StoreElementEntry};
@@ -25,6 +26,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::marker::Unpin;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::FromRawFd;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -260,6 +262,10 @@ impl Server {
         let socket = net::UnixListener::bind(socket_path).map_err(|_| {
             Error::new_with_message(ErrorKind::ServerCreationFailure, "cannot bind to socket")
         })?;
+        self.config.set_socket_data(LawnSocketData::new(
+            LawnSocketKind::Lawn,
+            Bytes::copy_from_slice(socket_path.as_os_str().as_bytes()),
+        ));
         let mut interval = time::interval(Duration::from_secs(1));
         let mut counter = 0u64;
         type JobInfo = (sync::mpsc::Sender<()>, task::JoinHandle<u64>);

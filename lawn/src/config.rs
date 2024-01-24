@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 use crate::error::{Error, ErrorKind};
 use crate::serializer::script::ScriptEncoder;
+use crate::socket::LawnSocketData;
 use crate::template::{Template, TemplateContext};
 use bytes::{Bytes, BytesMut};
 use format_bytes::format_bytes;
@@ -108,6 +109,7 @@ struct ConfigData {
     clipboard_enabled: Option<bool>,
     capability: BTreeSet<Capability>,
     credential_backends: Option<Vec<CredentialBackend>>,
+    socket_data: Option<LawnSocketData>,
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -268,6 +270,7 @@ impl ConfigBuilder {
                 clipboard_enabled: None,
                 capability: self.capabilities.unwrap_or_else(Capability::implemented),
                 credential_backends: None,
+                socket_data: None,
             }),
             env_vars,
             prng,
@@ -369,6 +372,7 @@ impl Config {
                 clipboard_enabled: None,
                 capability: Capability::implemented(),
                 credential_backends: None,
+                socket_data: None,
             }),
             env_vars: Arc::new(
                 env_iter()
@@ -382,6 +386,12 @@ impl Config {
             ))),
             template_contexts: Arc::new(RwLock::new(BTreeMap::new())),
         })
+    }
+
+    pub fn set_socket_data(&self, data: LawnSocketData) {
+        trace!(self.logger(), "config: setting socket data: {:?}", &data);
+        let mut g = self.data.write().unwrap();
+        g.socket_data = Some(data);
     }
 
     pub fn prng(&self) -> Arc<Mutex<dyn RNG + Send + Sync>> {

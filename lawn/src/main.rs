@@ -166,11 +166,15 @@ fn find_or_autostart_server(
     config: Arc<config::Config>,
 ) -> Result<LawnSocket, Error> {
     if let Some(socket) = find_server_socket(handle, socket, config.clone()) {
+        config.set_socket_data(socket.socket_data().clone());
         return Ok(socket);
     }
     autospawn_server(config.clone())?;
-    match find_server_socket(handle, socket, config) {
-        Some(s) => Ok(s),
+    match find_server_socket(handle, socket, config.clone()) {
+        Some(s) => {
+            config.set_socket_data(s.socket_data().clone());
+            Ok(s)
+        }
         None => Err(Error::new(ErrorKind::SocketConnectionFailure)),
     }
 }
