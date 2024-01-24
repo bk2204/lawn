@@ -56,7 +56,7 @@ impl fmt::Display for UnknownSocketKind {
 
 impl std::error::Error for UnknownSocketKind {}
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, Clone, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub struct LawnSocketData {
     #[serde(rename = "sk")]
