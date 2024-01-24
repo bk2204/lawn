@@ -65,7 +65,7 @@ pub struct LawnSocketData {
     path: Bytes,
     #[serde(rename = "ctx")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    context: Option<Bytes>,
+    pub context: Option<Bytes>,
     #[serde(rename = "auth")]
     #[serde(skip_serializing_if = "Option::is_none")]
     auth: Option<Bytes>,
@@ -75,6 +75,29 @@ pub struct LawnSocketData {
     #[serde(rename = "pass")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pass: Option<Bytes>,
+}
+
+impl LawnSocketData {
+    pub fn new(kind: LawnSocketKind, path: Bytes) -> Self {
+        Self {
+            kind,
+            path,
+            context: None,
+            auth: None,
+            username: None,
+            pass: None,
+        }
+    }
+
+    pub fn generate_env(&self) -> Bytes {
+        let mut v = b"v0:c:".to_vec();
+        v.extend(
+            URL_SAFE_NO_PAD
+                .encode(serde_cbor::to_vec(&self).unwrap())
+                .as_bytes(),
+        );
+        v.into()
+    }
 }
 
 pub struct LawnSocketDiscoverer<'a> {
@@ -410,12 +433,20 @@ impl LawnSocket {
         None
     }
 
+    pub fn socket_data(&self) -> &LawnSocketData {
+        &self.data
+    }
+
     pub fn path(&self) -> &OsStr {
         OsStr::from_bytes(&self.data.path)
     }
 
     pub fn kind(&self) -> LawnSocketKind {
         self.data.kind
+    }
+
+    pub fn context(&self) -> Option<Bytes> {
+        self.data.context.clone()
     }
 }
 
