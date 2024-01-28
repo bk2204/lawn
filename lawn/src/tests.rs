@@ -53,11 +53,14 @@ impl FakeEnvironment {
             "XDG_RUNTIME_DIR" => Some(Cow::Borrowed(b"runtime" as &[u8])),
             "LAWN_TEST_DATA_DIR" => Some(Cow::Borrowed(b"data" as &[u8])),
             "PATH" => {
+                let cwd = cwd.as_os_str().as_bytes();
                 return Some(OsString::from_vec(format_bytes!(
-                    b"{}/../spec/fixtures/bin:{}",
-                    cwd.as_os_str().as_bytes(),
+                    b"{}/../spec/fixtures/bin:{}/../target/release:{}/../target/debug:{}",
+                    cwd,
+                    cwd,
+                    cwd,
                     path.as_bytes(),
-                )))
+                )));
             }
             _ => None,
         }?;
