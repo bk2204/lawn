@@ -283,6 +283,7 @@ pub struct TemplateContextGuard {
     template_contexts: Arc<RwLock<BTreeMap<Bytes, Arc<TemplateContext>>>>,
     id: Bytes,
     context: Arc<TemplateContext>,
+    logger: Arc<Logger>,
 }
 
 impl TemplateContextGuard {
@@ -311,6 +312,7 @@ impl Deref for TemplateContextGuard {
 
 impl Drop for TemplateContextGuard {
     fn drop(&mut self) {
+        trace!(self.logger, "dropping template context {:?}", self.id);
         let mut g = self.template_contexts.write().unwrap();
         g.remove(&self.id);
     }
@@ -420,14 +422,23 @@ impl Config {
             Bytes::copy_from_slice(&buf)
         };
         let (kind, extra) = match data {
-            Some((s, obj)) => (
-                Some(s.to_string()),
-                Some(
-                    serde_cbor::value::to_value(obj)
-                        .map_err(|e| Error::new_with_cause(ErrorKind::TemplateError, e))?,
-                ),
-            ),
-            None => (None, None),
+            Some((s, obj)) => {
+                trace!(
+                    self.logger,
+                    "creating template context with data of kind {}",
+                    s
+                );
+                let data = serde_cbor::value::to_value(obj)
+                    .map_err(|e| Error::new_with_cause(ErrorKind::TemplateError, e))?;
+                (Some(s.to_string()), Some(data))
+            }
+            None => {
+                trace!(
+                    self.logger,
+                    "creating template context with no type-specific data"
+                );
+                (None, None)
+            }
         };
         let ctx = Arc::new(TemplateContext {
             senv: Some(self.env_vars.clone()),
@@ -440,11 +451,13 @@ impl Config {
         {
             let mut g = self.template_contexts.write().unwrap();
             g.insert(id.clone(), ctx.clone());
+            trace!(self.logger(), "storing template context {:?}", id)
         }
         Ok(TemplateContextGuard {
             template_contexts: self.template_contexts.clone(),
             id,
             context: ctx,
+            logger: self.logger(),
         })
     }
 
