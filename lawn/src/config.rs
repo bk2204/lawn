@@ -1240,6 +1240,14 @@ impl<'a> ConfigValue<'a> {
                 )
             }));
         }
+        if let Some(ctxsenv) = &self.context.ctxsenv {
+            cmd.envs(ctxsenv.iter().map(|(k, v)| {
+                (
+                    OsString::from_vec(k.to_vec()),
+                    OsString::from_vec(v.to_vec()),
+                )
+            }));
+        }
         cmd.current_dir("/");
         cmd
     }
