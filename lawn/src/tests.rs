@@ -170,6 +170,8 @@ fn runtime() -> tokio::runtime::Runtime {
 
 #[test]
 fn starts_server() {
+    use tokio::io::AsyncReadExt;
+
     let ti = TestInstance::new(None, None);
     let rt = runtime();
     rt.block_on(async {
@@ -179,7 +181,9 @@ fn starts_server() {
             tokio::time::sleep(Duration::from_secs(2)).await;
             s2.shutdown().await;
         });
-        s.run_async().await.unwrap();
+        let fdrd = s.run_async().await.unwrap();
+        let mut buf = [0u8; 1];
+        let _ = tokio::fs::File::from_std(fdrd).read(&mut buf).await;
         h.await
     })
     .unwrap();
@@ -190,13 +194,15 @@ where
     F: std::future::Future + Send + 'static,
     F::Output: Send + 'static,
 {
+    use tokio::io::AsyncReadExt;
+
     let rt = runtime();
     rt.block_on(async {
         let s = ti.server();
         let s2 = s.clone();
-        let mut file = s.run_async().await.unwrap();
+        let file = s.run_async().await.unwrap();
         let mut buf = [0u8; 1];
-        let _ = file.read(&mut buf);
+        let _ = tokio::fs::File::from_std(file).read(&mut buf).await;
         let h = tokio::spawn(future);
         h.await.unwrap();
         s2.shutdown().await;
