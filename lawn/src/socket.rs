@@ -232,8 +232,7 @@ impl<'a> LawnSocketDiscoverer<'a> {
     pub fn autodiscover(&self, prune: bool) -> Option<LawnSocket> {
         let logger = self.config.logger();
         debug!(logger, "performing socket autodiscovery");
-        let ctx = self.config.template_context(None, None);
-        let senv = ctx.senv.as_deref().unwrap();
+        let senv = self.config.env_vars();
         if let Some(value) = senv.get(b"LAWN" as &[u8]) {
             debug!(logger, "trying LAWN environment variable");
             if let Some(data) = self.socket_from_lawn_environment(&value) {
