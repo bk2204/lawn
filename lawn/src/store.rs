@@ -201,22 +201,22 @@ pub trait StoreElement {
     fn update(
         self: Arc<Self>,
         meta: Option<&BTreeMap<Bytes, Value>>,
-        body: Option<&(dyn Any + 'static)>,
+        body: Option<&(dyn Any + Send + Sync + 'static)>,
     ) -> Result<(), protocol::Error>;
     fn meta(&self) -> Option<Cow<'_, BTreeMap<Bytes, Value>>>;
-    fn body(&self) -> Result<Option<Box<dyn Any + 'static>>, protocol::Error>;
+    fn body(&self) -> Result<Option<Box<dyn Any + Send + Sync + 'static>>, protocol::Error>;
     fn delete(&self) -> Result<(), protocol::Error>;
     fn create(
         self: Arc<Self>,
         path: Option<Bytes>,
         kind: &str,
         meta: Option<&BTreeMap<Bytes, Value>>,
-        body: Option<&dyn Any>,
+        body: Option<&(dyn Any + Send + Sync + 'static)>,
     ) -> Result<Arc<dyn StoreElement + Send + Sync>, protocol::Error>;
     fn search(
         self: Arc<Self>,
         kind: Option<Bytes>,
-        pattern: Option<&(dyn Any + 'static)>,
+        pattern: Option<&(dyn Any + Send + Sync + 'static)>,
         recurse: StoreSearchRecursionLevel,
     ) -> Result<
         Box<dyn Iterator<Item = Arc<dyn StoreElement + Send + Sync>> + Send + Sync>,
@@ -238,13 +238,13 @@ pub trait Store {
         path: Bytes,
         kind: &str,
         meta: Option<&BTreeMap<Bytes, Value>>,
-        body: Option<&(dyn Any + 'static)>,
+        body: Option<&(dyn Any + Send + Sync + 'static)>,
     ) -> Result<Arc<dyn StoreElement + Send + Sync>, protocol::Error>;
     fn search(
         &self,
         id: StoreSelectorID,
         kind: Option<Bytes>,
-        pattern: Option<&(dyn Any + 'static)>,
+        pattern: Option<&(dyn Any + Send + Sync + 'static)>,
         recurse: StoreSearchRecursionLevel,
     ) -> Result<
         Box<dyn Iterator<Item = Arc<dyn StoreElement + Send + Sync>> + Send + Sync>,
