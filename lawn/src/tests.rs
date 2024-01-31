@@ -92,11 +92,12 @@ pub struct TestInstance {
 impl TestInstance {
     pub fn new(builder: Option<ConfigBuilder>, config: Option<&str>) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let mut server = dir.path().to_owned();
-        server.push("server");
-        fs::create_dir(&server).unwrap();
+        let mut config_dir = dir.path().to_owned();
+        config_dir.push("home/.config/lawn");
+        fs::create_dir_all(&config_dir).unwrap();
         let paths = &[
             "home/.local/run/lawn",
+            "home/.config/lawn",
             "data",
             "path",
             "run/user",
@@ -109,7 +110,7 @@ impl TestInstance {
             to_create.push(p);
             fs::create_dir_all(&to_create).unwrap();
         }
-        let config_file = Self::write_config_file(&server, config);
+        let config_file = Self::write_config_file(&config_dir, config);
         let env = FakeEnvironment::new(dir.path());
         let iterenv = env.clone();
         let mut builder = builder.unwrap_or_else(|| ConfigBuilder::new());
