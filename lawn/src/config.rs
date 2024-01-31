@@ -409,6 +409,21 @@ impl Config {
             .unwrap()
     }
 
+    fn generate_lawn_env(&self, id: Bytes) -> Result<Bytes, Error> {
+        let data = self.data.read().unwrap();
+        let mut sockdata = match &data.socket_data {
+            Some(sockdata) => sockdata.clone(),
+            None => {
+                return Err(Error::new_with_message(
+                    ErrorKind::NoSuchSocket,
+                    "cannot find socket data",
+                ))
+            }
+        };
+        sockdata.context = Some(id);
+        Ok(sockdata.generate_env())
+    }
+
     pub fn template_context_with_data<S: Serialize>(
         &self,
         cenv: Option<Arc<BTreeMap<Bytes, Bytes>>>,
@@ -420,6 +435,19 @@ impl Config {
             let mut g = self.prng.lock().unwrap();
             g.fill_bytes(&mut buf);
             Bytes::copy_from_slice(&buf)
+        };
+        let mut ctxsenv = BTreeMap::new();
+        match self.generate_lawn_env(id.clone()) {
+            Ok(env) => {
+                trace!(self.logger(), "storing LAWN environment variable {:?}", env);
+                ctxsenv.insert(Bytes::from(b"LAWN".as_slice()), env);
+            }
+            Err(_) => {
+                debug!(
+                    self.logger(),
+                    "not generating LAWN environment variable due to missing socket data"
+                )
+            }
         };
         let (kind, extra) = match data {
             Some((s, obj)) => {
@@ -444,7 +472,7 @@ impl Config {
             senv: Some(self.env_vars.clone()),
             cenv,
             args,
-            ctxsenv: None,
+            ctxsenv: Some(Arc::new(ctxsenv)),
             kind,
             extra,
         });
