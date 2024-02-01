@@ -783,6 +783,33 @@ impl Config {
         Ok(BTreeMap::new())
     }
 
+    pub fn credential_backend_control<S: Serialize>(
+        &self,
+        args: Arc<[Bytes]>,
+        data: Option<&S>,
+    ) -> Result<Option<String>, Error> {
+        let g = self.data.read().unwrap();
+        let val = match g
+            .config_file
+            .v0
+            .credential
+            .as_ref()
+            .and_then(|x| x.control.clone())
+        {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+        let data = data.map(|d| ("credential", d));
+        trace!(
+            self.logger,
+            "querying credential backend with context: {}",
+            if data.is_some() { "Some" } else { "None" }
+        );
+        let ctx = self.template_context_with_data(None, Some(args), data)?;
+        let val = Value::String(val);
+        Ok(Some(ConfigValue::new(val, &ctx)?.into_string()?))
+    }
+
     pub fn clipboard_enabled(&self) -> Result<bool, Error> {
         let val = {
             let g = self.data.read().unwrap();
@@ -1598,6 +1625,7 @@ pub struct ConfigFS {
 pub struct ConfigCredential {
     #[serde(rename = "if")]
     if_value: Value,
+    control: Option<String>,
     backends: Option<Vec<ConfigCredentialBackend>>,
 }
 

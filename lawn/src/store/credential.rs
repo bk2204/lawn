@@ -8,7 +8,9 @@ use crate::credential::CredentialParserError;
 use crate::server::SharedServerState;
 use bytes::Bytes;
 use format_bytes::format_bytes;
-use lawn_protocol::protocol::{self, ResponseCode, StoreID, StoreSelectorID};
+use lawn_protocol::protocol::{
+    self, CredentialStoreElement, ResponseCode, StoreID, StoreSelectorID,
+};
 use serde_cbor::Value;
 use std::any::Any;
 use std::borrow::Cow;
@@ -99,6 +101,7 @@ struct TopLevelCredentialBackendHandle {
     id: StoreSelectorID,
     config: Arc<Config>,
     backends: Arc<Mutex<BTreeMap<Bytes, Arc<dyn CredentialBackend + Send + Sync>>>>,
+    elems: CredentialElements,
 }
 
 impl StoreElement for TopLevelCredentialBackendHandle {
@@ -205,6 +208,7 @@ impl CredentialBackendHandle for TopLevelCredentialBackendHandle {
             id: self.id,
             config: self.config.clone(),
             backends: self.backends.clone(),
+            elems: self.elems.clone(),
         })
     }
 
@@ -214,6 +218,7 @@ impl CredentialBackendHandle for TopLevelCredentialBackendHandle {
             id: self.id,
             config: self.config.clone(),
             backends: self.backends.clone(),
+            elems: self.elems.clone(),
         })
     }
 
@@ -278,13 +283,29 @@ impl CredentialBackendHandle for TopLevelCredentialBackendHandle {
     fn create(
         self: Arc<Self>,
         _path: Option<Bytes>,
-        _kind: &str,
-        _meta: Option<&BTreeMap<Bytes, Value>>,
-        _body: Option<&(dyn Any + Send + Sync + 'static)>,
+        kind: &str,
+        meta: Option<&BTreeMap<Bytes, Value>>,
+        body: Option<&(dyn Any + Send + Sync + 'static)>,
     ) -> Result<Arc<dyn StoreElement + Send + Sync>, protocol::Error> {
-        let logger = self.config().logger();
-        trace!(logger, "server: refusing to create an object at top level");
-        Err(ResponseCode::NotSupported.into())
+        let logger = self.config.logger();
+        if kind != "credential" {
+            return Err(ResponseCode::NotSupported.into());
+        }
+        let location = match self.clone().credential_location(body, b"create-location")? {
+            Some(location) => location.into(),
+            None => return Err(ResponseCode::NotFound.into()),
+        };
+        trace!(logger, "credential: desired location for /: {:?}", location);
+        let obj = match CredentialStore::acquire_child(
+            self.store_id,
+            location,
+            self.backends.clone(),
+            self.elems.clone(),
+        )? {
+            Some(obj) => obj,
+            None => return Err(ResponseCode::NotFound.into()),
+        };
+        obj.create(None, kind, meta, body)
     }
 
     fn contents(
@@ -310,6 +331,28 @@ impl CredentialBackendHandle for TopLevelCredentialBackendHandle {
                 })
                 .collect(),
         ))))
+    }
+}
+
+impl TopLevelCredentialBackendHandle {
+    fn credential_location(
+        self: Arc<Self>,
+        body: Option<&(dyn Any + Send + Sync + 'static)>,
+        kind: &'static [u8],
+    ) -> Result<Option<String>, protocol::Error> {
+        let logger = self.config.logger();
+        let c: &CredentialStoreElement =
+            match body.and_then(|p| p.downcast_ref::<CredentialStoreElement>()) {
+                Some(p) => p,
+                None => return Err(ResponseCode::NotSupported.into()),
+            };
+        let args: Arc<[Bytes]> = Arc::new([Bytes::from(kind)]);
+        let result = self
+            .clone()
+            .config
+            .credential_backend_control(args, Some(c));
+        trace!(logger, "credential: finding location for /: {:?}", result);
+        result.map_err(|_| ResponseCode::NotSupported.into())
     }
 }
 
@@ -549,6 +592,54 @@ impl CredentialStore {
         data.insert(Bytes::copy_from_slice(name), obj.clone());
         Some(obj)
     }
+
+    fn acquire_child(
+        id: StoreID,
+        path: Bytes,
+        backends: Arc<Mutex<BTreeMap<Bytes, Arc<dyn CredentialBackend + Send + Sync>>>>,
+        elems: CredentialElements,
+    ) -> Result<Option<Arc<dyn StoreElement + Send + Sync>>, protocol::Error> {
+        let components: Vec<_> = match StorePath::new(path.clone()) {
+            Some(p) => p.components(),
+            None => return Err(ResponseCode::NotFound.into()),
+        };
+        if components.len() < 2 || !components[0].is_empty() {
+            // This should never occur.
+            return Err(ResponseCode::NotFound.into());
+        }
+        let be = backends.lock().unwrap();
+        let backend = components
+            .get(1)
+            .and_then(|c| be.get(c))
+            .ok_or(ResponseCode::NotFound)?;
+        let resp: Result<Option<Arc<dyn CredentialBackendHandle + Send + Sync>>, _> =
+            match CredentialPathComponentType::from_path_components(&components) {
+                Some(CredentialPathComponentType::Vault) => {
+                    let vault = components
+                        .get(2)
+                        .and_then(|v| backend.clone().vault_by_name(id, v).ok()?)
+                        .ok_or(protocol::Error::from(ResponseCode::NotFound))?;
+                    Ok(Some(vault.to_handle()))
+                }
+                Some(CredentialPathComponentType::VaultDirectory)
+                | Some(CredentialPathComponentType::Entry) => backend
+                    .clone()
+                    .acquire_at_path(id, path)
+                    .map_err(|e| match e {
+                        CredentialParserError::Unlistable => ResponseCode::Unlistable.into(),
+                        CredentialParserError::Unauthenticated => {
+                            ResponseCode::NeedsAuthentication.into()
+                        }
+                        CredentialParserError::NoSuchHandle => ResponseCode::NotFound.into(),
+                        _ => ResponseCode::InternalError.into(),
+                    }),
+                _ => Err(ResponseCode::NotFound.into()),
+            };
+        if let Ok(Some(ref item)) = resp {
+            elems.write().unwrap().insert(item.id(), item.clone());
+        }
+        resp.map(|op| op.map(|el| el.to_store_element()))
+    }
 }
 
 impl Store for CredentialStore {
@@ -580,6 +671,7 @@ impl Store for CredentialStore {
                         id: StoreSelectorID(self.next_id.fetch_add(1, Ordering::AcqRel)),
                         config: self.config.clone(),
                         backends: self.backends.clone(),
+                        elems: self.elems.clone(),
                     })))
                 }
                 Some(CredentialPathComponentType::Backend) => match backend {
