@@ -342,6 +342,7 @@ impl Capability {
             Self::ChannelSFTP,
             Self::ExtensionAllocate,
             Self::StoreCredential,
+            Self::ContextTemplate,
         ]
         .iter()
         .cloned()
@@ -360,6 +361,7 @@ impl Capability {
                 | Self::ChannelSFTP
                 | Self::ExtensionAllocate
                 | Self::StoreCredential
+                | Self::ContextTemplate
         )
     }
 }

@@ -40,6 +40,7 @@ mod server;
 mod socket;
 mod ssh_proxy;
 mod store;
+mod subcommands;
 mod task;
 mod template;
 #[cfg(not(miri))]
@@ -525,6 +526,7 @@ fn dispatch_query(
 ) -> Result<(), Error> {
     match m.subcommand() {
         ("test-connection", Some(m)) => dispatch_query_test_connection(config, main, m),
+        ("context", Some(m)) => subcommands::query::dispatch_query_context(config, main, m),
         _ => Err(Error::new(ErrorKind::Unimplemented)),
     }
 }
@@ -890,7 +892,20 @@ fn dispatch(verbosity: &mut i32, handled: &mut bool) -> Result<(), Error> {
         .arg(Arg::with_name("socket").long("socket").takes_value(true).help("Specify the path to the Lawn socket"))
         .arg(Arg::with_name("no-detach").long("no-detach").help("Do not detach from the terminal when starting a server"))
         .subcommand(App::new("server").about("Start a server on the root machine"))
-        .subcommand(App::new("query").about("Query information about Lawn").subcommand(App::new("test-connection").about("Test that a connection can be made and is basically functional")))
+        .subcommand(
+            App::new("query")
+            .about("Query information about Lawn")
+            .subcommand(
+                App::new("test-connection")
+                .about("Test that a connection can be made and is basically functional"))
+            .subcommand(
+                App::new("context")
+                .about("Query information about the current context")
+                .arg(Arg::with_name("type").long("type").help("Specify the type of context (template)"))
+                .arg(Arg::with_name("list").long("list").help("List context data"))
+                .arg(Arg::with_name("format").long("format").takes_value(true).help("Specify the format pattern"))
+                .arg(Arg::with_name("pattern-type").long("pattern-type").takes_value(true).help("Specify the format pattern type (template)")),
+        ))
         .subcommand(
             App::new("clip")
                 .about("Copy to and paste from the clipboard")

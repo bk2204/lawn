@@ -16,7 +16,7 @@ use std::convert::TryFrom;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -162,6 +162,10 @@ v0:
         let mut path = self.dir.path().to_owned();
         path.push("runtime/lawn/server-0.sock");
         client.connect(path, false).await.unwrap()
+    }
+
+    pub fn tempdir(&self) -> &Path {
+        self.dir.path()
     }
 }
 
@@ -903,6 +907,230 @@ fn can_round_trip_data_through_memory_credential_helper() {
                 .await
                 .unwrap();
             assert!(cred.is_none(), "missing credential is missing");
+        });
+    }
+}
+
+#[test]
+fn can_insert_entries_with_lawn_query() {
+    use crate::credential::{Credential, CredentialClient, CredentialHandle, Location};
+    use bytes::BytesMut;
+    use tokio::io::AsyncReadExt;
+
+    let authers: [Arc<dyn Auther + Send + Sync>; 2] =
+        [Arc::new(PlainAuth), Arc::new(KeyboardInteractiveAuth)];
+
+    let config = format!(
+        "{}\n{}",
+        TestInstance::default_config_file(),
+        r#"
+    credential:
+        if: true
+        control: |
+          !f() {
+            if [ "$0" = "create-location" ]
+            then
+                username=$(lawn -vvvv --format=script query context --list | tee -a %(sq:senv:LAWN_TEST_DATA_DIR)/context | grep "context username" |
+                  sed -e "s/^.*context username @//")
+                if [ "$username" = "username" ]
+                then
+                    echo "/memory/vault1/"
+                else
+                    echo "/memory/vault2/foo/bar/"
+                fi
+            else
+                false
+            fi
+          }; f
+        backends:
+            - name: memory
+              type: memory
+              if: true
+              options:
+                  token: abc123
+"#
+    );
+    let mut capabilities = Capability::implemented();
+    capabilities.insert(Capability::StoreCredential);
+
+    for auther in &authers {
+        let mut cb = ConfigBuilder::new();
+        cb.capabilities(capabilities.clone());
+
+        let ti = Arc::new(TestInstance::new(Some(cb), Some(&config)));
+        let auther = auther.clone();
+        with_server(ti.clone(), async move {
+            // Basic setup.
+            let c = ti.connection().await;
+            c.ping().await.unwrap();
+            let resp = c.negotiate_default_version().await.unwrap();
+            assert_eq!(resp.version, &[0], "version is correct");
+            assert_eq!(
+                resp.user_agent.unwrap(),
+                config::VERSION,
+                "user-agent is correct"
+            );
+            c.auth_external().await.unwrap();
+
+            let creds = CredentialClient::new(c).await.unwrap();
+            let mut stores = creds.list_stores().await.unwrap();
+            assert_eq!(stores.len(), 1, "one store");
+            assert_eq!(stores[0].path().await, "/memory/", "correct path");
+
+            let entries = creds.list_entries().await.unwrap().collect::<Vec<_>>();
+            assert_eq!(entries.len(), 1, "one store as entry");
+            assert_eq!(entries[0].path, "/memory/", "correct path for entry");
+            assert_eq!(
+                entries[0].needs_authentication,
+                Some(true),
+                "needs authentication"
+            );
+            assert_eq!(
+                entries[0].authentication_methods,
+                Some(vec![
+                    Bytes::from(b"PLAIN" as &[u8]),
+                    Bytes::from(b"keyboard-interactive" as &[u8])
+                ]),
+                "needs authentication with expected methods"
+            );
+
+            let e = stores[0].list_vaults().await.unwrap_err();
+            assert_eq!(ce_to_pe(e).code, ResponseCode::NeedsAuthentication);
+            auther.auth(&mut stores[0]).await;
+
+            let vaults = stores[0].list_vaults().await.unwrap();
+            assert!(vaults.is_empty(), "no vaults");
+            let vault1 = stores[0].create_vault(b"vault1").await.unwrap();
+            let vault2 = stores[0].create_vault(b"vault2").await.unwrap();
+            let vaults = stores[0].list_vaults().await.unwrap();
+            assert_eq!(vaults.len(), 2, "two vaults");
+            assert_eq!(
+                vaults[0].path().await,
+                b"/memory/vault1/" as &[u8],
+                "correct vault path"
+            );
+            assert_eq!(
+                vaults[0].path().await,
+                vault1.path().await,
+                "consistent vault path"
+            );
+            assert_eq!(
+                vaults[1].path().await,
+                b"/memory/vault2/" as &[u8],
+                "correct vault path"
+            );
+            assert_eq!(
+                vaults[1].path().await,
+                vault2.path().await,
+                "consistent vault path"
+            );
+
+            let mut cred1 = Credential {
+                username: Some(Bytes::from(b"username" as &[u8])),
+                secret: Bytes::from(b"secret" as &[u8]),
+                authtype: Some("PLAIN".into()),
+                kind: "api".into(),
+                title: Some("title".into()),
+                description: Some("description".into()),
+                service: Some("git".into()),
+                extra: BTreeMap::new(),
+                id: Bytes::new(),
+                location: vec![Location {
+                    protocol: Some("https".into()),
+                    host: Some("example.com".into()),
+                    port: Some(443),
+                    path: Some("/git/foo/bar".into()),
+                }],
+            };
+            cred1.id = cred1.generate_id();
+            assert_eq!(cred1.id.as_ref(), b"20aafdb3831287f75a74dd7c2843e7cbd87df92b91944f4311a940eabfa633651107f8bc24bfd563cc4c8de6f80b0e3a9e67af0e76f85044283531974a6be138", "credential has expected ID");
+            let cred1_path = Bytes::from(format_bytes!(b"/memory/vault1/{}", cred1.id.as_ref()));
+            assert_eq!(cred1_path.as_ref(), b"/memory/vault1/20aafdb3831287f75a74dd7c2843e7cbd87df92b91944f4311a940eabfa633651107f8bc24bfd563cc4c8de6f80b0e3a9e67af0e76f85044283531974a6be138", "credential path is as expected");
+
+            let mut cred2 = Credential {
+                username: Some(Bytes::from(b"someone-else" as &[u8])),
+                secret: Bytes::from(b"secret" as &[u8]),
+                authtype: Some("PLAIN".into()),
+                kind: "api".into(),
+                title: Some("title".into()),
+                description: Some("description".into()),
+                service: Some("git".into()),
+                extra: BTreeMap::new(),
+                id: Bytes::new(),
+                location: vec![Location {
+                    protocol: Some("https".into()),
+                    host: Some("example.com".into()),
+                    port: Some(443),
+                    path: Some("/git/foo/baz".into()),
+                }],
+            };
+            cred2.id = cred2.generate_id();
+            let cred2_path = Bytes::from(format_bytes!(
+                b"/memory/vault2/foo/bar/{}",
+                cred2.id.as_ref()
+            ));
+            assert_eq!(cred2_path.as_ref(), b"/memory/vault2/foo/bar/857ff0c8c6cad14f7e4e70b3ed3a69b673a8ed297c963fce899b7d445266737a35cb67485263ceac977daed3f191a69df03a9a85ac258b33a8bcc3e76692d1ea", "credential path is as expected");
+
+            creds.create_entry(&cred1).await.unwrap();
+            let items = vault1.list_entries().await.unwrap().collect::<Vec<_>>();
+            assert_eq!(items.len(), 1, "one vault entry");
+            assert_eq!(items[0].path, cred1_path, "vault entry has expected path");
+
+            let expected = vault1.get_entry(&cred1.id).await.unwrap().unwrap();
+            assert_eq!(expected, cred1, "cred1 is round-tripped correctly");
+
+            let foodir = vault2.create_directory(b"foo").await.unwrap();
+            let bardir = foodir.create_directory(b"bar").await.unwrap();
+            creds.create_entry(&cred2).await.unwrap();
+            let items = bardir.list_entries().await.unwrap().collect::<Vec<_>>();
+            assert_eq!(items.len(), 1, "one vault entry in directory");
+            assert_eq!(
+                items[0].path, cred2_path,
+                "vault entry in directory has expected path"
+            );
+
+            let mut data_file = ti.tempdir().to_owned();
+            data_file.push("data");
+            data_file.push("context");
+            let mut buf = BytesMut::with_capacity(65536);
+            let mut fp = tokio::fs::File::open(data_file).await.unwrap();
+            fp.read_buf(&mut buf).await.unwrap();
+
+            // Filter out the LAWN environment variable because it contains a socket in a tempdir
+            // and it will vary.
+            let actual = buf
+                .split_inclusive(|b| *b == b'\n')
+                .filter(|ln| !ln.starts_with(b"_a01 ok context ctxsenv"))
+                .collect::<Vec<_>>();
+            let actual = Bytes::from(actual.join(&[][..]));
+            const FIXED: &[u8] = b"_a01 ok context";
+            let config = ti.config();
+            let senv = config.env_vars();
+            let prefix = format_bytes!(b"{} args create-location\n{} senv HOME {}\n{} senv LAWN_TEST_DATA_DIR {}\n{} senv PATH {}\n{} senv XDG_RUNTIME_DIR {}\n", FIXED, FIXED, senv.get(b"HOME".as_slice()).unwrap().as_ref(), FIXED, senv.get(b"LAWN_TEST_DATA_DIR".as_slice()).unwrap().as_ref(), FIXED, *senv.get(b"PATH".as_slice()).unwrap().as_ref(), FIXED, *senv.get(b"XDG_RUNTIME_DIR".as_slice()).unwrap().as_ref());
+            let mut expected = prefix.clone();
+            let _ = write!(expected, "_a01 ok context template-type credential
+_a01 ok context username @username
+_a01 ok context secret @secret
+_a01 ok context authtype @PLAIN
+_a01 ok context type api
+_a01 ok context title @title
+_a01 ok context description @description
+_a01 ok context location @https @example.com @443 @/git/foo/bar
+_a01 ok context service @git
+_a01 ok context id 20aafdb3831287f75a74dd7c2843e7cbd87df92b91944f4311a940eabfa633651107f8bc24bfd563cc4c8de6f80b0e3a9e67af0e76f85044283531974a6be138\n");
+            expected.extend(prefix);
+            let _ = write!(expected, "_a01 ok context template-type credential
+_a01 ok context username @someone-else
+_a01 ok context secret @secret
+_a01 ok context authtype @PLAIN
+_a01 ok context type api
+_a01 ok context title @title
+_a01 ok context description @description
+_a01 ok context location @https @example.com @443 @/git/foo/baz
+_a01 ok context service @git
+_a01 ok context id 857ff0c8c6cad14f7e4e70b3ed3a69b673a8ed297c963fce899b7d445266737a35cb67485263ceac977daed3f191a69df03a9a85ac258b33a8bcc3e76692d1ea\n");
+            let expected = Bytes::from(expected);
+            assert_eq!(actual, expected);
         });
     }
 }
