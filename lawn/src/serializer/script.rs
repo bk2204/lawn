@@ -85,7 +85,11 @@ impl ScriptEncoder {
                     buf = [b'%', OFFSET[(b >> 4) as usize], OFFSET[(b & 0xf) as usize]];
                     &buf
                 }
-                b'%' | b' ' => {
+                // Percent and space are necessary.  Encode + so that CGI-based encoders, which
+                // decode + as space, will be able to handle this properly.  Encode backslash so
+                // that users can convert % to \x and print it with a suitable version of
+                // printf(1) or a scripting language.
+                b'%' | b' ' | b'+' | b'\\' => {
                     buf = [b'%', OFFSET[(b >> 4) as usize], OFFSET[(b & 0xf) as usize]];
                     &buf
                 }
