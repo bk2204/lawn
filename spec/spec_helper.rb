@@ -65,6 +65,10 @@ class TestEnvironment
       "LAWN_SERVER_MOUNT" => File.join(dir, "mount", "server"),
       "LAWN_BASE_DIR" => dir,
     }
+    extra_env = options.delete(:env)
+    if extra_env
+      env.merge!(extra_env)
+    end
     data = {}
     inp = options.delete(:input)
     outp = options.delete(:output)

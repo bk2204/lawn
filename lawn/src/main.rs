@@ -191,6 +191,7 @@ async fn credentials_all_vaults(
     Ok(vaults)
 }
 
+#[derive(PartialEq, Eq, Copy, Clone)]
 enum GitCredentialOperation {
     Get,
     Store,
@@ -348,8 +349,8 @@ fn dispatch_credential_git(
             }
             kind => {
                 let rhandler = handler.clone();
-                let cred = match tokio::task::spawn_blocking(|| {
-                    rhandler.parse_approve_reject_request(true)
+                let cred = match tokio::task::spawn_blocking(move || {
+                    rhandler.parse_approve_reject_request(kind == GitCredentialOperation::Store)
                 })
                 .await
                 {
@@ -385,32 +386,47 @@ fn dispatch_credential_git(
                         ))
                     }
                 };
-                match vaults.first() {
-                    Some(vault) => {
-                        let res = match kind {
-                            GitCredentialOperation::Store => vault.put_entry(&cred).await,
-                            GitCredentialOperation::Erase => vault.delete_entry(&cred).await,
-                            GitCredentialOperation::Get => unreachable!(),
-                        };
-                        match (res, kind) {
-                            (Ok(()), _) => Ok(()),
-                            (Err(e), GitCredentialOperation::Store) => Err(Error::new_full(
-                                ErrorKind::CredentialError,
-                                Box::new(e),
-                                "error putting entry",
-                            )),
-                            (Err(e), GitCredentialOperation::Erase) => Err(Error::new_full(
-                                ErrorKind::CredentialError,
-                                Box::new(e),
-                                "error deleting entry",
-                            )),
-                            (Err(_), GitCredentialOperation::Get) => unreachable!(),
+                match kind {
+                    GitCredentialOperation::Store => creds.put_entry(&cred).await.map_err(|e| {
+                        Error::new_full(
+                            ErrorKind::CredentialError,
+                            Box::new(e),
+                            "error putting entry",
+                        )
+                    }),
+                    GitCredentialOperation::Erase => {
+                        let mut req: credential::CredentialRequest = cred.to_request();
+                        req.id = credential::FieldRequest::Any;
+                        trace!(logger, "searching for credential with {:?}", req);
+                        for vault in vaults {
+                            match vault
+                                .search_entry(&req, StoreSearchRecursionLevel::Boolean(true))
+                                .await
+                            {
+                                Ok(Some(cred)) => {
+                                    debug!(logger, "found entry in vault {:?}", vault.path().await);
+                                    return vault.delete_entry(&cred).await.map_err(|e| {
+                                        Error::new_full(
+                                            ErrorKind::CredentialError,
+                                            Box::new(e),
+                                            "error deleting entry",
+                                        )
+                                    });
+                                }
+                                Ok(None) => continue,
+                                Err(e) => {
+                                    return Err(Error::new_full(
+                                        ErrorKind::CredentialError,
+                                        Box::new(e),
+                                        "error searching credentials",
+                                    ));
+                                }
+                            };
                         }
+                        debug!(logger, "no entry found, nothing erased");
+                        Ok(())
                     }
-                    None => Err(Error::new_with_message(
-                        ErrorKind::CredentialError,
-                        "error acquiring credential vaults: no credential vaults found",
-                    )),
+                    GitCredentialOperation::Get => unreachable!(),
                 }
             }
         }
