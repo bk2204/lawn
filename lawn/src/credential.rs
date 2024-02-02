@@ -1581,7 +1581,7 @@ impl CredentialRequest {
         self.service.matches_string(cred.service.as_deref()) &&
         self.title.matches_string(cred.title.as_deref()) &&
         self.description.matches_string(cred.description.as_deref()) &&
-        self.id.matches_string(cred.service.as_deref()) &&
+        self.id.matches_bytes(Some(&cred.id)) &&
         self.extra.iter().all(|(k, v)| {
             let val = cred.extra.get(k).unwrap_or(&Value::Null);
             v.matches_value(val)
