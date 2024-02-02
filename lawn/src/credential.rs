@@ -640,7 +640,7 @@ impl CredentialHandle for CredentialDirectoryHandle {
             .await?;
         let id = resp
             .and_then(|r| r.first()?.id)
-            .ok_or(CredentialError::UnsupportedSerialization)?;
+            .ok_or(CredentialError::NotFound)?;
         let req = DeleteStoreElementRequest {
             id: self.store_id,
             selector: StoreSelector::ID(id),
