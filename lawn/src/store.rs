@@ -41,7 +41,7 @@ impl StoreManager {
 
     pub fn get(&self, id: StoreID) -> Option<Arc<dyn Store + Send + Sync>> {
         let g = self.map.read().unwrap();
-        g.get(&id).map(Arc::clone)
+        g.get(&id).cloned()
     }
 }
 
