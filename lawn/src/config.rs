@@ -1,27 +1,49 @@
 #![allow(dead_code)]
 use crate::error::{Error, ErrorKind};
+use crate::serializer::script::ScriptEncoder;
+use crate::socket::LawnSocketData;
 use crate::template::{Template, TemplateContext};
 use bytes::{Bytes, BytesMut};
+use format_bytes::format_bytes;
+use lawn_constants::error::ExtendedError;
 use lawn_constants::logger::Logger as LoggerTrait;
 use lawn_constants::logger::{LogFormat, LogLevel};
-use lawn_protocol::protocol::{Capability, ClipboardChannelOperation, ClipboardChannelTarget};
+use lawn_protocol::protocol::{
+    Capability, ClipboardChannelOperation, ClipboardChannelTarget, Empty,
+};
+use rand::{CryptoRng, RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
+use std::borrow::{Borrow, Cow};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::io::{Read, Write};
+use std::ops::Deref;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime};
 
 pub const VERSION: &str = concat!("Lawn/", env!("CARGO_PKG_VERSION"));
+
+#[allow(clippy::upper_case_acronyms)]
+pub trait RNG: CryptoRng + RngCore + Send + Sync {}
+
+impl<T> RNG for T
+where
+    T: CryptoRng,
+    T: RngCore,
+    T: Send,
+    T: Sync,
+{
+}
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ClipboardBackend {
@@ -87,6 +109,7 @@ struct ConfigData {
     clipboard_enabled: Option<bool>,
     capability: BTreeSet<Capability>,
     credential_backends: Option<Vec<CredentialBackend>>,
+    socket_data: Option<LawnSocketData>,
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -114,6 +137,7 @@ pub struct ConfigBuilder {
     stderr: Option<Box<dyn Write + Sync + Send>>,
     create: bool,
     capabilities: Option<BTreeSet<Capability>>,
+    prng: Option<Arc<Mutex<dyn RNG + Send + Sync>>>,
 }
 
 impl ConfigBuilder {
@@ -127,6 +151,7 @@ impl ConfigBuilder {
             stderr: None,
             create: false,
             capabilities: None,
+            prng: None,
         }
     }
 
@@ -171,6 +196,11 @@ impl ConfigBuilder {
 
     pub fn create_runtime_dir(&mut self, create: bool) -> &mut Self {
         self.create = create;
+        self
+    }
+
+    pub fn prng(&mut self, prng: Arc<Mutex<dyn RNG + Send + Sync>>) -> &mut Self {
+        self.prng = Some(prng);
         self
     }
 
@@ -221,6 +251,13 @@ impl ConfigBuilder {
         let env_vars = self
             .env_vars
             .ok_or_else(|| Self::missing_config_option("env"))?;
+        let prng = self.prng.unwrap_or_else(|| {
+            Arc::new(Mutex::new(rand::rngs::adapter::ReseedingRng::new(
+                rand_chacha::ChaCha20Core::from_entropy(),
+                0,
+                rand::rngs::OsRng,
+            )))
+        });
         Ok(Config {
             logger: Arc::new(logger),
             data: RwLock::new(ConfigData {
@@ -233,9 +270,51 @@ impl ConfigBuilder {
                 clipboard_enabled: None,
                 capability: self.capabilities.unwrap_or_else(Capability::implemented),
                 credential_backends: None,
+                socket_data: None,
             }),
             env_vars,
+            prng,
+            template_contexts: Arc::new(RwLock::new(BTreeMap::new())),
         })
+    }
+}
+
+pub struct TemplateContextGuard {
+    template_contexts: Arc<RwLock<BTreeMap<Bytes, Arc<TemplateContext>>>>,
+    id: Bytes,
+    context: Arc<TemplateContext>,
+    logger: Arc<Logger>,
+}
+
+impl TemplateContextGuard {
+    pub fn context(&self) -> &TemplateContext {
+        &self.context
+    }
+
+    pub fn context_id(&self) -> Bytes {
+        self.id.clone()
+    }
+}
+
+impl AsRef<TemplateContext> for TemplateContextGuard {
+    fn as_ref(&self) -> &TemplateContext {
+        &self.context
+    }
+}
+
+impl Deref for TemplateContextGuard {
+    type Target = TemplateContext;
+
+    fn deref(&self) -> &TemplateContext {
+        &self.context
+    }
+}
+
+impl Drop for TemplateContextGuard {
+    fn drop(&mut self) {
+        trace!(self.logger, "dropping template context {:?}", self.id);
+        let mut g = self.template_contexts.write().unwrap();
+        g.remove(&self.id);
     }
 }
 
@@ -243,6 +322,8 @@ pub struct Config {
     logger: Arc<Logger>,
     data: RwLock<ConfigData>,
     env_vars: Arc<BTreeMap<Bytes, Bytes>>,
+    prng: Arc<Mutex<dyn RNG + Send + Sync>>,
+    template_contexts: Arc<RwLock<BTreeMap<Bytes, Arc<TemplateContext>>>>,
 }
 
 impl Config {
@@ -293,26 +374,119 @@ impl Config {
                 clipboard_enabled: None,
                 capability: Capability::implemented(),
                 credential_backends: None,
+                socket_data: None,
             }),
             env_vars: Arc::new(
                 env_iter()
                     .map(|(k, v)| (k.as_bytes().to_vec().into(), v.as_bytes().to_vec().into()))
                     .collect(),
             ),
+            prng: Arc::new(Mutex::new(rand::rngs::adapter::ReseedingRng::new(
+                rand_chacha::ChaCha20Core::from_entropy(),
+                0,
+                rand::rngs::OsRng,
+            ))),
+            template_contexts: Arc::new(RwLock::new(BTreeMap::new())),
         })
+    }
+
+    pub fn set_socket_data(&self, data: LawnSocketData) {
+        trace!(self.logger(), "config: setting socket data: {:?}", &data);
+        let mut g = self.data.write().unwrap();
+        g.socket_data = Some(data);
+    }
+
+    pub fn prng(&self) -> Arc<Mutex<dyn RNG + Send + Sync>> {
+        self.prng.clone()
     }
 
     pub fn template_context(
         &self,
         cenv: Option<Arc<BTreeMap<Bytes, Bytes>>>,
         args: Option<Arc<[Bytes]>>,
-    ) -> TemplateContext {
-        TemplateContext {
+    ) -> TemplateContextGuard {
+        self.template_context_with_data(cenv, args, None::<(&str, &Empty)>)
+            .unwrap()
+    }
+
+    fn generate_lawn_env(&self, id: Bytes) -> Result<Bytes, Error> {
+        let data = self.data.read().unwrap();
+        let mut sockdata = match &data.socket_data {
+            Some(sockdata) => sockdata.clone(),
+            None => {
+                return Err(Error::new_with_message(
+                    ErrorKind::NoSuchSocket,
+                    "cannot find socket data",
+                ))
+            }
+        };
+        sockdata.context = Some(id);
+        Ok(sockdata.generate_env())
+    }
+
+    pub fn template_context_with_data<S: Serialize>(
+        &self,
+        cenv: Option<Arc<BTreeMap<Bytes, Bytes>>>,
+        args: Option<Arc<[Bytes]>>,
+        data: Option<(&str, &S)>,
+    ) -> Result<TemplateContextGuard, Error> {
+        let id = {
+            let mut buf = [0u8; 32];
+            let mut g = self.prng.lock().unwrap();
+            g.fill_bytes(&mut buf);
+            Bytes::copy_from_slice(&buf)
+        };
+        let mut ctxsenv = BTreeMap::new();
+        match self.generate_lawn_env(id.clone()) {
+            Ok(env) => {
+                trace!(self.logger(), "storing LAWN environment variable {:?}", env);
+                ctxsenv.insert(Bytes::from(b"LAWN".as_slice()), env);
+            }
+            Err(_) => {
+                debug!(
+                    self.logger(),
+                    "not generating LAWN environment variable due to missing socket data"
+                )
+            }
+        };
+        let (kind, extra) = match data {
+            Some((s, obj)) => {
+                trace!(
+                    self.logger,
+                    "creating template context with data of kind {}",
+                    s
+                );
+                let data = serde_cbor::value::to_value(obj)
+                    .map_err(|e| Error::new_with_cause(ErrorKind::TemplateError, e))?;
+                (Some(s.to_string()), Some(data))
+            }
+            None => {
+                trace!(
+                    self.logger,
+                    "creating template context with no type-specific data"
+                );
+                (None, None)
+            }
+        };
+        let ctx = Arc::new(TemplateContext {
             senv: Some(self.env_vars.clone()),
             cenv,
             args,
-            ctxsenv: None,
+            ctxsenv: Some(Arc::new(ctxsenv)),
+            kind,
+            extra,
+        });
+        {
+            let mut g = self.template_contexts.write().unwrap();
+            g.insert(id.clone(), ctx.clone());
+            trace!(self.logger(), "storing template context {:?}", id)
         }
+        Ok(TemplateContextGuard {
+            template_contexts: self.template_contexts.clone(),
+            id,
+            context: ctx,
+            logger: self.logger(),
+        })
     }
 
     pub fn format(&self) -> LogFormat {
@@ -351,6 +525,11 @@ impl Config {
     pub fn runtime_dir(&self) -> PathBuf {
         let g = self.data.read().unwrap();
         g.runtime_dir.clone()
+    }
+
+    #[allow(clippy::mutable_key_type)]
+    pub fn template_contexts(&self) -> Arc<RwLock<BTreeMap<Bytes, Arc<TemplateContext>>>> {
+        self.template_contexts.clone()
     }
 
     #[allow(clippy::mutable_key_type)]
@@ -604,6 +783,33 @@ impl Config {
         Ok(BTreeMap::new())
     }
 
+    pub fn credential_backend_control<S: Serialize>(
+        &self,
+        args: Arc<[Bytes]>,
+        data: Option<&S>,
+    ) -> Result<Option<String>, Error> {
+        let g = self.data.read().unwrap();
+        let val = match g
+            .config_file
+            .v0
+            .credential
+            .as_ref()
+            .and_then(|x| x.control.clone())
+        {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+        let data = data.map(|d| ("credential", d));
+        trace!(
+            self.logger,
+            "querying credential backend with context: {}",
+            if data.is_some() { "Some" } else { "None" }
+        );
+        let ctx = self.template_context_with_data(None, Some(args), data)?;
+        let val = Value::String(val);
+        Ok(Some(ConfigValue::new(val, &ctx)?.into_string()?))
+    }
+
     pub fn clipboard_enabled(&self) -> Result<bool, Error> {
         let val = {
             let g = self.data.read().unwrap();
@@ -779,12 +985,38 @@ impl Config {
     }
 }
 
+#[derive(Serialize)]
+struct SerializedError {
+    error: SerializedInternalError,
+}
+
+#[derive(Serialize)]
+struct SerializedInternalError {
+    types: Vec<String>,
+    tag: String,
+    message: String,
+}
+
+impl<T: ExtendedError + std::error::Error> From<&T> for SerializedError {
+    fn from(err: &T) -> SerializedError {
+        SerializedError {
+            error: SerializedInternalError {
+                types: err.error_types().iter().map(|s| s.to_string()).collect(),
+                tag: err.error_tag().to_string(),
+                message: format!("{}", err),
+            },
+        }
+    }
+}
+
 pub struct Logger {
     output: Mutex<Box<dyn Write + Sync + Send>>,
     error: Mutex<Box<dyn Write + Sync + Send>>,
     verbosity: i32,
     level: LogLevel,
     format: RwLock<LogFormat>,
+    encoder: ScriptEncoder,
+    tag_counter: AtomicU32,
 }
 
 impl Logger {
@@ -809,19 +1041,58 @@ impl Logger {
             verbosity,
             level,
             format: RwLock::new(LogFormat::Text),
+            encoder: ScriptEncoder::new(),
+            tag_counter: AtomicU32::new(0),
         }
     }
 
     fn write(&self, desired: i32, io: &Mutex<Box<dyn Write + Sync + Send>>, msg: &str) {
+        self.write_bytes(desired, io, msg.as_bytes())
+    }
+
+    fn write_bytes(&self, desired: i32, io: &Mutex<Box<dyn Write + Sync + Send>>, msg: &[u8]) {
         if self.verbosity >= desired {
             let mut m = io.lock().unwrap();
-            let _ = m.write_all(msg.as_bytes());
+            let _ = m.write_all(msg);
         }
     }
 
     fn set_format(&self, format: LogFormat) {
         let mut g = self.format.write().unwrap();
         *g = format;
+    }
+
+    fn gen_tag<'a>(&self, buf: &'a mut [u8; 16]) -> &'a [u8] {
+        let val = self.tag_counter.fetch_add(1, Ordering::AcqRel);
+        let mut c = std::io::Cursor::new(buf.as_mut_slice());
+        let _ = write!(c, "_x{:08x}", val);
+        &buf[..10]
+    }
+
+    pub fn script_message_bytes(&self, tag: Option<&[u8]>, msg: &[Bytes]) {
+        let mut buf = [0u8; 16];
+        let tag = tag.unwrap_or_else(|| self.gen_tag(&mut buf));
+        let mut io = self.output.lock().unwrap();
+        let _ = io.write_all(tag);
+        let _ = io.write_all(b" ok ");
+        for (i, val) in msg.iter().enumerate() {
+            let _ = io.write_all(val.as_ref());
+            if i != msg.len() - 1 {
+                let _ = io.write_all(b" ");
+            }
+        }
+        let _ = io.write_all(b"\n");
+        let _ = io.flush();
+    }
+
+    pub fn message_bytes(&self, msg: &[u8]) {
+        let format = {
+            let g = self.format.read().unwrap();
+            *g
+        };
+        if format == LogFormat::Text {
+            self.write_bytes(0, &self.output, &format_bytes!(b"{}\n", msg));
+        }
     }
 }
 
@@ -870,6 +1141,71 @@ impl lawn_protocol::config::Logger for Logger {
             &self.error,
             &format!("trace: {:09.9}: {}\n", time.as_secs_f64(), msg),
         );
+    }
+
+    fn script_message(&self, tag: Option<&[u8]>, msg: &[&[u8]]) {
+        let mut buf = [0u8; 16];
+        let tag = tag.unwrap_or_else(|| self.gen_tag(&mut buf));
+        let mut io = self.output.lock().unwrap();
+        let _ = io.write_all(tag);
+        let _ = io.write_all(b" ok ");
+        for (i, val) in msg.iter().enumerate() {
+            let _ = io.write_all(val.as_ref());
+            if i != msg.len() - 1 {
+                let _ = io.write_all(b" ");
+            }
+        }
+        let _ = io.write_all(b"\n");
+        let _ = io.flush();
+    }
+
+    fn script_error(&self, tag: Option<&[u8]>, err: &dyn ExtendedError) {
+        let mut buf = [0u8; 16];
+        let tag = tag.unwrap_or_else(|| self.gen_tag(&mut buf));
+        let mut io = self.output.lock().unwrap();
+        let _ = io.write_all(tag);
+        let _ = io.write_all(b" err ");
+        let error_types = err.error_types();
+        let error_types: &[Cow<'static, str>] = error_types.borrow();
+        let error_types = error_types.join(":");
+        let _ = io.write_all(error_types.as_bytes());
+        let _ = io.write_all(b" ");
+        let _ = io.write_all(err.error_tag().as_bytes());
+        let _ = io.write_all(b" ");
+        let _ = io.write_all(self.encoder.encode(&format!("{}", err)).borrow());
+        let _ = io.write_all(b"\n");
+        let _ = io.flush();
+    }
+
+    fn serialized(&self, msg: &[u8]) {
+        if self.format() == LogFormat::CBOR {
+            self.write_bytes(0, &self.output, msg);
+        }
+    }
+
+    fn serialized_error(&self, err: &dyn ExtendedError) {
+        if self.format() == LogFormat::CBOR {
+            let err = SerializedError::from(&err);
+            match serde_cbor::to_vec(&err) {
+                Ok(msg) => self.serialized_message(&msg),
+                Err(e) => error!(self, "error serializing CBOR: {}", e),
+            }
+        }
+    }
+}
+
+pub trait SerializedLogger {
+    fn serialized_message<S: serde::Serialize>(&self, msg: &S);
+}
+
+impl<T: LoggerTrait> SerializedLogger for T {
+    fn serialized_message<S: serde::Serialize>(&self, msg: &S) {
+        if self.format() == LogFormat::CBOR {
+            match serde_cbor::to_vec(msg) {
+                Ok(msg) => self.serialized_message(&msg),
+                Err(e) => error!(self, "error serializing CBOR: {}", e),
+            }
+        }
     }
 }
 
@@ -966,6 +1302,14 @@ impl<'a> ConfigValue<'a> {
         if let Some(senv) = &self.context.senv {
             cmd.env_clear();
             cmd.envs(senv.iter().map(|(k, v)| {
+                (
+                    OsString::from_vec(k.to_vec()),
+                    OsString::from_vec(v.to_vec()),
+                )
+            }));
+        }
+        if let Some(ctxsenv) = &self.context.ctxsenv {
+            cmd.envs(ctxsenv.iter().map(|(k, v)| {
                 (
                     OsString::from_vec(k.to_vec()),
                     OsString::from_vec(v.to_vec()),
@@ -1281,6 +1625,7 @@ pub struct ConfigFS {
 pub struct ConfigCredential {
     #[serde(rename = "if")]
     if_value: Value,
+    control: Option<String>,
     backends: Option<Vec<ConfigCredentialBackend>>,
 }
 
@@ -1297,7 +1642,9 @@ pub struct ConfigCredentialBackend {
 #[cfg(test)]
 mod tests {
     use super::{Config, ConfigFile};
+    use lawn_constants::error::ExtendedError;
     use lawn_constants::logger::{LogFormat, LogLevel, Logger};
+    #[cfg(not(miri))]
     use serde_yaml::Value;
     use std::collections::BTreeMap;
     use std::ffi::OsString;
@@ -1409,6 +1756,22 @@ mod tests {
 
         fn trace(&self, _msg: &str) {
             panic!("trace");
+        }
+
+        fn script_message(&self, _tag: Option<&[u8]>, _msg: &[&[u8]]) {
+            panic!("script_message");
+        }
+
+        fn script_error(&self, _tag: Option<&[u8]>, _err: &dyn ExtendedError) {
+            panic!("script_error");
+        }
+
+        fn serialized(&self, _msg: &[u8]) {
+            panic!("serialized");
+        }
+
+        fn serialized_error(&self, _msg: &dyn ExtendedError) {
+            panic!("serialized_error");
         }
     }
 

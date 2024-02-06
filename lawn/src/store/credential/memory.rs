@@ -901,7 +901,7 @@ impl CommandCredentialBackend for MemoryCredentialBackend {
     fn read_body(
         self: Arc<Self>,
         id: StoreSelectorID,
-    ) -> Result<Option<Box<dyn Any + 'static>>, protocol::Error> {
+    ) -> Result<Option<Box<dyn Any + Send + Sync + 'static>>, protocol::Error> {
         let vaults = self
             .vaults
             .vaults()

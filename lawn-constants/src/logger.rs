@@ -1,3 +1,4 @@
+use crate::error::ExtendedError;
 use std::fmt;
 use std::sync::Arc;
 
@@ -29,6 +30,10 @@ pub trait Logger {
     fn info(&self, msg: &str);
     fn debug(&self, msg: &str);
     fn trace(&self, msg: &str);
+    fn script_message(&self, tag: Option<&[u8]>, msg: &[&[u8]]);
+    fn script_error(&self, tag: Option<&[u8]>, err: &dyn ExtendedError);
+    fn serialized(&self, msg: &[u8]);
+    fn serialized_error(&self, msg: &dyn ExtendedError);
 }
 
 impl<T: Logger> Logger for Arc<T> {
@@ -62,6 +67,22 @@ impl<T: Logger> Logger for Arc<T> {
 
     fn trace(&self, msg: &str) {
         self.as_ref().trace(msg);
+    }
+
+    fn script_message(&self, tag: Option<&[u8]>, msg: &[&[u8]]) {
+        self.as_ref().script_message(tag, msg);
+    }
+
+    fn script_error(&self, tag: Option<&[u8]>, err: &dyn ExtendedError) {
+        self.as_ref().script_error(tag, err);
+    }
+
+    fn serialized(&self, msg: &[u8]) {
+        self.as_ref().serialized(msg);
+    }
+
+    fn serialized_error(&self, msg: &dyn ExtendedError) {
+        self.as_ref().serialized_error(msg);
     }
 }
 

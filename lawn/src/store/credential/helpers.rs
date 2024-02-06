@@ -43,7 +43,7 @@ impl<
     fn search(
         self: Arc<Self>,
         kind: Option<Bytes>,
-        pattern: Option<&(dyn Any + 'static)>,
+        pattern: Option<&(dyn Any + Send + Sync + 'static)>,
         recurse: StoreSearchRecursionLevel,
     ) -> Result<
         Box<dyn Iterator<Item = Arc<dyn StoreElement + Send + Sync>> + Send + Sync>,
@@ -131,7 +131,7 @@ impl<T: Send + Sync, U: CommandCredentialBackend<Backend = T> + Sized + Send + S
     fn update(
         self: Arc<Self>,
         meta: Option<&BTreeMap<Bytes, Value>>,
-        body: Option<&(dyn Any + 'static)>,
+        body: Option<&(dyn Any + Send + Sync + 'static)>,
     ) -> Result<(), protocol::Error> {
         self.to_handle().update(meta, body)
     }
@@ -149,14 +149,14 @@ impl<T: Send + Sync, U: CommandCredentialBackend<Backend = T> + Sized + Send + S
         Some(Cow::Owned(map))
     }
 
-    fn body(&self) -> Result<Option<Box<dyn Any + 'static>>, protocol::Error> {
+    fn body(&self) -> Result<Option<Box<dyn Any + Send + Sync + 'static>>, protocol::Error> {
         Err(ResponseCode::NotSupported.into())
     }
 
     fn search(
         self: Arc<Self>,
         kind: Option<Bytes>,
-        pattern: Option<&(dyn Any + 'static)>,
+        pattern: Option<&(dyn Any + Send + Sync + 'static)>,
         recurse: StoreSearchRecursionLevel,
     ) -> Result<
         Box<dyn Iterator<Item = Arc<dyn StoreElement + Send + Sync>> + Send + Sync>,
@@ -170,7 +170,7 @@ impl<T: Send + Sync, U: CommandCredentialBackend<Backend = T> + Sized + Send + S
         path: Option<Bytes>,
         kind: &str,
         meta: Option<&BTreeMap<Bytes, Value>>,
-        body: Option<&(dyn Any + 'static)>,
+        body: Option<&(dyn Any + Send + Sync + 'static)>,
     ) -> Result<Arc<dyn StoreElement + Send + Sync>, protocol::Error> {
         self.to_handle().create(path, kind, meta, body)
     }
@@ -281,7 +281,7 @@ impl<
     fn update(
         self: Arc<Self>,
         _meta: Option<&BTreeMap<Bytes, Value>>,
-        body: Option<&dyn Any>,
+        body: Option<&(dyn Any + Send + Sync + 'static)>,
     ) -> Result<(), protocol::Error> {
         let logger = self.parent.clone().config().logger();
         match CredentialPathComponentType::from_path(self.path.clone()) {
@@ -361,7 +361,7 @@ impl<
         None
     }
 
-    fn body(&self) -> Result<Option<Box<dyn Any + 'static>>, protocol::Error> {
+    fn body(&self) -> Result<Option<Box<dyn Any + Send + Sync + 'static>>, protocol::Error> {
         match self.credential.lock().unwrap().as_ref() {
             Some(c) => {
                 let cse: CredentialStoreElement = c.into();
@@ -374,7 +374,7 @@ impl<
     fn search(
         self: Arc<Self>,
         kind: Option<Bytes>,
-        pattern: Option<&(dyn Any + 'static)>,
+        pattern: Option<&(dyn Any + Send + Sync + 'static)>,
         recurse: StoreSearchRecursionLevel,
     ) -> Result<
         Box<dyn Iterator<Item = Arc<dyn StoreElement + Send + Sync>> + Send + Sync>,
@@ -447,7 +447,7 @@ impl<
         path: Option<Bytes>,
         kind: &str,
         _meta: Option<&BTreeMap<Bytes, Value>>,
-        body: Option<&(dyn Any + 'static)>,
+        body: Option<&(dyn Any + Send + Sync + 'static)>,
     ) -> Result<Arc<dyn StoreElement + Send + Sync>, protocol::Error> {
         let logger = self.parent.clone().config().logger();
         trace!(
@@ -642,7 +642,7 @@ pub trait CommandCredentialBackend {
     fn read_body(
         self: Arc<Self>,
         id: StoreSelectorID,
-    ) -> Result<Option<Box<dyn Any + 'static>>, protocol::Error>;
+    ) -> Result<Option<Box<dyn Any + Send + Sync + 'static>>, protocol::Error>;
     fn create_directory(self: Arc<Self>, path: Bytes) -> Result<(), protocol::Error>;
 }
 

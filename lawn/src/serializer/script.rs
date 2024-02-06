@@ -18,6 +18,7 @@
 /// includes the string `err`, includes a colon-separated set of error types (classes of error, if
 /// you will), a string error tag (representing the specific error), and a string error message.
 use bytes::Bytes;
+use format_bytes::format_bytes;
 use std::borrow::Cow;
 use std::convert::{TryFrom, TryInto};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -84,7 +85,11 @@ impl ScriptEncoder {
                     buf = [b'%', OFFSET[(b >> 4) as usize], OFFSET[(b & 0xf) as usize]];
                     &buf
                 }
-                b'%' | b' ' => {
+                // Percent and space are necessary.  Encode + so that CGI-based encoders, which
+                // decode + as space, will be able to handle this properly.  Encode backslash so
+                // that users can convert % to \x and print it with a suitable version of
+                // printf(1) or a scripting language.
+                b'%' | b' ' | b'+' | b'\\' => {
                     buf = [b'%', OFFSET[(b >> 4) as usize], OFFSET[(b & 0xf) as usize]];
                     &buf
                 }
@@ -145,9 +150,17 @@ impl Encodable for Vec<u8> {
 }
 
 impl Encodable for Bytes {
-    // TODO: encode properly.
     fn encode(&self) -> Cow<'_, [u8]> {
-        Cow::Borrowed(self.as_ref())
+        Cow::Owned(ScriptEncoder::encode_bytes(self.as_ref()))
+    }
+}
+
+impl<T: Encodable> Encodable for Option<T> {
+    fn encode(&self) -> Cow<'_, [u8]> {
+        match self {
+            Some(obj) => Cow::Owned(format_bytes!(b"@{}", obj.encode())),
+            None => Cow::Borrowed(b"nil".as_slice()),
+        }
     }
 }
 

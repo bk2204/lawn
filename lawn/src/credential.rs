@@ -640,7 +640,7 @@ impl CredentialHandle for CredentialDirectoryHandle {
             .await?;
         let id = resp
             .and_then(|r| r.first()?.id)
-            .ok_or(CredentialError::UnsupportedSerialization)?;
+            .ok_or(CredentialError::NotFound)?;
         let req = DeleteStoreElementRequest {
             id: self.store_id,
             selector: StoreSelector::ID(id),
@@ -1581,7 +1581,7 @@ impl CredentialRequest {
         self.service.matches_string(cred.service.as_deref()) &&
         self.title.matches_string(cred.title.as_deref()) &&
         self.description.matches_string(cred.description.as_deref()) &&
-        self.id.matches_string(cred.service.as_deref()) &&
+        self.id.matches_bytes(Some(&cred.id)) &&
         self.extra.iter().all(|(k, v)| {
             let val = cred.extra.get(k).unwrap_or(&Value::Null);
             v.matches_value(val)

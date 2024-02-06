@@ -1044,8 +1044,8 @@ mod tests {
         FileType, LinuxFileType, LinuxOpenMode, LinuxStatValidity, Metadata, PlainStat,
         ProtocolVersion, SimpleOpenMode, Tag, UnixStat, FID,
     };
+    use lawn_constants::error::{Error, ExtendedError};
     use lawn_constants::logger::{LogFormat, LogLevel};
-    use lawn_constants::Error;
     use lawn_fs::auth::{AuthenticationInfo, Authenticator, AuthenticatorHandle};
     use lawn_fs::backend as fsbackend;
     use std::collections::HashSet;
@@ -1138,6 +1138,10 @@ mod tests {
         fn trace(&self, msg: &str) {
             eprintln!("{}", msg);
         }
+        fn script_message(&self, _tag: Option<&[u8]>, _msg: &[&[u8]]) {}
+        fn script_error(&self, _tag: Option<&[u8]>, _err: &dyn ExtendedError) {}
+        fn serialized(&self, _msg: &[u8]) {}
+        fn serialized_error(&self, _msg: &dyn ExtendedError) {}
     }
 
     type Server = LibcBackend;

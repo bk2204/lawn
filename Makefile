@@ -53,7 +53,7 @@ clean:
 	$(RM) -fr doc/man/*.1 doc/man/*.1.gz
 	$(RM) lawn/README.adoc
 
-test:
+test: all
 	cargo test $(FEATURE_ARG)
 
 test-integration: all

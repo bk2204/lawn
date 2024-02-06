@@ -235,7 +235,7 @@ impl CommandCredentialBackend for GitCredentialBackend {
     fn read_body(
         self: Arc<Self>,
         _id: StoreSelectorID,
-    ) -> Result<Option<Box<dyn Any + 'static>>, protocol::Error> {
+    ) -> Result<Option<Box<dyn Any + Send + Sync + 'static>>, protocol::Error> {
         Err(ResponseCode::Unlistable.into())
     }
 }

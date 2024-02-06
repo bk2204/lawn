@@ -1,5 +1,8 @@
 use crate::encoding::escape;
 use bytes::Bytes;
+use lawn_constants::error::ExtendedError;
+use lawn_protocol::protocol;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
@@ -21,6 +24,7 @@ enum ParsingState {
 #[derive(Clone, Debug)]
 pub enum Error {
     InvalidCharacter(usize),
+    InvalidRadixCharacter,
     UnknownPattern(Bytes),
 }
 
@@ -30,12 +34,29 @@ impl fmt::Display for Error {
             Self::InvalidCharacter(off) => {
                 write!(f, "invalid character in template at byte {}", off)
             }
+            Self::InvalidRadixCharacter => {
+                write!(f, "invalid byte when parsing radix")
+            }
             Self::UnknownPattern(pattern) => write!(f, "unknown pattern '{}'", escape(pattern)),
         }
     }
 }
 
 impl std::error::Error for Error {}
+
+impl ExtendedError for Error {
+    fn error_types(&self) -> Cow<'static, [Cow<'static, str>]> {
+        Cow::Borrowed(&[Cow::Borrowed("template")])
+    }
+
+    fn error_tag(&self) -> Cow<'static, str> {
+        match self {
+            Self::InvalidCharacter(..) => Cow::Borrowed("invalid-character"),
+            Self::InvalidRadixCharacter => Cow::Borrowed("invalid-radix-character"),
+            Self::UnknownPattern(..) => Cow::Borrowed("unknown-pattern"),
+        }
+    }
+}
 
 impl Template {
     pub fn new(s: &[u8]) -> Template {
@@ -78,6 +99,7 @@ impl Template {
                 (ParsingState::Inside, c) => {
                     id.push(c);
                 }
+                (ParsingState::CloseParen, b'%') => state = ParsingState::Percent,
                 (ParsingState::CloseParen, c) => {
                     state = ParsingState::Normal;
                     s.push(c);
@@ -87,21 +109,37 @@ impl Template {
         Ok(s.into())
     }
 
+    fn parse_byte_value(&self, data: &[u8], radix: u32) -> Result<Bytes, Error> {
+        let s = std::str::from_utf8(data).map_err(|_| Error::InvalidRadixCharacter)?;
+        let val = u8::from_str_radix(s, radix).map_err(|_| Error::InvalidRadixCharacter)?;
+        Ok(Bytes::copy_from_slice(std::slice::from_ref(&val)))
+    }
+
     fn expand_text_pattern(&self, id: &[u8], context: &TemplateContext) -> Result<Bytes, Error> {
-        if id.starts_with(b"senv:") {
-            Ok(self.expand_env(&id[5..], context.senv.as_deref()))
-        } else if id.starts_with(b"cenv:") {
-            Ok(self.expand_env(&id[5..], context.cenv.as_deref()))
-        } else if id.starts_with(b"ctxsenv:") {
-            Ok(self.expand_env(&id[8..], context.ctxsenv.as_deref()))
-        } else if id.starts_with(b"senv?:") {
-            Ok(self.has_entry(&id[6..], context.senv.as_deref()))
-        } else if id.starts_with(b"cenv?:") {
-            Ok(self.has_entry(&id[6..], context.cenv.as_deref()))
-        } else if id.starts_with(b"ctxsenv?:") {
-            Ok(self.has_entry(&id[9..], context.ctxsenv.as_deref()))
-        } else if id.starts_with(b"sq:") {
-            Ok(self.single_quote(&self.expand_text_pattern(&id[3..], context)?))
+        if let Some(val) = id.strip_prefix(b"senv:") {
+            Ok(self.expand_env(val, context.senv.as_deref()))
+        } else if let Some(val) = id.strip_prefix(b"cenv:") {
+            Ok(self.expand_env(&val, context.cenv.as_deref()))
+        } else if let Some(val) = id.strip_prefix(b"ctxsenv:") {
+            Ok(self.expand_env(&val, context.ctxsenv.as_deref()))
+        } else if let Some(val) = id.strip_prefix(b"senv?:") {
+            Ok(self.has_entry(&val, context.senv.as_deref()))
+        } else if let Some(val) = id.strip_prefix(b"cenv?:") {
+            Ok(self.has_entry(&val, context.cenv.as_deref()))
+        } else if let Some(val) = id.strip_prefix(b"ctxsenv?:") {
+            Ok(self.has_entry(&val, context.ctxsenv.as_deref()))
+        } else if let Some(val) = id.strip_prefix(b"sq:") {
+            Ok(self.single_quote(&self.expand_text_pattern(&val, context)?))
+        } else if let Some(val) = id.strip_prefix(b"byte:0x") {
+            self.parse_byte_value(val, 16)
+        } else if let Some(val) = id.strip_prefix(b"byte:0o") {
+            self.parse_byte_value(val, 8)
+        } else if let Some(val) = id.strip_prefix(b"byte:0b") {
+            self.parse_byte_value(val, 2)
+        } else if let Some(val) = id.strip_prefix(b"byte:") {
+            self.parse_byte_value(val, 10)
+        } else if id == b"nl" {
+            Ok(Bytes::from(b"\n".as_slice()))
         } else {
             Err(Error::UnknownPattern(id.to_vec().into()))
         }
@@ -147,6 +185,81 @@ pub struct TemplateContext {
     pub cenv: Option<Arc<BTreeMap<Bytes, Bytes>>>,
     pub ctxsenv: Option<Arc<BTreeMap<Bytes, Bytes>>>,
     pub args: Option<Arc<[Bytes]>>,
+    pub kind: Option<String>,
+    pub extra: Option<serde_cbor::Value>,
+}
+
+impl<'a> From<&'a TemplateContext> for protocol::TemplateServerContextBody {
+    fn from(ctx: &'a TemplateContext) -> protocol::TemplateServerContextBody {
+        protocol::TemplateServerContextBody {
+            senv: ctx.senv.as_deref().map(|x| (*x).clone()),
+            cenv: ctx.cenv.as_deref().map(|x| (*x).clone()),
+            ctxsenv: ctx.ctxsenv.as_deref().map(|x| (*x).clone()),
+            args: ctx.args.as_deref().map(|x| x.to_vec()),
+        }
+    }
+}
+
+impl<'a> From<&'a mut TemplateContext> for protocol::TemplateServerContextBody {
+    fn from(ctx: &'a mut TemplateContext) -> protocol::TemplateServerContextBody {
+        protocol::TemplateServerContextBody::from(ctx as &TemplateContext)
+    }
+}
+
+impl From<TemplateContext> for protocol::TemplateServerContextBody {
+    fn from(ctx: TemplateContext) -> protocol::TemplateServerContextBody {
+        protocol::TemplateServerContextBody::from(&ctx)
+    }
+}
+
+impl<'a, T> From<&'a TemplateContext> for protocol::TemplateServerContextBodyWithBody<T> {
+    fn from(ctx: &'a TemplateContext) -> protocol::TemplateServerContextBodyWithBody<T> {
+        protocol::TemplateServerContextBodyWithBody {
+            senv: ctx.senv.as_deref().map(|x| (*x).clone()),
+            cenv: ctx.cenv.as_deref().map(|x| (*x).clone()),
+            ctxsenv: ctx.ctxsenv.as_deref().map(|x| (*x).clone()),
+            args: ctx.args.as_deref().map(|x| x.to_vec()),
+            body: None,
+        }
+    }
+}
+
+impl<'a, T> From<&'a mut TemplateContext> for protocol::TemplateServerContextBodyWithBody<T> {
+    fn from(ctx: &'a mut TemplateContext) -> protocol::TemplateServerContextBodyWithBody<T> {
+        protocol::TemplateServerContextBodyWithBody::from(ctx as &TemplateContext)
+    }
+}
+
+impl<T> From<TemplateContext> for protocol::TemplateServerContextBodyWithBody<T> {
+    fn from(ctx: TemplateContext) -> protocol::TemplateServerContextBodyWithBody<T> {
+        protocol::TemplateServerContextBodyWithBody::from(&ctx)
+    }
+}
+
+impl From<protocol::TemplateServerContextBody> for TemplateContext {
+    fn from(ctx: protocol::TemplateServerContextBody) -> TemplateContext {
+        TemplateContext {
+            senv: ctx.senv.map(Arc::new),
+            cenv: ctx.cenv.map(Arc::new),
+            ctxsenv: ctx.ctxsenv.map(Arc::new),
+            args: ctx.args.map(|v| v.into_boxed_slice().into()),
+            kind: None,
+            extra: None,
+        }
+    }
+}
+
+impl<T> From<protocol::TemplateServerContextBodyWithBody<T>> for TemplateContext {
+    fn from(ctx: protocol::TemplateServerContextBodyWithBody<T>) -> TemplateContext {
+        TemplateContext {
+            senv: ctx.senv.map(Arc::new),
+            cenv: ctx.cenv.map(Arc::new),
+            ctxsenv: ctx.ctxsenv.map(Arc::new),
+            args: ctx.args.map(|v| v.into_boxed_slice().into()),
+            kind: None,
+            extra: None,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -264,6 +377,10 @@ mod tests {
             (
                 "printf \"%%s/.local/share/remote-files\" \"$HOME\"",
                 "printf \"%s/.local/share/remote-files\" \"$HOME\"",
+            ),
+            (
+                "This string has a carriage%(byte:13)return, new%(nl)line, and some weird %(byte:0xc2)%(byte:0o251) %(byte:0xc2)%(byte:0b10100000) bytes.",
+                "This string has a carriage\rreturn, new\nline, and some weird © \u{00a0} bytes.",
             ),
         ];
         for (input, output) in &cases {

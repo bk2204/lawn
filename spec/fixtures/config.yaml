@@ -25,3 +25,16 @@ v0:
     remote:
       if: true
       location: '!printf "%s" "$LAWN_SERVER_MOUNT"'
+  credential:
+    if: true
+    control: |
+      !f() {
+        case $0 in
+          create-location)
+            echo /memory/vault/;;
+        esac
+      }; f
+    backends:
+      - name: memory
+        type: memory
+        if: true

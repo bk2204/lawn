@@ -70,7 +70,7 @@ impl ChannelManager {
 
     pub fn get(&self, id: ChannelID) -> Option<Arc<dyn Channel + Send + Sync>> {
         let g = self.map.read().unwrap();
-        g.get(&id).map(Arc::clone)
+        g.get(&id).cloned()
     }
 
     pub async fn ping_channels(&self) {

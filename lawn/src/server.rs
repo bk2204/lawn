@@ -6,6 +6,7 @@ use crate::config;
 use crate::config::{Config, Logger};
 use crate::encoding::{escape, path};
 use crate::error::{Error, ErrorKind};
+use crate::socket::{LawnSocketData, LawnSocketKind};
 use crate::store::credential::CredentialStore;
 use crate::store::StoreManager;
 use crate::store::{StoreElement, StoreElementEntry};
@@ -25,6 +26,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::marker::Unpin;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::FromRawFd;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -260,6 +262,10 @@ impl Server {
         let socket = net::UnixListener::bind(socket_path).map_err(|_| {
             Error::new_with_message(ErrorKind::ServerCreationFailure, "cannot bind to socket")
         })?;
+        self.config.set_socket_data(LawnSocketData::new(
+            LawnSocketKind::Lawn,
+            Bytes::copy_from_slice(socket_path.as_os_str().as_bytes()),
+        ));
         let mut interval = time::interval(Duration::from_secs(1));
         let mut counter = 0u64;
         type JobInfo = (sync::mpsc::Sender<()>, task::JoinHandle<u64>);
@@ -1312,7 +1318,7 @@ impl Server {
                     }
                 };
                 let cred;
-                let value: Option<&dyn Any> = match &*m.kind {
+                let value: Option<Box<(dyn Any + Send + Sync + 'static)>> = match &*m.kind {
                     "directory" => None,
                     "credential" => {
                         cred = valid_message!(
@@ -1320,7 +1326,7 @@ impl Server {
                             protocol::CreateStoreElementRequest<protocol::CredentialStoreElement>,
                             message
                         );
-                        Some(&cred.body)
+                        Some(Box::new(cred.body))
                     }
                     _ => {
                         trace!(
@@ -1339,8 +1345,16 @@ impl Server {
                     m.kind,
                     path.as_ref().as_log_str(),
                 );
-                match st.create(path, &m.kind, m.meta.as_ref(), value) {
-                    Ok(se) => {
+                let cpath = path.clone();
+                let cst = st.clone();
+                let ckind = m.kind.clone();
+                let meta = m.meta;
+                match tokio::task::spawn_blocking(move || {
+                    cst.create(cpath, &ckind, meta.as_ref(), value.as_deref())
+                })
+                .await
+                {
+                    Ok(Ok(se)) => {
                         let elem = protocol::StoreElement {
                             path: se.path(),
                             id: Some(se.id()),
@@ -1353,9 +1367,18 @@ impl Server {
                         };
                         Ok((ResponseType::Success, serializer.serialize_body(&elem)))
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         trace!(logger, "server: {}: create store element: error: {}", id, e);
                         Err(e.into())
+                    }
+                    Err(e) => {
+                        trace!(
+                            logger,
+                            "server: {}: create store element: spawn error: {}",
+                            id,
+                            e
+                        );
+                        Err(ResponseCode::InternalError.into())
                     }
                 }
             }
@@ -1390,7 +1413,7 @@ impl Server {
                     return Err(ResponseCode::ParametersNotSupported.into());
                 }
                 let cred;
-                let value: Option<&dyn Any> = match &*m.kind {
+                let value: Option<&(dyn Any + Send + Sync)> = match &*m.kind {
                     "directory" => None,
                     "credential" => {
                         cred = valid_message!(
@@ -1542,7 +1565,7 @@ impl Server {
                             message
                         );
                         let res = tokio::task::spawn_blocking(move || {
-                            let body: Option<&dyn Any> = match &m.body {
+                            let body: Option<&(dyn Any + Send + Sync + 'static)> = match &m.body {
                                 Some(b) => Some(b),
                                 None => None,
                             };
@@ -1621,6 +1644,89 @@ impl Server {
                     None => return Err(ResponseCode::NotFound.into()),
                 };
                 Ok((ResponseType::Success, None))
+            }
+            Some(MessageKind::ReadServerContext) => {
+                trace!(logger, "server: {}: read server context", id);
+                assert_authenticated!(handler, message);
+                let m = valid_message!(handler, protocol::ReadServerContextRequest, message);
+                trace!(logger, "server: {}: read server context: {}", id, m.kind);
+                if !handler
+                    .has_capability(&protocol::Capability::ContextTemplate)
+                    .await
+                {
+                    return Err(ResponseCode::ParametersNotSupported.into());
+                }
+                match &*m.kind {
+                    "template" => match m.id {
+                        Some(ctxid) => {
+                            let tctxs = state.config().template_contexts();
+                            let tctxs = tctxs.read().unwrap();
+                            match tctxs.get(&ctxid) {
+                                Some(ctx) => {
+                                    if let (Some(kind), Some(extra)) = (&ctx.kind, &ctx.extra) {
+                                        let mut meta = BTreeMap::new();
+                                        meta.insert(
+                                            Bytes::from("template-type"),
+                                            serde_cbor::Value::Text(kind.clone()),
+                                        );
+                                        let mut body = protocol::TemplateServerContextBodyWithBody::<
+                                            &serde_cbor::Value,
+                                        >::from(
+                                            ctx.as_ref()
+                                        );
+                                        body.body = Some(extra);
+                                        let resp = protocol::ReadServerContextResponseWithBody {
+                                            id: Some(ctxid.clone()),
+                                            meta: Some(meta),
+                                            body: Some(body),
+                                        };
+                                        Ok((
+                                            ResponseType::Success,
+                                            serializer.serialize_body(&resp),
+                                        ))
+                                    } else {
+                                        let body =
+                                            protocol::TemplateServerContextBody::from(ctx.as_ref());
+                                        let resp = protocol::ReadServerContextResponseWithBody {
+                                            id: Some(ctxid.clone()),
+                                            meta: None,
+                                            body: Some(body),
+                                        };
+                                        Ok((
+                                            ResponseType::Success,
+                                            serializer.serialize_body(&resp),
+                                        ))
+                                    }
+                                }
+                                None => {
+                                    trace!(
+                                        logger,
+                                        "server: {}: read server context: no such context {:?}",
+                                        id,
+                                        ctxid
+                                    );
+                                    Err(ResponseCode::NotFound.into())
+                                }
+                            }
+                        }
+                        None => {
+                            trace!(
+                                logger,
+                                "server: {}: read server context: no template ID requested",
+                                id,
+                            );
+                            Err(ResponseCode::NotFound.into())
+                        }
+                    },
+                    _ => Err(ResponseCode::ParametersNotSupported.into()),
+                }
+            }
+            Some(MessageKind::WriteServerContext) => {
+                trace!(logger, "server: {}: write server context", id);
+                assert_authenticated!(handler, message);
+                let m = valid_message!(handler, protocol::WriteServerContextRequest, message);
+                trace!(logger, "server: {}: write server context: {}", id, m.kind);
+                Err(ResponseCode::ParametersNotSupported.into())
             }
             Some(_) | None => {
                 logger.trace(&format!(
