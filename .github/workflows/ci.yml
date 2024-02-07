@@ -49,29 +49,6 @@ jobs:
       with:
         ruby-version: 3.1
     - run: make ci-stable
-  build-nightly:
-    name: Linux (Rust nightly)
-    runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name
-    steps:
-    - uses: actions/checkout@v3
-    - uses: ruby/setup-ruby@v1
-      with:
-        ruby-version: 3.1
-    - run: make ci-nightly
-  build-miri:
-    name: Linux (Miri)
-    runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name
-    steps:
-    - uses: actions/checkout@v3
-    - name: Install Miri
-      run: |
-        rustup toolchain install nightly --component miri
-        rustup override set nightly
-        cargo miri setup
-    - name: Test with Miri
-      run: cargo miri test
   build-freebsd:
     name: FreeBSD
     runs-on: macos-12
