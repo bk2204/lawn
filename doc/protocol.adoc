@@ -277,7 +277,7 @@ The following capabilities are known:
 
 | `auth`      | `EXTERNAL`             | external authentication
 | `auth`      | `PLAIN`                | SASL PLAIN authentication
-| `auth`      | `keyboard-interactive` | SASL PLAIN authentication
+| `auth`      | `keyboard-interactive` | keyboard-interactive authentication
 | `auth`      | any uppercase string   | Any standardized SASL authentication mechanism
 | `auth`      | any lowercase string   | Reserved for future Lawn-defined authentication mechanisms
 | `auth`      | any extension string   | Reserved for custom extensions
