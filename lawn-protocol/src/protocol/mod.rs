@@ -1080,10 +1080,18 @@ pub struct WriteServerContextRequest {
 
 #[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
 #[serde(rename_all = "kebab-case")]
-pub struct WriteServerContextResponseWithBody<T> {
+pub struct WriteServerContextRequestWithBody<T> {
+    pub kind: String,
     pub id: Option<Bytes>,
     pub meta: Option<BTreeMap<Bytes, Value>>,
     pub body: Option<T>,
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct WriteServerContextResponse {
+    pub id: Option<Bytes>,
+    pub meta: Option<BTreeMap<Bytes, Value>>,
 }
 
 #[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
