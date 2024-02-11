@@ -12,7 +12,7 @@ use crate::store::StoreManager;
 use crate::store::{StoreElement, StoreElementEntry};
 use crate::unix;
 use bytes::Bytes;
-use daemonize::Daemonize;
+use daemonize::{Daemonize, Outcome};
 use lawn_constants::logger::AsLogStr;
 use lawn_protocol::config::Logger as LoggerTrait;
 use lawn_protocol::handler;
@@ -2065,20 +2065,20 @@ impl Server {
         let err = File::create("/dev/null").map_err(|_| {
             Error::new_with_message(ErrorKind::ServerCreationFailure, "cannot open /dev/null")
         })?;
-        let daemonize = Daemonize::new()
-            .umask(0o077)
-            .stdout(out)
-            .stderr(err)
-            .exit_action(move || {
+        let daemonize = Daemonize::new().umask(0o077).stdout(out).stderr(err);
+        match daemonize.execute() {
+            Outcome::Parent(Ok(_)) => {
+                // Read the file descriptor to make sure we don't exit until the child, the server,
+                // is actually ready.
                 if let Some(fdrd) = fdrd {
                     let mut fdrd = fdrd;
                     let mut buf = [0u8; 1];
                     let _ = fdrd.read(&mut buf);
                 }
-            });
-        match daemonize.start() {
-            Ok(_) => Ok(()),
-            Err(_) => Err(Error::new_with_message(
+                std::process::exit(0);
+            }
+            Outcome::Child(Ok(_)) => Ok(()),
+            Outcome::Child(Err(_)) | Outcome::Parent(Err(_)) => Err(Error::new_with_message(
                 ErrorKind::ServerCreationFailure,
                 "cannot daemonize",
             )),
