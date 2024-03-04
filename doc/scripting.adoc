@@ -1,0 +1,26 @@
+= Lawn Scripting Syntax
+
+This document describes the scripting input and output format.
+
+== Generic Format
+
+Commands are LF separated and arguments in the command are separated by spaces.
+Each command consists of a tag, a request (a UTF-8 string), and any number of request-specific arguments.
+Tags may be any UTF-8 string and are chosen by the client, but it is recommended to avoid tags with leading underscores because these are chosen by Lawn for responses which do not correspond to a client request.
+
+A response may consist of one or more parts, each of which is terminated by an LF>
+A part in a successful response consists of a tag, the string `ok`, and then any relevant arguments.
+An unsuccessful response always consists of a single part, which in turn consists of a tag, the string `err`, a colon-separated machine-readable list of error types (classes of error), a string machine-readable error tag representing the specific error, and a string error message.
+
+The tag in a response is that of the corresponding request, or a tag with an underscore if the response is generated other than by a client request.
+Responses do not need to come in order, so the tag should be used to identify the request.
+
+== Serialization
+
+Serialization is designed for scripting, and thus it's assumed that the data types are known by both parties.
+
+Both text (UTF-8) strings and byte strings are output as a sequence of bytes, with ASCII controls (including newline), percent, space, plus, and backslash encoded using lowercase percent encoding (that is, as `%xx` where `xx` is a lowercase hex value of the byte in question).
+Empty strings are encoded without any bytes at all, which should be detected by adjacent spaces.
+Integers may be encoded as decimals (with no prefix), hex (with a prefix of `0x`), or octal (with a prefix of `0o`).
+Booleans are encoded as `true` and `false`.
+Optional values are encoded such that `Some` values precede the normal encoding with an `@` and `None` values produce `nil`.

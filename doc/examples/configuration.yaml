@@ -137,4 +137,36 @@ v0:
       if: true
       # A string shell expression specifying the location to use for mounting on the local side.
       location: '!printf "%%s/.local/share/remote-files" "$HOME"'
-
+  # Configuration for credential helpers.
+  credential:
+    # A boolean shell expression which indicates whether credential
+    # functionality should be enabled.
+    if: true
+    # A shell expression taking an argument.
+    #
+    # If the argument is `create-location`, this is a shell expression which
+    # specifies the vault into which a credential should be stored.  The
+    # specifics of the credential can be queried with `lawn query context`.
+    #
+    # Other arguments may be specified in the future.
+    control: |
+      !f() {
+        case $0 in
+          create-location)
+            echo /foobar/vault/;;
+        esac
+      }; f
+    # A list of backends in order.
+    backends:
+      # The name of the backend.
+      - name: foobar
+        # The type of the backend.  At this point, only `memory`, a credential
+        # backend solely with the lifetime of the server, is specified.
+        type: memory
+        # A boolean shell expression which indicates whether this backend should
+        # be enabled.
+        if: true
+        # An optional secret for authentication.  This exists for tests and is
+        # not intended to be used by end users, since this is not a secure way
+        # to store credentials.
+        token: abc123
