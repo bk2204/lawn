@@ -7,9 +7,10 @@ use std::collections::BTreeSet;
 use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex};
 
-#[derive(Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 enum Extension {
     AuthType,
+    State,
     Service,
 }
 
@@ -100,25 +101,18 @@ impl GitProtocolHandler {
         let wrtr = wrtr.as_ref().ok_or(CredentialParserError::NoSuchHandle)?;
         let mut wrtr = wrtr.lock().unwrap();
         let mut v = io::BufWriter::new(&mut *wrtr);
-        let extensions = self.extensions.lock().unwrap();
-        if extensions.contains(&Extension::AuthType) {
-            Self::write_kv(
-                &mut v,
-                "capability",
-                b"authtype@lawn.ns.crustytoothpaste.net",
-            )?;
-        }
-        if extensions.contains(&Extension::Service) {
-            Self::write_kv(
-                &mut v,
-                "capability",
-                b"service@lawn.ns.crustytoothpaste.net",
-            )?;
-        }
+        Self::write_kv(&mut v, "capability[]", b"authtype")?;
+        Self::write_kv(&mut v, "capability[]", b"state")?;
+        Self::write_kv(
+            &mut v,
+            "capability[]",
+            b"service@lawn.ns.crustytoothpaste.net",
+        )?;
         Self::write_kv_request(&mut v, "username", &req.username, false)?;
         Self::write_kv_request(&mut v, "protocol", &req.protocol, false)?;
         Self::write_kv_request(&mut v, "host", &req.host, false)?;
         Self::write_kv_request(&mut v, "path", &req.path, false)?;
+        let extensions = self.extensions.lock().unwrap();
         if extensions.contains(&Extension::AuthType) {
             Self::write_kv_request(&mut v, "authtype", &req.authtype, false)?;
         }
@@ -159,11 +153,15 @@ impl GitProtocolHandler {
                         v.push(FieldRequest::LiteralBytes(Bytes::from(val.to_vec())));
                     }
                 }
-                (Some(b"capability"), Some(b"authtype@lawn.ns.crustytoothpaste.net")) => {
+                (Some(b"capability[]"), Some(b"authtype")) => {
                     let mut extensions = self.extensions.lock().unwrap();
                     extensions.insert(Extension::AuthType);
                 }
-                (Some(b"capability"), Some(b"service@lawn.ns.crustytoothpaste.net")) => {
+                (Some(b"capability[]"), Some(b"state")) => {
+                    let mut extensions = self.extensions.lock().unwrap();
+                    extensions.insert(Extension::State);
+                }
+                (Some(b"capability[]"), Some(b"service@lawn.ns.crustytoothpaste.net")) => {
                     let mut extensions = self.extensions.lock().unwrap();
                     extensions.insert(Extension::Service);
                 }
@@ -210,34 +208,35 @@ impl GitProtocolHandler {
             .ok_or(io::Error::from_raw_os_error(libc::EBADF))?;
         let mut wrtr = wrtr.lock().unwrap();
         let mut v = io::BufWriter::new(&mut *wrtr);
-        let extensions = self.extensions.lock().unwrap();
-        if extensions.contains(&Extension::AuthType) {
-            Self::write_kv(
-                &mut v,
-                "capability",
-                b"authtype@lawn.ns.crustytoothpaste.net",
-            )?;
-        }
-        if extensions.contains(&Extension::Service) {
-            Self::write_kv(
-                &mut v,
-                "capability",
-                b"service@lawn.ns.crustytoothpaste.net",
-            )?;
-        }
+        Self::write_kv(&mut v, "capability[]", b"authtype")?;
+        Self::write_kv(&mut v, "capability[]", b"state")?;
+        Self::write_kv(
+            &mut v,
+            "capability[]",
+            b"service@lawn.ns.crustytoothpaste.net",
+        )?;
         if let Some(val) = &cred.username {
             Self::write_kv(&mut v, "username", val)?;
         }
-        Self::write_kv(&mut v, "password", &cred.secret)?;
-        if extensions.contains(&Extension::AuthType) {
-            if let Some(val) = &cred.authtype {
+        let extensions = self.extensions.lock().unwrap();
+        match (extensions.contains(&Extension::AuthType), &cred.authtype) {
+            (true, Some(val)) => {
                 Self::write_kv(&mut v, "authtype", val.as_bytes())?;
+                Self::write_kv(&mut v, "credential", &cred.secret)?;
             }
+            _ => Self::write_kv(&mut v, "password", &cred.secret)?,
         }
         if extensions.contains(&Extension::Service) {
             if let Some(val) = &cred.service {
                 Self::write_kv(&mut v, "service", val.as_bytes())?;
             }
+        }
+        if extensions.contains(&Extension::State) {
+            Self::write_kv(
+                &mut v,
+                "state[]",
+                format!("lawn:v1:{}", hex::encode(&cred.id)).as_bytes(),
+            )?;
         }
         if let Some(loc) = &cred.location.first() {
             if let Some(val) = &loc.protocol {
@@ -250,7 +249,6 @@ impl GitProtocolHandler {
                 Self::write_kv(&mut v, "path", val.as_bytes())?;
             }
         }
-        Self::write_kv(&mut v, "id", &cred.id)?;
         Ok(())
     }
 
@@ -284,7 +282,7 @@ impl GitProtocolHandler {
                 (Some(b"username"), Some(val)) => {
                     cred.username = Some(Bytes::from(val.to_vec()));
                 }
-                (Some(b"password"), Some(val)) => {
+                (Some(b"password"), Some(val)) | (Some(b"credential"), Some(val)) => {
                     cred.secret = Bytes::from(val.to_vec());
                     has_secret = true;
                 }
@@ -293,12 +291,23 @@ impl GitProtocolHandler {
                         cred.authtype = Some(s.into());
                     }
                 }
-                (Some(b"id"), Some(val)) => {
-                    id = Some(Bytes::copy_from_slice(val));
+                (Some(b"state[]"), Some(val)) => {
+                    let extensions = self.extensions.lock().unwrap();
+                    if extensions.contains(&Extension::State) {
+                        if let Some(b) = val.strip_prefix(b"lawn:v1:") {
+                            if let Ok(seq) = hex::decode(b) {
+                                id = Some(Bytes::copy_from_slice(&seq));
+                            }
+                        }
+                    }
                 }
-                (Some(b"capability"), Some(b"authtype@lawn.ns.crustytoothpaste.net")) => {
+                (Some(b"capability[]"), Some(b"authtype")) => {
                     let mut extensions = self.extensions.lock().unwrap();
                     extensions.insert(Extension::AuthType);
+                }
+                (Some(b"capability[]"), Some(b"state")) => {
+                    let mut extensions = self.extensions.lock().unwrap();
+                    extensions.insert(Extension::State);
                 }
                 (Some(b"capability"), Some(b"service@lawn.ns.crustytoothpaste.net")) => {
                     let mut extensions = self.extensions.lock().unwrap();
@@ -357,7 +366,9 @@ impl GitProtocolHandler {
 
 #[cfg(test)]
 mod tests {
-    use super::{Credential, CredentialRequest, FieldRequest, GitProtocolHandler, Location};
+    use super::{
+        Credential, CredentialRequest, Extension, FieldRequest, GitProtocolHandler, Location,
+    };
     use bytes::Bytes;
     use std::collections::BTreeMap;
     use std::io::Cursor;
@@ -421,8 +432,9 @@ path=/foo/bar/baz.git
 
     #[test]
     fn test_parse_fill_extensions() {
-        let input = br#"capability=authtype@lawn.ns.crustytoothpaste.net
-capability=service@lawn.ns.crustytoothpaste.net
+        let input = br#"capability[]=authtype
+capability[]=state
+capability[]=service@lawn.ns.crustytoothpaste.net
 protocol=https
 host=example.com
 username=cookie-monster
@@ -486,7 +498,10 @@ wwwauth[]=Negotiate
         let wrtr = std::mem::take(&mut *wrtr.lock().unwrap());
         assert_eq!(
             wrtr.into_inner(),
-            br#"protocol=https
+            br#"capability[]=authtype
+capability[]=state
+capability[]=service@lawn.ns.crustytoothpaste.net
+protocol=https
 host=example.com
 "#
         );
@@ -550,39 +565,180 @@ path=/foo/bar/baz.git
     }
 
     #[test]
-    fn test_send_fill_cred() {
-        let input = Credential {
-            username: Some("cookie-monster".into()),
-            secret: Bytes::from(b"very-secret-credential" as &[u8]),
-            authtype: None,
-            kind: "api".into(),
-            location: vec![Location {
-                protocol: Some("https".into()),
-                host: Some("example.com".into()),
-                port: None,
-                path: Some("/foo/bar/baz.git".into()),
-            }],
-            service: None,
-            title: None,
-            description: None,
-            extra: BTreeMap::new(),
-            id: Bytes::from(b"abc123" as &[u8]),
-        };
-        let rdr = Arc::new(Mutex::new(Cursor::new(b"")));
+    fn test_parse_approve_authtype() {
+        let input = br"capability[]=authtype
+protocol=https
+host=example.com
+authtype=Bearer
+credential=abc123
+path=/foo/bar/baz.git
+";
+        let rdr = Arc::new(Mutex::new(Cursor::new(input)));
         let wrtr = Arc::new(Mutex::new(Cursor::new(Vec::new())));
-        let handler = GitProtocolHandler::new(rdr, wrtr.clone(), Some("git"), None, None);
-        handler.send_fill_response(Some(&input)).unwrap();
-        let wrtr = std::mem::take(&mut *wrtr.lock().unwrap());
-        assert_eq!(
-            wrtr.into_inner(),
-            br#"username=cookie-monster
+        let handler = GitProtocolHandler::new(rdr, wrtr, Some("git"), None, None);
+        let cred = handler
+            .parse_approve_reject_request(false)
+            .unwrap()
+            .unwrap();
+        let loc = &cred.location()[0];
+        assert_eq!(loc.protocol().unwrap(), "https");
+        assert_eq!(loc.host().unwrap(), "example.com");
+        assert_eq!(cred.authtype().unwrap(), "Bearer");
+        assert_eq!(cred.secret(), b"abc123" as &[u8]);
+        assert_eq!(loc.path().unwrap(), "/foo/bar/baz.git");
+    }
+
+    #[test]
+    fn test_parse_approve_authtype_state() {
+        let input = br"capability[]=authtype
+capability[]=state
+protocol=https
+host=example.com
+authtype=Bearer
+credential=s3cret
+path=/foo/bar/baz.git
+state[]=random:v1:affe
+state[]=lawn:v1:616263313233
+state[]=not-correct:invalid
+";
+        let rdr = Arc::new(Mutex::new(Cursor::new(input)));
+        let wrtr = Arc::new(Mutex::new(Cursor::new(Vec::new())));
+        let handler = GitProtocolHandler::new(rdr, wrtr, Some("git"), None, None);
+        let cred = handler
+            .parse_approve_reject_request(false)
+            .unwrap()
+            .unwrap();
+        let loc = &cred.location()[0];
+        assert_eq!(loc.protocol().unwrap(), "https");
+        assert_eq!(loc.host().unwrap(), "example.com");
+        assert_eq!(cred.authtype().unwrap(), "Bearer");
+        assert_eq!(cred.secret(), b"s3cret" as &[u8]);
+        assert_eq!(cred.id(), b"abc123" as &[u8]);
+        assert_eq!(loc.path().unwrap(), "/foo/bar/baz.git");
+    }
+
+    #[test]
+    fn test_parse_approve_authtype_state_with_username() {
+        let input = br"capability[]=authtype
+capability[]=state
+protocol=https
+host=example.com
+username=cookie-monster
+authtype=Bearer
+credential=s3cret
+path=/foo/bar/baz.git
+state[]=lawn:v1:616263313233
+";
+        let rdr = Arc::new(Mutex::new(Cursor::new(input)));
+        let wrtr = Arc::new(Mutex::new(Cursor::new(Vec::new())));
+        let handler = GitProtocolHandler::new(rdr, wrtr, Some("git"), None, None);
+        let cred = handler
+            .parse_approve_reject_request(false)
+            .unwrap()
+            .unwrap();
+        let loc = &cred.location()[0];
+        assert_eq!(loc.protocol().unwrap(), "https");
+        assert_eq!(loc.host().unwrap(), "example.com");
+        assert_eq!(cred.username().unwrap(), b"cookie-monster" as &[u8]);
+        assert_eq!(cred.authtype().unwrap(), "Bearer");
+        assert_eq!(cred.secret(), b"s3cret" as &[u8]);
+        assert_eq!(cred.id(), b"abc123" as &[u8]);
+        assert_eq!(loc.path().unwrap(), "/foo/bar/baz.git");
+    }
+    #[test]
+    fn test_send_fill_cred() {
+        let cases: &[(&[Extension], Option<&[u8]>, Option<&str>, &[u8])] = &[
+            (
+                &[],
+                Some(b"cookie-monster"),
+                None,
+                br#"capability[]=authtype
+capability[]=state
+capability[]=service@lawn.ns.crustytoothpaste.net
+username=cookie-monster
 password=very-secret-credential
 protocol=https
 host=example.com
 path=/foo/bar/baz.git
-id=abc123
-"#
-        );
+"#,
+            ),
+            (
+                &[Extension::State],
+                Some(b"cookie-monster"),
+                None,
+                br#"capability[]=authtype
+capability[]=state
+capability[]=service@lawn.ns.crustytoothpaste.net
+username=cookie-monster
+password=very-secret-credential
+state[]=lawn:v1:616263313233
+protocol=https
+host=example.com
+path=/foo/bar/baz.git
+"#,
+            ),
+            (
+                &[Extension::AuthType, Extension::State],
+                None,
+                Some("Bearer"),
+                br#"capability[]=authtype
+capability[]=state
+capability[]=service@lawn.ns.crustytoothpaste.net
+authtype=Bearer
+credential=very-secret-credential
+state[]=lawn:v1:616263313233
+protocol=https
+host=example.com
+path=/foo/bar/baz.git
+"#,
+            ),
+            (
+                &[Extension::AuthType, Extension::State],
+                Some(b"cookie-monster"),
+                Some("Bearer"),
+                br#"capability[]=authtype
+capability[]=state
+capability[]=service@lawn.ns.crustytoothpaste.net
+username=cookie-monster
+authtype=Bearer
+credential=very-secret-credential
+state[]=lawn:v1:616263313233
+protocol=https
+host=example.com
+path=/foo/bar/baz.git
+"#,
+            ),
+        ];
+        for (exts, username, authtype, resp) in cases {
+            let input = Credential {
+                username: username.map(Bytes::copy_from_slice),
+                secret: Bytes::from(b"very-secret-credential" as &[u8]),
+                authtype: authtype.map(ToString::to_string),
+                kind: "api".into(),
+                location: vec![Location {
+                    protocol: Some("https".into()),
+                    host: Some("example.com".into()),
+                    port: None,
+                    path: Some("/foo/bar/baz.git".into()),
+                }],
+                service: None,
+                title: None,
+                description: None,
+                extra: BTreeMap::new(),
+                id: Bytes::from(b"abc123" as &[u8]),
+            };
+            let rdr = Arc::new(Mutex::new(Cursor::new(b"")));
+            let wrtr = Arc::new(Mutex::new(Cursor::new(Vec::new())));
+            let handler = GitProtocolHandler::new(rdr, wrtr.clone(), Some("git"), None, None);
+            let mut ext = handler.extensions.lock().unwrap();
+            for e in *exts {
+                ext.insert(*e);
+            }
+            std::mem::drop(ext);
+            handler.send_fill_response(Some(&input)).unwrap();
+            let wrtr = std::mem::take(&mut *wrtr.lock().unwrap());
+            assert_eq!(wrtr.into_inner(), *resp);
+        }
     }
 
     #[test]
