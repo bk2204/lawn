@@ -94,6 +94,7 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name
     steps:
     - uses: actions/checkout@v3
+    - run: brew unlink pkg-config@0.29.2 || true
     - run: brew install ruby asciidoctor rust
     - run: gem install rspec
     - run: mkdir ~/tmp
