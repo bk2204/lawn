@@ -1256,6 +1256,7 @@ impl<'a> ConfigValue<'a> {
         }
     }
 
+    #[allow(clippy::manual_pattern_char_comparison)]
     fn into_string(self) -> Result<String, Error> {
         let s = match self.value {
             Value::String(ref s) => s,

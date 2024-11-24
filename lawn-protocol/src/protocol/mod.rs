@@ -1201,10 +1201,9 @@ impl ProtocolSerializer {
         b.extend(&size.to_le_bytes());
         b.extend(&msg.id.to_le_bytes());
         b.extend(&msg.kind.to_le_bytes());
-        match &msg.message {
-            Some(m) => b.extend(m),
-            None => (),
-        };
+        if let Some(m) = &msg.message {
+            b.extend(m);
+        }
         Some(b.into())
     }
 
@@ -1247,10 +1246,9 @@ impl ProtocolSerializer {
         b.extend(&size.to_le_bytes());
         b.extend(&resp.id.to_le_bytes());
         b.extend(&resp.code.to_le_bytes());
-        match &resp.message {
-            Some(m) => b.extend(m),
-            None => (),
-        };
+        if let Some(m) = &resp.message {
+            b.extend(m);
+        }
         Some(b.into())
     }
 

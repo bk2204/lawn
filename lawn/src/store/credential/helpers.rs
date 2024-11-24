@@ -63,8 +63,8 @@ impl<
     }
 }
 
-impl<T: Send + Sync, U: CommandCredentialBackend<Backend = T> + Sized + Send + Sync + ?Sized>
-    StoreElement for CommandCredentialVault<T, U>
+impl<T: Send + Sync, U: CommandCredentialBackend<Backend = T> + Sized + Send + Sync> StoreElement
+    for CommandCredentialVault<T, U>
 {
     fn store_id(&self) -> StoreID {
         self.store_id
