@@ -110,7 +110,7 @@ pub enum LogStr<'a> {
     Bytes(&'a [u8]),
 }
 
-impl<'a> fmt::Display for LogStr<'a> {
+impl fmt::Display for LogStr<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         use std::fmt::Write;
         match self {
@@ -128,7 +128,7 @@ impl<'a> fmt::Display for LogStr<'a> {
     }
 }
 
-impl<'a> fmt::Debug for LogStr<'a> {
+impl fmt::Debug for LogStr<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         fmt::Display::fmt(self, f)
     }
@@ -138,7 +138,7 @@ pub enum HexLogStr<'a> {
     Bytes(&'a [u8]),
 }
 
-impl<'a> fmt::Display for HexLogStr<'a> {
+impl fmt::Display for HexLogStr<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         match self {
             Self::Bytes(arr) => {
@@ -151,7 +151,7 @@ impl<'a> fmt::Display for HexLogStr<'a> {
     }
 }
 
-impl<'a> fmt::Debug for HexLogStr<'a> {
+impl fmt::Debug for HexLogStr<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         fmt::Display::fmt(self, f)
     }

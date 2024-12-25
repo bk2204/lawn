@@ -91,7 +91,7 @@ struct BorrowedSSHMessage<'a> {
 }
 
 #[async_trait]
-impl<'a> Writable for BorrowedSSHMessage<'a> {
+impl Writable for BorrowedSSHMessage<'_> {
     async fn write_full<W: AsyncWriteExt + Unpin + Send>(&self, w: &mut W) -> io::Result<()> {
         let lenbuf = self.len.to_be_bytes();
         let data = [&lenbuf, std::slice::from_ref(&self.kind), &self.data];
