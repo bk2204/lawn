@@ -1,16 +1,4 @@
 #![allow(non_upper_case_globals)]
-use crate::config::Config;
-use bitflags::bitflags;
-use bytes::{Bytes, BytesMut};
-use num_traits::FromPrimitive;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_cbor::Value;
-use std::collections::{BTreeMap, BTreeSet};
-use std::convert::{TryFrom, TryInto};
-use std::fmt;
-use std::io;
-use std::io::{Seek, SeekFrom};
-
 /// # Overview
 ///
 /// The protocol is relatively simple.  Each request consists of a 32-bit size of the resulting
@@ -46,6 +34,17 @@ use std::io::{Seek, SeekFrom};
 /// `0xfff001000`,  and so on.  This provides 4096 codes per extension while
 /// allowing 4096 extensions.  However, this algorithm is subject to change at any
 /// time.
+use crate::config::Config;
+use bitflags::bitflags;
+use bytes::{Bytes, BytesMut};
+use num_traits::FromPrimitive;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_cbor::Value;
+use std::collections::{BTreeMap, BTreeSet};
+use std::convert::{TryFrom, TryInto};
+use std::fmt;
+use std::io;
+use std::io::{Seek, SeekFrom};
 
 /// The response codes for the protocol.
 ///

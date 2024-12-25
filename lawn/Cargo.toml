@@ -47,7 +47,7 @@ thiserror = "1.0.39"
 url = "2.2"
 daemonize = "0.5"
 num-traits = "0.2"
-num-derive = "0.3"
+num-derive = "0.4"
 hex = "0.4"
 
 [dev-dependencies]

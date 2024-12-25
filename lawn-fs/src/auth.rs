@@ -1,6 +1,3 @@
-use crate::backend::Metadata;
-use lawn_constants::Error;
-
 /// A set of tools to implement authentication and location finding.
 ///
 /// Each authenticator is responsible for determining whether and what access is to be granted,
@@ -8,7 +5,9 @@ use lawn_constants::Error;
 /// root of the mount.
 ///
 /// This is done by creating an instance of the `Authenticator` trait, which can create handles,
-/// and then
+/// and then passing it to the backend in question.
+use crate::backend::Metadata;
+use lawn_constants::Error;
 
 type Result<T> = std::result::Result<T, Error>;
 
