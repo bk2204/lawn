@@ -16,6 +16,7 @@ This is simpler and easier than performing Unix socket forwarding with OpenSSH, 
 
 Regular agent commands (that is, those commands that are not Lawn extensions) are passed to the agent in effect at the time `lawn proxy` was invoked.
 Consequently, normal commands like `ssh-add -l` and regular agent signing should work as normal.
+If that socket is not available, Lawn will instead refuse any non-Lawn (e.g., agent signing) requests with a normal failure message, and when it becomes available, Lawn will use it automatically.
 
 == Examples
 

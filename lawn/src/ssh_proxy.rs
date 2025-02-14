@@ -123,7 +123,6 @@ pub enum Error {
     IOError(io::Error),
     InvalidSize,
     NotSupported,
-    NotConnected,
     Unnotifiable,
 }
 
@@ -161,14 +160,13 @@ impl ProxyListener {
         loop {
             let res = self.agent.accept().await;
             if let Ok((conn, _)) = res {
-                if let Ok(ssh) = UnixStream::connect(&self.ssh).await {
-                    if let Ok(ours) = UnixStream::connect(&self.ours).await {
-                        let config = self.config.clone();
-                        tokio::spawn(async move {
-                            let p = Proxy::new(config, Some(ssh), ours, conn);
-                            let _ = p.run_server().await;
-                        });
-                    }
+                if let Ok(ours) = UnixStream::connect(&self.ours).await {
+                    let ssh = UnixStream::connect(&self.ssh).await.ok();
+                    let config = self.config.clone();
+                    tokio::spawn(async move {
+                        let p = Proxy::new(config, ssh, ours, conn);
+                        let _ = p.run_server().await;
+                    });
                 }
             }
         }
@@ -477,13 +475,20 @@ impl Proxy {
         rx: mpsc::Receiver<oneshot::Sender<SSHMessage>>,
     ) -> Result<(), Error> {
         let mut rx = rx;
-        let ssh = match ssh.as_ref() {
-            Some(ssh) => ssh,
-            None => return Err(Error::NotConnected),
+        let mut ssh = match ssh.as_ref() {
+            Some(mu) => Some(mu.lock().await),
+            None => None,
         };
-        let mut ssh = ssh.lock().await;
         while let Some(chan) = rx.recv().await {
-            let m = Self::read_ssh_message_unlocked(&mut *ssh).await?;
+            let m = match ssh {
+                Some(ref mut ssh) => Self::read_ssh_message_unlocked(&mut **ssh).await?,
+                // There's no SSH socket, so synthesize a failure message.
+                None => SSHMessage {
+                    len: 1,
+                    kind: MessageKind::Failure as u8,
+                    data: vec![],
+                },
+            };
             let _ = chan.send(m);
         }
         Ok(())
@@ -497,10 +502,7 @@ impl Proxy {
     ) -> Result<(), Error> {
         let logger = self.config.logger();
         let sshwr = self.ssh_write.clone();
-        let sshwr = match sshwr.as_ref() {
-            Some(ssh) => ssh,
-            None => return Err(Error::NotConnected),
-        };
+        let sshwr = sshwr.as_ref();
         trace!(logger, "proxy: parsing SSH message: {:02x}", message.kind);
         match MessageKind::from_u8(message.kind) {
             Some(MessageKind::Extension) => {
@@ -650,11 +652,13 @@ impl Proxy {
 
     async fn write_ssh_message_with_closure<F: std::future::Future<Output = ()>>(
         message: &BorrowedSSHMessage<'_>,
-        sock: &Mutex<OwnedWriteHalf>,
+        sock: &Option<Mutex<OwnedWriteHalf>>,
         f: F,
     ) -> Result<(), Error> {
-        let mut ssh = sock.lock().await;
-        message.write_full(&mut *ssh).await?;
+        if let Some(ref sock) = sock {
+            let mut ssh = sock.lock().await;
+            message.write_full(&mut *ssh).await?;
+        }
         f.await;
         Ok(())
     }
