@@ -986,7 +986,7 @@ fn dispatch(verbosity: &mut i32, handled: &mut bool) -> Result<(), Error> {
             Command::new("proxy")
                 .about("Create an SSH agent suitable which can be used for Lawn commands")
                 .arg(Arg::new("ssh").long("ssh"))
-                .arg(Arg::new("arg").num_args(1..).help("Command and arguments to run (usually \"ssh -A\")").value_parser(value_parser!(OsString))),
+                .arg(Arg::new("arg").num_args(1..).help("Command and arguments to run (usually \"ssh -A\")").value_parser(value_parser!(OsString)).trailing_var_arg(true)),
         )
         .subcommand(
             Command::new("mount")
@@ -1002,9 +1002,9 @@ fn dispatch(verbosity: &mut i32, handled: &mut bool) -> Result<(), Error> {
                 )
                 .arg(Arg::new("auto").long("auto").help("Automatically guess a suitable program to mount"))
                 .arg(Arg::new("target").required(true).help("Name of the mount point to mount").value_parser(value_parser!(OsString)))
-                .arg(Arg::new("arg").num_args(1..).required(true).help("With --auto, the path to mount on; otherwise, the command to run").value_parser(value_parser!(OsString))),
+                .arg(Arg::new("arg").num_args(1..).required(true).help("With --auto, the path to mount on; otherwise, the command to run").value_parser(value_parser!(OsString)).trailing_var_arg(true)),
         )
-        .subcommand(Command::new("run").about("Run a command").arg(Arg::new("arg").num_args(1..).help("Name of the command and its arguments").value_parser(value_parser!(OsString))))
+        .subcommand(Command::new("run").about("Run a command").arg(Arg::new("arg").num_args(1..).help("Name of the command and its arguments").value_parser(value_parser!(OsString)).trailing_var_arg(true)))
         .get_matches();
     *verbosity = matches.get_count("verbose") as i32 - matches.get_count("quiet") as i32;
     let config = config(*verbosity)?;
