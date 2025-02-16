@@ -12,6 +12,7 @@ use lawn_constants::logger::Logger as LoggerTrait;
 use lawn_protocol::protocol::{CredentialStoreElement, TemplateServerContextBodyWithBody};
 use serde::Serialize;
 use std::borrow::Borrow;
+use std::ffi::OsString;
 use std::sync::Arc;
 
 #[derive(Serialize)]
@@ -44,10 +45,10 @@ pub fn dispatch_query_context(
     let runtime = crate::runtime();
     let mut socket = crate::find_or_autostart_server(
         runtime.handle(),
-        main.value_of_os("socket"),
+        main.get_one::<OsString>("socket").map(|v| &**v),
         config.clone(),
     )?;
-    match m.value_of("type") {
+    match m.get_one::<String>("type").map(|v| (*v).as_ref()) {
         Some("template") | None => (),
         _ => {
             return Err(Error::new_with_message(
@@ -56,7 +57,10 @@ pub fn dispatch_query_context(
             ))
         }
     }
-    let pattern = match (m.is_present("list"), m.value_of("format")) {
+    let pattern: Option<&str> = match (
+        m.get_flag("list"),
+        m.get_one::<String>("format").map(|v| (*v).as_ref()),
+    ) {
         (true, None) => None,
         (false, Some(p)) => Some(p),
         (true, Some(_)) => {

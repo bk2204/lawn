@@ -14,7 +14,7 @@ use crate::credential::protocol::git::GitProtocolHandler;
 use crate::encoding::{escape, osstr, path};
 use crate::socket::{LawnSocket, LawnSocketDiscoverer, LawnSocketKind};
 use bytes::Bytes;
-use clap::{App, Arg, ArgMatches};
+use clap::{value_parser, Arg, ArgAction, ArgMatches, Command};
 use lawn_constants::logger::LogFormat;
 use lawn_protocol::config::Logger;
 use lawn_protocol::protocol::{
@@ -79,7 +79,7 @@ fn config(verbosity: i32) -> Result<Arc<config::Config>, Error> {
 }
 
 fn set_log_format(config: &config::Config, matches: &ArgMatches) -> Result<LogFormat, Error> {
-    let format = match matches.value_of("format") {
+    let format = match matches.get_one::<String>("format").map(|v| (*v).as_ref()) {
         Some("cbor") => LogFormat::CBOR,
         Some("default") | Some("text") | None => LogFormat::Text,
         Some("script") => LogFormat::Scriptable,
@@ -206,8 +206,11 @@ fn dispatch_credential_script(
     let logger = config.logger();
     logger.trace("Starting runtime");
     let runtime = runtime();
-    let mut socket =
-        find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
+    let mut socket = find_or_autostart_server(
+        runtime.handle(),
+        main.get_one::<OsString>("socket").map(|v| &**v),
+        config.clone(),
+    )?;
     runtime.block_on(async {
         let client = client::Client::new(config);
         debug!(
@@ -262,16 +265,19 @@ fn dispatch_credential_git(
     use credential::CredentialHandle;
 
     let op = match m.subcommand() {
-        ("get", Some(_)) => GitCredentialOperation::Get,
-        ("store", Some(_)) => GitCredentialOperation::Store,
-        ("erase", Some(_)) => GitCredentialOperation::Erase,
+        Some(("get", _)) => GitCredentialOperation::Get,
+        Some(("store", _)) => GitCredentialOperation::Store,
+        Some(("erase", _)) => GitCredentialOperation::Erase,
         _ => return Err(Error::new(ErrorKind::Unimplemented)),
     };
     let logger = config.logger();
     logger.trace("Starting runtime");
     let runtime = runtime();
-    let mut socket =
-        find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
+    let mut socket = find_or_autostart_server(
+        runtime.handle(),
+        main.get_one::<OsString>("socket").map(|v| &**v),
+        config.clone(),
+    )?;
     runtime.block_on(async {
         let client = client::Client::new(config);
         debug!(
@@ -439,8 +445,8 @@ fn dispatch_credential(
     m: &ArgMatches,
 ) -> Result<(), Error> {
     match m.subcommand() {
-        ("script", Some(m)) => dispatch_credential_script(config, main, m),
-        ("git", Some(m)) => dispatch_credential_git(config, main, m),
+        Some(("script", m)) => dispatch_credential_script(config, main, m),
+        Some(("git", m)) => dispatch_credential_git(config, main, m),
         _ => Err(Error::new(ErrorKind::Unimplemented)),
     }
 }
@@ -464,8 +470,11 @@ fn dispatch_query_test_connection(
     let logger = config.logger();
     logger.trace("Starting runtime");
     let runtime = runtime();
-    let mut socket =
-        find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
+    let mut socket = find_or_autostart_server(
+        runtime.handle(),
+        main.get_one::<OsString>("socket").map(|v| &**v),
+        config.clone(),
+    )?;
     runtime.block_on(async {
         let client = client::Client::new(config);
         message!(
@@ -541,8 +550,8 @@ fn dispatch_query(
     m: &ArgMatches,
 ) -> Result<(), Error> {
     match m.subcommand() {
-        ("test-connection", Some(m)) => dispatch_query_test_connection(config, main, m),
-        ("context", Some(m)) => subcommands::query::dispatch_query_context(config, main, m),
+        Some(("test-connection", m)) => dispatch_query_test_connection(config, main, m),
+        Some(("context", m)) => subcommands::query::dispatch_query_context(config, main, m),
         _ => Err(Error::new(ErrorKind::Unimplemented)),
     }
 }
@@ -552,7 +561,7 @@ fn dispatch_proxy(
     main: &ArgMatches,
     m: &ArgMatches,
 ) -> Result<(), Error> {
-    let args: Vec<OsString> = match m.values_of_os("arg") {
+    let args: Vec<OsString> = match m.get_many::<OsString>("arg") {
         Some(args) => args.map(|x| x.to_owned()).collect(),
         _ => return Err(Error::new(ErrorKind::MissingArguments)),
     };
@@ -571,8 +580,11 @@ fn dispatch_proxy(
     let logger = config.logger();
     logger.trace("Starting runtime");
     let runtime = runtime();
-    let socket =
-        find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
+    let socket = find_or_autostart_server(
+        runtime.handle(),
+        main.get_one::<OsString>("socket").map(|v| &**v),
+        config.clone(),
+    )?;
     let res: Result<i32, Error> = runtime.block_on(async move {
         let ours = socket.path();
         let multiplex = find_vacant_socket(config.clone(), "ssh")?;
@@ -622,22 +634,27 @@ fn dispatch_mount(
     main: &ArgMatches,
     m: &ArgMatches,
 ) -> Result<(), Error> {
-    let (prefix, desc, pproto, autoargs): (_, _, _, Option<&[&str]>) = match m.value_of("type") {
-        Some("9p") | None => ("9p", "9P", fs_proxy::ProxyProtocol::P9P, None),
-        Some("sftp") => (
-            "sftp",
-            "SFTP",
-            fs_proxy::ProxyProtocol::SFTP,
-            Some(&["sshfs", "-o", "passive", ":/"]),
-        ),
-        Some(p) => {
-            return Err(Error::new_with_message(
-                ErrorKind::UnknownProtocolType,
-                format!("unknown protocol {}", p),
-            ))
-        }
-    };
-    let args: Vec<OsString> = match (m.is_present("auto"), autoargs, m.values_of_os("arg")) {
+    let (prefix, desc, pproto, autoargs): (_, _, _, Option<&[&str]>) =
+        match m.get_one::<String>("type").map(|v| (*v).as_ref()) {
+            Some("9p") | None => ("9p", "9P", fs_proxy::ProxyProtocol::P9P, None),
+            Some("sftp") => (
+                "sftp",
+                "SFTP",
+                fs_proxy::ProxyProtocol::SFTP,
+                Some(&["sshfs", "-o", "passive", ":/"]),
+            ),
+            Some(p) => {
+                return Err(Error::new_with_message(
+                    ErrorKind::UnknownProtocolType,
+                    format!("unknown protocol {}", p),
+                ))
+            }
+        };
+    let args: Vec<OsString> = match (
+        m.contains_id("auto"),
+        autoargs,
+        m.get_many::<OsString>("arg"),
+    ) {
         (true, Some(autoargs), Some(args)) if args.len() == 1 => autoargs
             .iter()
             .cloned()
@@ -671,10 +688,13 @@ fn dispatch_mount(
     let logger = config.logger();
     logger.trace("Starting runtime");
     let runtime = runtime();
-    let mut socket =
-        find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
+    let mut socket = find_or_autostart_server(
+        runtime.handle(),
+        main.get_one::<OsString>("socket").map(|v| &**v),
+        config.clone(),
+    )?;
     let res: Result<i32, Error> = runtime.block_on(async move {
-        let target = m.value_of_os("target").unwrap();
+        let target = m.get_one::<OsString>("target").unwrap();
         let ours = if socket.kind() == LawnSocketKind::Lawn {
             Some(socket.path())
         } else {
@@ -688,9 +708,9 @@ fn dispatch_mount(
             escape(path(&*fs_sock)),
             desc
         );
-        let want_socket = if m.is_present("socket") {
+        let want_socket = if m.value_source("socket").is_some() {
             true
-        } else if m.is_present("fd") || autoargs.is_some() {
+        } else if m.value_source("fd").is_some() || autoargs.is_some() {
             false
         } else {
             error!(logger, "one of --socket or --fd is required");
@@ -799,7 +819,7 @@ fn dispatch_clip(
     main: &ArgMatches,
     m: &ArgMatches,
 ) -> Result<(), Error> {
-    let op = match (m.is_present("copy"), m.is_present("paste")) {
+    let op = match (m.get_flag("copy"), m.get_flag("paste")) {
         (true, false) => ClipboardChannelOperation::Copy,
         (false, true) => ClipboardChannelOperation::Paste,
         _ => {
@@ -809,7 +829,7 @@ fn dispatch_clip(
             ))
         }
     };
-    let target = match (m.is_present("primary"), m.is_present("clipboard")) {
+    let target = match (m.get_flag("primary"), m.get_flag("clipboard")) {
         (true, false) => Some(ClipboardChannelTarget::Primary),
         (false, true) => Some(ClipboardChannelTarget::Clipboard),
         (false, false) => None,
@@ -823,8 +843,11 @@ fn dispatch_clip(
     let logger = config.logger();
     logger.trace("Starting runtime");
     let runtime = runtime();
-    let mut socket =
-        find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
+    let mut socket = find_or_autostart_server(
+        runtime.handle(),
+        main.get_one::<OsString>("socket").map(|v| &**v),
+        config.clone(),
+    )?;
     let res = runtime.block_on(async move {
         let client = client::Client::new(config);
         debug!(
@@ -855,15 +878,18 @@ fn dispatch_run(
     main: &ArgMatches,
     m: &ArgMatches,
 ) -> Result<(), Error> {
-    let args: Vec<Bytes> = match m.values_of_os("arg") {
+    let args: Vec<Bytes> = match m.get_many::<OsString>("arg") {
         Some(args) => args.map(|x| x.as_bytes().to_vec().into()).collect(),
         None => return Err(Error::new(ErrorKind::MissingArguments)),
     };
     let logger = config.logger();
     logger.trace("Starting runtime");
     let runtime = runtime();
-    let mut socket =
-        find_or_autostart_server(runtime.handle(), main.value_of_os("socket"), config.clone())?;
+    let mut socket = find_or_autostart_server(
+        runtime.handle(),
+        main.get_one::<OsString>("socket").map(|v| &**v),
+        config.clone(),
+    )?;
     let res = runtime.block_on(async move {
         let client = client::Client::new(config);
         debug!(
@@ -890,112 +916,116 @@ fn dispatch_run(
 }
 
 fn dispatch(verbosity: &mut i32, handled: &mut bool) -> Result<(), Error> {
-    let matches = App::new("lawn")
+    let matches = Command::new("lawn")
         .version(env!("CARGO_PKG_VERSION"))
         .arg(
-            Arg::with_name("verbose")
+            Arg::new("verbose")
                 .long("verbose")
-                .short("v")
-                .multiple(true)
+                .short('v')
+                .action(ArgAction::Count)
                 .help("Make the command more verbose"),
         )
         .arg(
-            Arg::with_name("quiet")
+            Arg::new("quiet")
                 .long("quiet")
-                .short("q")
-                .multiple(true)
+                .short('q')
+                .action(ArgAction::Count)
                 .help("Make the command less verbose"),
         )
         .arg(
-            Arg::with_name("format")
+            Arg::new("format")
                 .long("format")
-                .takes_value(true)
+                .num_args(1)
                 .help("Provide the logging format (default, text, script, or cbor)")
         )
-        .arg(Arg::with_name("socket").long("socket").takes_value(true).help("Specify the path to the Lawn socket"))
-        .arg(Arg::with_name("no-detach").long("no-detach").help("Do not detach from the terminal when starting a server"))
-        .subcommand(App::new("server").about("Start a server on the root machine"))
+        .arg(Arg::new("socket").long("socket").num_args(1).help("Specify the path to the Lawn socket"))
+        .arg(Arg::new("no-detach").long("no-detach").action(ArgAction::SetTrue).help("Do not detach from the terminal when starting a server"))
+        .subcommand(Command::new("server").about("Start a server on the root machine"))
         .subcommand(
-            App::new("query")
+            Command::new("query")
             .about("Query information about Lawn")
             .subcommand(
-                App::new("test-connection")
+                Command::new("test-connection")
                 .about("Test that a connection can be made and is basically functional"))
             .subcommand(
-                App::new("context")
+                Command::new("context")
                 .about("Query information about the current context")
-                .arg(Arg::with_name("type").long("type").help("Specify the type of context (template)"))
-                .arg(Arg::with_name("list").long("list").help("List context data"))
-                .arg(Arg::with_name("format").long("format").takes_value(true).help("Specify the format pattern"))
-                .arg(Arg::with_name("pattern-type").long("pattern-type").takes_value(true).help("Specify the format pattern type (template)")),
+                .arg(Arg::new("type").long("type").help("Specify the type of context (template)"))
+                .arg(Arg::new("list").long("list").help("List context data").action(ArgAction::SetTrue))
+                .arg(Arg::new("format").long("format").num_args(1).help("Specify the format pattern"))
+                .arg(Arg::new("pattern-type").long("pattern-type").num_args(1).help("Specify the format pattern type (template)")),
         ))
         .subcommand(
-            App::new("clip")
+            Command::new("clip")
                 .about("Copy to and paste from the clipboard")
-                .arg(Arg::with_name("copy").long("copy").short("i").help("Copy standard input to the clipboard"))
-                .arg(Arg::with_name("paste").long("paste").short("o").help("Paste the clipboard to the standard output"))
-                .arg(Arg::with_name("primary").long("primary").short("p").help("Use the PRIMARY selection on X11"))
-                .arg(Arg::with_name("clipboard").long("clipboard").short("b").help("Use the CLIPBOARD selection on X11 or the regular clipboard on other platforms")),
+                .arg(Arg::new("copy").long("copy").short('i').help("Copy standard input to the clipboard").action(ArgAction::SetTrue))
+                .arg(Arg::new("paste").long("paste").short('o').help("Paste the clipboard to the standard output").action(ArgAction::SetTrue))
+                .arg(Arg::new("primary").long("primary").short('p').help("Use the PRIMARY selection on X11").action(ArgAction::SetTrue))
+                .arg(Arg::new("clipboard").long("clipboard").short('b').help("Use the CLIPBOARD selection on X11 or the regular clipboard on other platforms").action(ArgAction::SetTrue)),
         )
         .subcommand(
-            App::new("credential")
+            Command::new("credential")
                 .about("Query credentials")
-                .subcommand(App::new("script")
+                .subcommand(Command::new("script")
                             .about("Take scripting commands from standard input")
                             )
-                .subcommand(App::new("git")
+                .subcommand(Command::new("git")
                             .about("Operate as a Git credential helper")
-                            .subcommand(App::new("get")
+                            .subcommand(Command::new("get")
                                         .about("Fill credentials using the Git credential protocol")
                                     )
-                            .subcommand(App::new("store")
+                            .subcommand(Command::new("store")
                                         .about("Approve credentials using the Git credential protocol")
                                     )
-                            .subcommand(App::new("erase")
+                            .subcommand(Command::new("erase")
                                         .about("Reject credentials using the Git credential protocol")
                                     )
                             )
         )
         .subcommand(
-            App::new("proxy")
+            Command::new("proxy")
                 .about("Create an SSH agent suitable which can be used for Lawn commands")
-                .arg(Arg::with_name("ssh").long("ssh"))
-                .arg(Arg::with_name("arg").multiple(true).help("Command and arguments to run (usually \"ssh -A\")")),
+                .arg(Arg::new("ssh").long("ssh"))
+                .arg(Arg::new("arg").num_args(1..).help("Command and arguments to run (usually \"ssh -A\")").value_parser(value_parser!(OsString))),
         )
         .subcommand(
-            App::new("mount")
+            Command::new("mount")
                 .about("Provide access to a file system mount")
-                .arg(Arg::with_name("socket").long("socket").help("Use a socket to expose the mount"))
-                .arg(Arg::with_name("fd").long("fd").help("Expose the mount to the command using standard input and output"))
+                .arg(Arg::new("socket").long("socket").help("Use a socket to expose the mount"))
+                .arg(Arg::new("fd").long("fd").help("Expose the mount to the command using standard input and output"))
                 .arg(
-                    Arg::with_name("type")
+                    Arg::new("type")
                         .long("type")
-                        .takes_value(true)
+                        .num_args(1)
                         .value_name("PROTOCOL")
                         .help("Protocol to use to access the mount: \"9p\" (default) or \"sftp\""),
                 )
-                .arg(Arg::with_name("auto").long("auto").help("Automatically guess a suitable program to mount"))
-                .arg(Arg::with_name("target").required(true).help("Name of the mount point to mount"))
-                .arg(Arg::with_name("arg").multiple(true).required(true).help("With --auto, the path to mount on; otherwise, the command to run")),
+                .arg(Arg::new("auto").long("auto").help("Automatically guess a suitable program to mount"))
+                .arg(Arg::new("target").required(true).help("Name of the mount point to mount").value_parser(value_parser!(OsString)))
+                .arg(Arg::new("arg").num_args(1..).required(true).help("With --auto, the path to mount on; otherwise, the command to run").value_parser(value_parser!(OsString))),
         )
-        .subcommand(App::new("run").about("Run a command").arg(Arg::with_name("arg").multiple(true).help("Name of the command and its arguments")))
+        .subcommand(Command::new("run").about("Run a command").arg(Arg::new("arg").num_args(1..).help("Name of the command and its arguments").value_parser(value_parser!(OsString))))
         .get_matches();
-    *verbosity = matches.occurrences_of("verbose") as i32 - matches.occurrences_of("quiet") as i32;
+    *verbosity = matches.get_count("verbose") as i32 - matches.get_count("quiet") as i32;
     let config = config(*verbosity)?;
-    if matches.is_present("no-detach") {
+    if matches.get_flag("no-detach") {
         config.set_detach(false);
     }
     let format = set_log_format(&config, &matches)?;
     let logger = config.logger();
     *handled = true;
     let res = match matches.subcommand() {
-        ("credential", Some(m)) => dispatch_credential(config, &matches, m),
-        ("server", Some(m)) => dispatch_server(config, &matches, m),
-        ("query", Some(m)) => dispatch_query(config, &matches, m),
-        ("clip", Some(m)) => dispatch_clip(config, &matches, m),
-        ("mount", Some(m)) => dispatch_mount(config, &matches, m),
-        ("proxy", Some(m)) => dispatch_proxy(config, &matches, m),
-        ("run", Some(m)) => dispatch_run(config, &matches, m),
+        Some(("credential", m)) => dispatch_credential(config, &matches, m),
+        Some(("server", m)) => dispatch_server(config, &matches, m),
+        Some(("query", m)) => dispatch_query(config, &matches, m),
+        Some(("clip", m)) => dispatch_clip(config, &matches, m),
+        Some(("mount", m)) => dispatch_mount(config, &matches, m),
+        Some(("proxy", m)) => dispatch_proxy(config, &matches, m),
+        Some(("run", m)) => dispatch_run(config, &matches, m),
+        Some((a, b)) => {
+            eprintln!("dx: a: {} {:?}", a, b);
+            Ok(())
+        }
         _ => Err(Error::new(ErrorKind::Unimplemented)),
     };
     match (res, format) {
