@@ -14,18 +14,13 @@ jobs:
     - run: make ci-bookworm
   build-bookworm-arm64:
     name: Linux (Debian bookworm arm64)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name
     steps:
     - uses: actions/checkout@v3
     - uses: ruby/setup-ruby@v1
       with:
         ruby-version: 3.1
-    - run: |
-        echo '{"experimental": true}' | sudo tee /etc/docker/daemon.json
-        sudo systemctl restart docker.service
-        docker version -f '{{.Server.Experimental}}'
-    - uses: docker/setup-qemu-action@v2
     - run: make ci-bookworm
       env:
         PLATFORM: linux/arm64

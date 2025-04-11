@@ -1226,7 +1226,7 @@ impl<'a> ConfigValue<'a> {
                 format!("command {} must start with a !", s),
             ));
         }
-        let t = Template::new(s[1..].as_bytes());
+        let t = Template::new(&s.as_bytes()[1..]);
         t.expand(context).map_err(|e| {
             Error::new_full(
                 ErrorKind::TemplateError,
@@ -1468,7 +1468,7 @@ impl<'a> Command<'a> {
                 format!("command {} must start with a !", s),
             ));
         }
-        let t = Template::new(s[1..].as_bytes());
+        let t = Template::new(&s.as_bytes()[1..]);
         t.expand(context).map_err(|e| {
             Error::new_full(
                 ErrorKind::TemplateError,
