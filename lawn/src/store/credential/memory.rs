@@ -62,7 +62,7 @@ impl VaultContainer for VaultDirectory {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub(super) enum VaultEntry {
-    Credential(Credential),
+    Credential(Box<Credential>),
     Directory(VaultDirectory),
 }
 
@@ -357,7 +357,7 @@ impl MemoryCredentialBackend {
             match entry {
                 VaultEntry::Credential(c) if req.matches(c) => {
                     let path = format_bytes!(b"{}{}", path.as_ref(), name.as_ref());
-                    return Ok(Some((c.clone(), path.into())));
+                    return Ok(Some(((**c).clone(), path.into())));
                 }
                 VaultEntry::Credential(_) => continue,
                 VaultEntry::Directory(d) => {
@@ -632,18 +632,18 @@ impl CommandCredentialBackend for MemoryCredentialBackend {
         match (overwrite, create, entries.entry(last_item)) {
             (true, _, Entry::Occupied(mut e)) => match (e.get_mut(), create) {
                 (VaultEntry::Credential(ref mut c), _) => {
-                    *c = cred.clone();
+                    **c = (*cred).clone();
                     Ok(path)
                 }
                 (VaultEntry::Directory(d), true) => {
                     d.entries
-                        .insert(cred.id(), VaultEntry::Credential(cred.clone()));
+                        .insert(cred.id(), VaultEntry::Credential(Box::new((*cred).clone())));
                     Ok(path)
                 }
                 (VaultEntry::Directory(_), false) => Err(CredentialParserError::NoSuchHandle),
             },
             (_, true, Entry::Vacant(e)) => {
-                e.insert(VaultEntry::Credential(cred.clone()));
+                e.insert(VaultEntry::Credential(Box::new((*cred).clone())));
                 Ok(path)
             }
             (_, _, _) => Err(CredentialParserError::NoSuchHandle),
@@ -782,7 +782,7 @@ impl CommandCredentialBackend for MemoryCredentialBackend {
                             id,
                             path,
                             this.clone(),
-                            c.clone(),
+                            (**c).clone(),
                         ))
                     } else {
                         components.extend(
@@ -912,7 +912,7 @@ impl CommandCredentialBackend for MemoryCredentialBackend {
             .map_err(|_| ResponseCode::NotFound)?
             .ok_or(ResponseCode::NotFound)?;
         if let Some(VaultEntry::Credential(ref c)) = cont.entries().get(&last) {
-            let cse: CredentialStoreElement = c.into();
+            let cse: CredentialStoreElement = (*c).as_ref().into();
             Ok(Some(Box::new(cse)))
         } else {
             Ok(None)
