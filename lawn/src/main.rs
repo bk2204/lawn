@@ -1022,10 +1022,7 @@ fn dispatch(verbosity: &mut i32, handled: &mut bool) -> Result<(), Error> {
         Some(("mount", m)) => dispatch_mount(config, &matches, m),
         Some(("proxy", m)) => dispatch_proxy(config, &matches, m),
         Some(("run", m)) => dispatch_run(config, &matches, m),
-        Some((a, b)) => {
-            eprintln!("dx: a: {} {:?}", a, b);
-            Ok(())
-        }
+        Some(_) => Ok(()),
         _ => Err(Error::new(ErrorKind::Unimplemented)),
     };
     match (res, format) {
