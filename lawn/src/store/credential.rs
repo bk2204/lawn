@@ -76,7 +76,7 @@ pub trait CredentialBackendHandle {
     ) -> Result<(), protocol::Error>;
     fn delete(&self) -> Result<(), protocol::Error>;
     fn meta(&self) -> Option<Cow<'_, BTreeMap<Bytes, Value>>>;
-    fn body(&self) -> Result<Option<Box<(dyn Any + Send + Sync + 'static)>>, protocol::Error>;
+    fn body(&self) -> Result<Option<Box<dyn Any + Send + Sync + 'static>>, protocol::Error>;
     fn create(
         self: Arc<Self>,
         path: Option<Bytes>,
