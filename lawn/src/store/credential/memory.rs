@@ -95,17 +95,12 @@ impl VaultContainer for Vault {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Default, Debug, Copy, Clone)]
 enum AuthenticationState {
+    #[default]
     Start,
     SentKeyboardInteractivePrompt,
     Authenticated,
-}
-
-impl Default for AuthenticationState {
-    fn default() -> Self {
-        Self::Start
-    }
 }
 
 pub(super) struct LockableData {
