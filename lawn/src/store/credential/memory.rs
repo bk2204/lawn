@@ -768,7 +768,7 @@ impl CommandCredentialBackend for MemoryCredentialBackend {
                 components.pop();
                 let handle: Arc<dyn CredentialBackendHandle + Send + Sync> =
                     if let VaultEntry::Credential(c) = entry {
-                        components.extend((&[name.clone()] as &[Bytes]).iter().cloned());
+                        components.extend((std::slice::from_ref(name) as &[Bytes]).iter().cloned());
                         let path = StorePath::from_components(&components)
                             .unwrap()
                             .into_inner();
