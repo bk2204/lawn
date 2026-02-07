@@ -60,7 +60,7 @@ impl ExtendedError for Error {
 
 impl Template {
     pub fn new(s: &[u8]) -> Template {
-        let expansion = s.iter().any(|&c| c == b'%');
+        let expansion = s.contains(&b'%');
         Template {
             text: s.to_vec().into(),
             needs_expansion: expansion,
