@@ -141,10 +141,7 @@ impl CommandCredentialBackend for GitCredentialBackend {
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
-        let mut child = match cmd.spawn() {
-            Ok(child) => child,
-            Err(e) => return Err(e.into()),
-        };
+        let mut child = cmd.spawn()?;
         let (stdin, stdout) = (child.stdin.take().unwrap(), child.stdout.take().unwrap());
         let proto = GitProtocolHandler::new(
             Arc::new(Mutex::new(stdout)),
