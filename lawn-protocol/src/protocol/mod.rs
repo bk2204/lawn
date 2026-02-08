@@ -550,6 +550,26 @@ pub struct CreateChannelResponse {
     pub id: ChannelID,
 }
 
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct ChannelCommandTTYMetadata {
+    pub tty: bool,
+    pub tty_selectors: Vec<u32>,
+    pub term: Bytes,
+    pub modes: BTreeMap<u32, Value>,
+    #[serde(flatten)]
+    pub size: ChannelCommandTTYSizeMetadata,
+}
+
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct ChannelCommandTTYSizeMetadata {
+    pub height_cells: u32,
+    pub width_cells: u32,
+    pub height_pixels: u32,
+    pub width_pixels: u32,
+}
+
 #[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct DeleteChannelRequest {
@@ -681,6 +701,7 @@ pub struct ExtensionRange {
 #[derive(FromPrimitive, Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 pub enum ChannelMetadataNotificationKind {
     WaitStatus = 0,
+    TerminalWindowChange = 1,
 }
 
 #[derive(FromPrimitive, Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
@@ -722,6 +743,16 @@ pub struct ChannelMetadataNotification {
     pub status: Option<u32>,
     pub status_kind: Option<u32>,
     pub meta: Option<BTreeMap<Bytes, Value>>,
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct ChannelMetadataNotificationTyped<T> {
+    pub id: ChannelID,
+    pub kind: u32,
+    pub status: Option<u32>,
+    pub status_kind: Option<u32>,
+    pub meta: Option<T>,
 }
 
 #[derive(Eq, PartialEq, Ord, PartialOrd, Copy, Clone)]
