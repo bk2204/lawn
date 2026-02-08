@@ -241,7 +241,7 @@ impl<'de> ScriptDeserializer<'de> {
     }
 
     fn parse_bytes<'a>(&self, src: &'a [u8], offset: usize) -> Result<Cow<'a, [u8]>, Error> {
-        if src.iter().any(|b| *b == b'%') {
+        if src.contains(&b'%') {
             fn parse_hex(a: u8, b: u8, offset: usize) -> Result<u8, Error> {
                 if (a.is_ascii_digit() || (b'a'..=b'f').contains(&a))
                     && (b.is_ascii_digit() || (b'a'..=b'f').contains(&b))

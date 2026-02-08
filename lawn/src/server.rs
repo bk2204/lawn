@@ -1338,7 +1338,7 @@ impl Server {
                     }
                 };
                 let cred;
-                let value: Option<Box<(dyn Any + Send + Sync + 'static)>> = match &*m.kind {
+                let value: Option<Box<dyn Any + Send + Sync + 'static>> = match &*m.kind {
                     "directory" => None,
                     "credential" => {
                         cred = valid_message!(

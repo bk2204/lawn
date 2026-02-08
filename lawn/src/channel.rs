@@ -592,10 +592,7 @@ impl ServerCommandChannel {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
         trace!(logger, "channel {}: spawn {:?}", id, cmd);
-        let mut cmd = match cmd.spawn() {
-            Ok(cmd) => cmd,
-            Err(e) => return Err(e.into()),
-        };
+        let mut cmd = cmd.spawn()?;
         trace!(logger, "channel {}: spawn ok: pid {}", id, cmd.id());
         let fds = (
             file_from_command::<PipeWrite, _>(cmd.stdin.take()),
@@ -906,10 +903,7 @@ impl ServerClipboardChannel {
         }
         cmd.stderr(Stdio::null());
         trace!(logger, "channel {}: spawn {:?}", id, cmd);
-        let mut cmd = match cmd.spawn() {
-            Ok(cmd) => cmd,
-            Err(e) => return Err(e.into()),
-        };
+        let mut cmd = cmd.spawn()?;
         trace!(logger, "channel {}: spawn ok: pid {}", id, cmd.id());
         let fds = (
             file_from_command::<PipeWrite, _>(cmd.stdin.take()),

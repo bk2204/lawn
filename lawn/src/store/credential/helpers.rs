@@ -605,6 +605,7 @@ pub trait CommandCredentialBackend {
         id: StoreSelectorID,
         handle: Arc<dyn CredentialBackendHandle + Send + Sync>,
     );
+    #[allow(dead_code)]
     fn get_handle(
         self: Arc<Self>,
         id: StoreSelectorID,
