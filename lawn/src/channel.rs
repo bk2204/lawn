@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::UnixStream;
 use tokio::sync;
@@ -256,7 +256,19 @@ fn poll(
 }
 
 #[allow(clippy::arc_with_non_send_sync)]
-fn file_from_command<F: FromRawFd, T: IntoRawFd>(io: Option<T>) -> Option<Arc<sync::Mutex<F>>> {
+fn readable_file_from_command<F: FromRawFd + Readable + 'static, T: IntoRawFd>(
+    io: Option<T>,
+) -> Option<Arc<sync::Mutex<dyn Readable>>> {
+    let io = io?;
+    Some(Arc::new(sync::Mutex::new(unsafe {
+        F::from_raw_fd(io.into_raw_fd())
+    })))
+}
+
+#[allow(clippy::arc_with_non_send_sync)]
+fn writable_file_from_command<F: FromRawFd + Writable + 'static, T: IntoRawFd>(
+    io: Option<T>,
+) -> Option<Arc<sync::Mutex<dyn Writable>>> {
     let io = io?;
     Some(Arc::new(sync::Mutex::new(unsafe {
         F::from_raw_fd(io.into_raw_fd())
@@ -378,10 +390,17 @@ pub trait Channel {
     fn set_dead(&self);
 }
 
+trait Readable: AsyncRead + AsRawFd + Unpin + Send + Sync {}
+trait Writable: AsyncWrite + AsRawFd + Unpin + Send + Sync {}
+
+impl<T: AsyncRead + AsRawFd + Unpin + Send + Sync> Readable for T {}
+impl<T: AsyncWrite + AsRawFd + Unpin + Send + Sync> Writable for T {}
+
 type Locked<T> = Arc<sync::Mutex<T>>;
 type OptionLocked<T> = Option<Arc<sync::Mutex<T>>>;
-type OptionLockedWrite = OptionLocked<PipeWrite>;
-type OptionLockedRead = OptionLocked<PipeRead>;
+type OptionLockedWrite = OptionLocked<dyn Writable>;
+type OptionLockedRead = OptionLocked<dyn Readable>;
+type FDSet = Arc<sync::RwLock<(OptionLockedWrite, OptionLockedRead, OptionLockedRead)>>;
 type LockedU64 = Locked<u64>;
 
 pub struct ServerGenericCommandChannel {
@@ -441,7 +460,7 @@ impl ServerGenericCommandChannel {
     async fn do_write(
         logger: Arc<Logger>,
         id: ChannelID,
-        io: Locked<PipeWrite>,
+        io: Locked<dyn Writable>,
         data: Bytes,
         blocking: bool,
         guard: sync::MutexGuard<'_, u64>,
@@ -476,7 +495,7 @@ impl ServerGenericCommandChannel {
     async fn do_read(
         logger: Arc<Logger>,
         id: ChannelID,
-        io: Locked<PipeRead>,
+        io: Locked<dyn Readable>,
         count: u64,
         blocking: bool,
         complete: bool,
@@ -525,7 +544,7 @@ impl ServerGenericCommandChannel {
         logger: Arc<Logger>,
         id: ChannelID,
         queue: &ChannelCommandQueue,
-        io: Locked<PipeWrite>,
+        io: Locked<dyn Writable>,
         data: Bytes,
         sync: Option<u64>,
     ) -> Result<u64, protocol::Error> {
@@ -554,7 +573,7 @@ impl ServerGenericCommandChannel {
         logger: Arc<Logger>,
         id: ChannelID,
         queue: &ChannelCommandQueue,
-        io: Locked<PipeRead>,
+        io: Locked<dyn Readable>,
         count: u64,
         sync: Option<u64>,
         complete: bool,
@@ -595,9 +614,9 @@ impl ServerCommandChannel {
         let mut cmd = cmd.spawn()?;
         trace!(logger, "channel {}: spawn ok: pid {}", id, cmd.id());
         let fds = (
-            file_from_command::<PipeWrite, _>(cmd.stdin.take()),
-            file_from_command::<PipeRead, _>(cmd.stdout.take()),
-            file_from_command::<PipeRead, _>(cmd.stderr.take()),
+            writable_file_from_command::<PipeWrite, _>(cmd.stdin.take()),
+            readable_file_from_command::<PipeRead, _>(cmd.stdout.take()),
+            readable_file_from_command::<PipeRead, _>(cmd.stderr.take()),
         );
         let bytes = (
             Arc::new(sync::Mutex::new(0)),
@@ -906,8 +925,8 @@ impl ServerClipboardChannel {
         let mut cmd = cmd.spawn()?;
         trace!(logger, "channel {}: spawn ok: pid {}", id, cmd.id());
         let fds = (
-            file_from_command::<PipeWrite, _>(cmd.stdin.take()),
-            file_from_command::<PipeRead, _>(cmd.stdout.take()),
+            writable_file_from_command::<PipeWrite, _>(cmd.stdin.take()),
+            readable_file_from_command::<PipeRead, _>(cmd.stdout.take()),
             None,
         );
         let bytes = (
