@@ -713,6 +713,10 @@ impl Connection {
                 }
                 Err(e) => return Err(handler::Error::from(protocol::Error::from(e)).into()),
             };
+            match w.flush().await {
+                Ok(()) => (),
+                Err(e) => return Err(handler::Error::from(protocol::Error::from(e)).into()),
+            }
         }
     }
 
