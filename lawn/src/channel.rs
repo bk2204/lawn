@@ -495,6 +495,7 @@ impl ServerGenericCommandChannel {
     async fn do_read(
         logger: Arc<Logger>,
         id: ChannelID,
+        selector: u32,
         io: Locked<dyn Readable>,
         count: u64,
         blocking: bool,
@@ -512,9 +513,9 @@ impl ServerGenericCommandChannel {
         let complete = complete && blocking;
         let mut buf = BytesMut::zeroed(count);
         while !complete || off < buf.len() {
-            trace!(logger, "channel {}: read", id);
+            trace!(logger, "channel {}: {}: read", id, selector);
             let res = g.read(&mut buf[off..]).await;
-            trace!(logger, "channel {}: read: {:?}", id, res);
+            trace!(logger, "channel {}: {}: read: {:?}", id, selector, res);
             match res {
                 Ok(n) => {
                     *guard += n as u64;
@@ -572,6 +573,7 @@ impl ServerGenericCommandChannel {
     async fn do_read_blocking(
         logger: Arc<Logger>,
         id: ChannelID,
+        selector: u32,
         queue: &ChannelCommandQueue,
         io: Locked<dyn Readable>,
         count: u64,
@@ -588,13 +590,13 @@ impl ServerGenericCommandChannel {
                 );
                 queue
                     .process_request(id, syncoff, count, move |guard, count| {
-                        Self::do_read(logger, id, io, count, true, complete, guard)
+                        Self::do_read(logger, id, selector, io, count, true, complete, guard)
                     })
                     .await
             }
             None => {
                 let guard = queue.offset.lock().await;
-                Self::do_read(logger, id, io, count, true, complete, guard).await
+                Self::do_read(logger, id, selector, io, count, true, complete, guard).await
             }
         }
     }
@@ -732,7 +734,7 @@ impl Channel for ServerGenericCommandChannel {
                     2 => &queue.2,
                     _ => return Err(protocol::Error::from_errno(libc::EBADF)),
                 };
-                Self::do_read_blocking(logger, id, queue, io, count, sync, complete).await
+                Self::do_read_blocking(logger, id, selector, queue, io, count, sync, complete).await
             } else {
                 let gbytes = bytes.read().await;
                 let bytes_written = {
@@ -744,7 +746,7 @@ impl Channel for ServerGenericCommandChannel {
                     .clone()
                 };
                 let guard = bytes_written.lock().await;
-                Self::do_read(logger, id, io, count, false, false, guard).await
+                Self::do_read(logger, id, selector, io, count, false, false, guard).await
             }
         })
     }
