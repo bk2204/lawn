@@ -2,6 +2,7 @@
 
 use crate::config::Logger;
 use crate::task::block_on_async;
+use crate::tty::TTYSettings;
 use crate::unix;
 use bytes::{Bytes, BytesMut};
 use lawn_9p::backend::libc::LibcBackend;
@@ -10,9 +11,15 @@ use lawn_constants::error::Error as Errno;
 use lawn_fs::auth::{AuthenticationInfo, Authenticator, AuthenticatorHandle};
 use lawn_fs::backend::Metadata;
 use lawn_protocol::protocol;
-use lawn_protocol::protocol::{ChannelID, ClipboardChannelOperation, ErrorBody, ResponseCode};
+use lawn_protocol::protocol::{
+    ChannelCommandTTYMetadata, ChannelID, ClipboardChannelOperation, ErrorBody, ResponseCode,
+};
 use lawn_sftp::backend::Backend as SFTPBackend;
 use lawn_sftp::server::Server as ServerSFTP;
+use rustix::fd::{AsFd, BorrowedFd, OwnedFd};
+use rustix::fs::{self, Mode, OFlags};
+use rustix::pty::{self, OpenptFlags};
+use std::any::Any;
 use std::cmp::{self, Eq, Ord, PartialEq, PartialOrd};
 use std::collections::HashMap;
 use std::convert::TryInto;
@@ -20,13 +27,16 @@ use std::future::Future;
 use std::io;
 use std::os::raw::c_int;
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::pin::Pin;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::sync::{Arc, RwLock};
+use std::task::{Context, Poll};
 use std::time::Duration;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::unix::AsyncFd;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::UnixStream;
 use tokio::sync;
@@ -360,6 +370,12 @@ impl ChannelCommandQueue {
     }
 }
 
+#[allow(clippy::upper_case_acronyms)]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+pub enum ChannelNotification {
+    SIGWINCH = 0,
+}
+
 pub trait Channel {
     fn id(&self) -> ChannelID;
     fn read(
@@ -388,6 +404,13 @@ pub trait Channel {
     fn detach_selector(&self, selector: u32) -> Result<(), protocol::Error>;
     fn is_alive(&self) -> bool;
     fn set_dead(&self);
+    fn notify(
+        &self,
+        _kind: ChannelNotification,
+        _data: Box<dyn Any + Send + Sync + 'static>,
+    ) -> Result<(), protocol::Error> {
+        Err(ResponseCode::NotSupported.into())
+    }
 }
 
 trait Readable: AsyncRead + AsRawFd + Unpin + Send + Sync {}
@@ -395,6 +418,80 @@ trait Writable: AsyncWrite + AsRawFd + Unpin + Send + Sync {}
 
 impl<T: AsyncRead + AsRawFd + Unpin + Send + Sync> Readable for T {}
 impl<T: AsyncWrite + AsRawFd + Unpin + Send + Sync> Writable for T {}
+
+// TODO: remove this in favour of std::task::ready when we allow 1.64.0.
+macro_rules! ready {
+    ($e:expr) => {
+        match $e {
+            std::task::Poll::Ready(task) => task,
+            std::task::Poll::Pending => return std::task::Poll::Pending,
+        }
+    };
+}
+
+// The implementations in this class are based on the Tokio examples for using AsyncFd.
+struct FileDescriptor<T: AsRawFd + Unpin + Send + Sync>(AsyncFd<T>);
+
+impl<T: AsRawFd + Unpin + Send + Sync> AsRawFd for FileDescriptor<T> {
+    fn as_raw_fd(&self) -> i32 {
+        self.0.as_raw_fd()
+    }
+}
+
+impl<T: AsRawFd + Unpin + Send + Sync> AsyncRead for FileDescriptor<T> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        loop {
+            let mut guard = ready!(self.0.poll_read_ready(cx))?;
+
+            let unfilled = buf.initialize_unfilled();
+            match guard.try_io(|inner| {
+                let fd = unsafe { BorrowedFd::borrow_raw(inner.get_ref().as_raw_fd()) };
+                rustix::io::read(fd, unfilled).map_err(|e| e.into())
+            }) {
+                Ok(Ok(len)) => {
+                    buf.advance(len);
+                    return Poll::Ready(Ok(()));
+                }
+                Ok(Err(e)) => return Poll::Ready(Err(e)),
+                Err(_) => continue,
+            }
+        }
+    }
+}
+
+impl<T: AsRawFd + Unpin + Send + Sync> AsyncWrite for FileDescriptor<T> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        loop {
+            let mut guard = ready!(self.0.poll_write_ready(cx))?;
+
+            match guard.try_io(|inner| {
+                let fd = unsafe { BorrowedFd::borrow_raw(inner.get_ref().as_raw_fd()) };
+                rustix::io::write(fd, buf).map_err(|e| e.into())
+            }) {
+                Ok(result) => return Poll::Ready(result),
+                Err(_would_block) => continue,
+            }
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        // No-op.
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        // No-op.
+        Poll::Ready(Ok(()))
+    }
+}
 
 type Locked<T> = Arc<sync::Mutex<T>>;
 type OptionLocked<T> = Option<Arc<sync::Mutex<T>>>;
@@ -417,6 +514,7 @@ pub struct ServerGenericCommandChannel {
         ChannelCommandQueue,
         ChannelCommandQueue,
     )>,
+    tty: Mutex<Option<OwnedFd>>,
 }
 
 pub struct ServerCommandChannel {
@@ -492,6 +590,7 @@ impl ServerGenericCommandChannel {
         Ok(off as u64)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn do_read(
         logger: Arc<Logger>,
         id: ChannelID,
@@ -570,6 +669,7 @@ impl ServerGenericCommandChannel {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn do_read_blocking(
         logger: Arc<Logger>,
         id: ChannelID,
@@ -607,19 +707,14 @@ impl ServerCommandChannel {
         logger: Arc<Logger>,
         id: ChannelID,
         cmd: Command,
+        ttymeta: Option<ChannelCommandTTYMetadata>,
     ) -> Result<ServerCommandChannel, protocol::Error> {
         let mut cmd = cmd;
-        cmd.stdin(Stdio::piped());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
+        let fd = Self::setup_fds_for_spawn(logger.clone(), id, &mut cmd, ttymeta.as_ref())?;
         trace!(logger, "channel {}: spawn {:?}", id, cmd);
         let mut cmd = cmd.spawn()?;
         trace!(logger, "channel {}: spawn ok: pid {}", id, cmd.id());
-        let fds = (
-            writable_file_from_command::<PipeWrite, _>(cmd.stdin.take()),
-            readable_file_from_command::<PipeRead, _>(cmd.stdout.take()),
-            readable_file_from_command::<PipeRead, _>(cmd.stderr.take()),
-        );
+        let (fds, tty) = Self::setup_fds_for_processing(&mut cmd, ttymeta.as_ref(), fd)?;
         let bytes = (
             Arc::new(sync::Mutex::new(0)),
             Arc::new(sync::Mutex::new(0)),
@@ -628,7 +723,7 @@ impl ServerCommandChannel {
         Ok(ServerCommandChannel {
             ch: ServerGenericCommandChannel {
                 cmd: Mutex::new(cmd),
-                fds: Arc::new(sync::RwLock::new(fds)),
+                fds,
                 exit_status: Mutex::new(None),
                 id,
                 queue: Arc::new((
@@ -639,8 +734,195 @@ impl ServerCommandChannel {
                 bytes: Arc::new(sync::RwLock::new(bytes)),
                 logger,
                 alive: AtomicBool::new(true),
+                tty: Mutex::new(tty),
             },
         })
+    }
+
+    fn setup_fds_for_spawn(
+        logger: Arc<Logger>,
+        id: ChannelID,
+        cmd: &mut Command,
+        ttymeta: Option<&ChannelCommandTTYMetadata>,
+    ) -> Result<Option<OwnedFd>, protocol::Error> {
+        if let Some(ttymeta) = &ttymeta {
+            trace!(logger, "channel {}: setting up FDs", id);
+            let (main, secondary) = Self::make_pty()?;
+
+            let sel = &ttymeta.tty_selectors;
+            let mut flags = 0;
+            if sel.contains(&0) {
+                cmd.stdin(secondary.try_clone()?);
+                flags |= 1 << 0;
+            } else {
+                cmd.stdin(Stdio::piped());
+            }
+            if sel.contains(&1) {
+                cmd.stdout(secondary.try_clone()?);
+                flags |= 1 << 1;
+            } else {
+                cmd.stdout(Stdio::piped());
+            }
+            if sel.contains(&2) {
+                cmd.stderr(secondary.try_clone()?);
+                flags |= 1 << 2;
+            } else {
+                cmd.stderr(Stdio::piped());
+            }
+            trace!(logger, "channel {}: created PTY and FDs", id);
+
+            let ptsname = rustix::pty::ptsname(&main, vec![]).map_err(|e| {
+                let err: std::io::Error = e.into();
+                err
+            })?;
+            trace!(logger, "channel {}: found PTY ptsname: {:?}", id, ptsname);
+
+            let oldsettings = TTYSettings::from_tty(logger.clone(), main.as_raw_fd())?;
+            let mut ttysettings = TTYSettings::from_protocol_message(logger.clone(), ttymeta);
+            ttysettings.set_termios(oldsettings.termios());
+            ttysettings.set_tty(main.as_raw_fd(), true)?;
+
+            let mainfd = main.as_raw_fd();
+
+            unsafe {
+                cmd.pre_exec(move || {
+                    libc::close(mainfd);
+                    // If we have a TTY, then detach it.  On Linux, this always succeeds,
+                    // regardless of whether there's actually a TTY, but on macOS, this fails with
+                    // ENXIO if there is no TTY.  That's fine, since what we want has already been
+                    // done.
+                    if let Ok(oldtty) = rustix::fs::openat(
+                        fs::cwd(),
+                        "/dev/tty",
+                        OFlags::RDWR | OFlags::NOCTTY,
+                        Mode::from(0),
+                    ) {
+                        #[allow(clippy::useless_conversion)]
+                        libc::ioctl(
+                            oldtty.as_raw_fd(),
+                            libc::TIOCNOTTY.into(),
+                            std::ptr::null::<std::os::raw::c_void>(),
+                        );
+                        std::mem::drop(oldtty);
+                    }
+
+                    rustix::process::setsid()?;
+                    // This will fail on most POSIX systems because we're already a process group
+                    // leader.  That's fine and shouldn't affect anything negatively.
+                    let _ = rustix::process::setpgid(None, None);
+
+                    // Make sure that this is our controlling TTY.
+                    #[allow(clippy::useless_conversion)]
+                    libc::ioctl(secondary.as_raw_fd(), libc::TIOCSCTTY.into(), 0);
+
+                    // This is kinda gross, but we need the TTY to be the controlling terminal and
+                    // that needs to be done by opening the descriptor without O_NOCTTY.
+                    let fd = rustix::fs::openat(fs::cwd(), &ptsname, OFlags::RDWR, Mode::from(0))?;
+                    std::mem::drop(fd);
+                    let descriptors = [
+                        (rustix::io::dup2_stdin as fn(_) -> Result<_, _>, 0),
+                        (rustix::io::dup2_stdout, 1),
+                        (rustix::io::dup2_stderr, 2),
+                    ];
+                    for (func, n) in descriptors {
+                        if (flags & (1 << n)) != 0 {
+                            func(&secondary)?;
+                        }
+                    }
+                    libc::close(secondary.as_raw_fd());
+                    Ok(())
+                })
+            };
+            Ok(Some(main))
+        } else {
+            cmd.stdin(Stdio::piped());
+            cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());
+            Ok(None)
+        }
+    }
+
+    fn set_nonblock(fd: BorrowedFd<'_>) -> Result<(), io::Error> {
+        let mut flags = rustix::fs::fcntl_getfl(fd)?;
+        flags |= OFlags::NONBLOCK;
+        rustix::fs::fcntl_setfl(fd, flags)?;
+        Ok(())
+    }
+
+    fn setup_fds_for_processing(
+        cmd: &mut Child,
+        ttymeta: Option<&ChannelCommandTTYMetadata>,
+        fd: Option<OwnedFd>,
+    ) -> Result<(FDSet, Option<OwnedFd>), protocol::Error> {
+        let (fds, tty) = if let Some(ttymeta) = &ttymeta {
+            let fd = fd.unwrap();
+
+            Self::set_nonblock(fd.as_fd())?;
+
+            let sel = &ttymeta.tty_selectors;
+            let stdin: OptionLockedWrite = if sel.contains(&0) {
+                Some(Arc::new(sync::Mutex::new(FileDescriptor(AsyncFd::new(
+                    fd.try_clone()?,
+                )?))))
+            } else {
+                writable_file_from_command::<PipeWrite, _>(cmd.stdin.take())
+            };
+            let stdout: OptionLockedRead = if sel.contains(&1) {
+                Some(Arc::new(sync::Mutex::new(FileDescriptor(AsyncFd::new(
+                    fd.try_clone()?,
+                )?))))
+            } else {
+                readable_file_from_command::<PipeRead, _>(cmd.stdout.take())
+            };
+            let stderr: OptionLockedRead = if sel.contains(&2) {
+                // If both stdout and stderr are a TTY, then we only want to read from one, which
+                // will be stdout, because they point to the same file descriptor.  Otherwise, we
+                // can have the two reads return out of order, which can lead to corrupted text.
+                //
+                // Just redirect FD 2 from /dev/null in that case.
+                if sel.contains(&1) {
+                    let devnull = std::fs::File::options()
+                        .read(true)
+                        .write(true)
+                        .open("/dev/null")?;
+                    Some(Arc::new(sync::Mutex::new(tokio::fs::File::from_std(
+                        devnull,
+                    ))))
+                } else {
+                    Some(Arc::new(sync::Mutex::new(FileDescriptor(AsyncFd::new(
+                        fd.try_clone()?,
+                    )?))))
+                }
+            } else {
+                readable_file_from_command::<PipeRead, _>(cmd.stderr.take())
+            };
+            ((stdin, stdout, stderr), Some(fd.try_clone()?))
+        } else {
+            (
+                (
+                    writable_file_from_command::<PipeWrite, _>(cmd.stdin.take()),
+                    readable_file_from_command::<PipeRead, _>(cmd.stdout.take()),
+                    readable_file_from_command::<PipeRead, _>(cmd.stderr.take()),
+                ),
+                None,
+            )
+        };
+        Ok((Arc::new(sync::RwLock::new(fds)), tty))
+    }
+
+    fn make_pty() -> Result<(OwnedFd, OwnedFd), io::Error> {
+        let main = pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY)?;
+        pty::grantpt(&main)?;
+        pty::unlockpt(&main)?;
+        let name = pty::ptsname(&main, vec![])?;
+        let secondary = fs::openat(
+            fs::cwd(),
+            name,
+            OFlags::RDWR | OFlags::NOCTTY,
+            Mode::from(0),
+        )?;
+        Self::set_nonblock(main.as_fd())?;
+        Ok((main, secondary))
     }
 }
 
@@ -694,6 +976,38 @@ impl Channel for ServerCommandChannel {
 
     fn set_dead(&self) {
         self.ch.set_dead()
+    }
+
+    fn notify(
+        &self,
+        kind: ChannelNotification,
+        data: Box<dyn Any + Send + Sync + 'static>,
+    ) -> Result<(), protocol::Error> {
+        match kind {
+            ChannelNotification::SIGWINCH => {
+                let lock = self.ch.tty.lock().unwrap();
+                let tty = lock.as_ref().ok_or(ResponseCode::InvalidParameters)?;
+                let data = data
+                    .downcast_ref::<protocol::ChannelCommandTTYSizeMetadata>()
+                    .ok_or(ResponseCode::InvalidParameters)?;
+                let mut settings = TTYSettings::from_tty(self.ch.logger.clone(), tty.as_raw_fd())
+                    .map_err(protocol::Error::from)?;
+                settings.set_size(data);
+                settings
+                    .set_tty_size(tty.as_raw_fd())
+                    .map_err(protocol::Error::from)?;
+                let pid = {
+                    let lock = self.ch.cmd.lock().unwrap();
+                    #[allow(clippy::useless_conversion)]
+                    unsafe {
+                        rustix::process::Pid::from_raw(lock.id() as rustix::process::RawPid)
+                            .unwrap()
+                    }
+                };
+                let _ = rustix::process::kill_process(pid, rustix::process::Signal::Winch);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -847,6 +1161,8 @@ impl Channel for ServerGenericCommandChannel {
             Ok(Some(st)) => {
                 let mut g = self.exit_status.lock().unwrap();
                 *g = Some(st);
+                let mut ttyg = self.tty.lock().unwrap();
+                *ttyg = None;
                 Err(protocol::Error {
                     code: ResponseCode::Gone,
                     body: Some(ErrorBody::Exit(Self::convert_exit(st))),
@@ -950,6 +1266,7 @@ impl ServerClipboardChannel {
                 bytes: Arc::new(sync::RwLock::new(bytes)),
                 logger,
                 alive: AtomicBool::new(true),
+                tty: Mutex::new(None),
             },
         })
     }
