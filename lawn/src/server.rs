@@ -922,8 +922,8 @@ impl Server {
                         let r = protocol::CreateChannelResponse { id };
                         Ok((ResponseType::Success, serializer.serialize_body(&r)))
                     }
-                    Err(_) => {
-                        trace!(logger, "server: {}: create channel: failed", id);
+                    Err(e) => {
+                        trace!(logger, "server: {}: create channel: failed: {:?}", id, e);
                         Err(ResponseCode::InvalidParameters.into())
                     }
                 }
