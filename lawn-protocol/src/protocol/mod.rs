@@ -342,6 +342,7 @@ impl Capability {
             Self::Channel9P,
             Self::ChannelSFTP,
             Self::ChannelBlockingIO,
+            Self::ChannelCommandTTY,
             Self::ExtensionAllocate,
             Self::StoreCredential,
             Self::ContextTemplate,
@@ -362,6 +363,7 @@ impl Capability {
                 | Self::Channel9P
                 | Self::ChannelSFTP
                 | Self::ChannelBlockingIO
+                | Self::ChannelCommandTTY
                 | Self::ExtensionAllocate
                 | Self::StoreCredential
                 | Self::ContextTemplate
