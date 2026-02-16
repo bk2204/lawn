@@ -260,6 +260,8 @@ pub enum ErrorKind {
     CredentialError,
     ScriptError,
     MissingContext,
+    #[serde(rename = "tty-error")]
+    TTYError,
 }
 
 impl From<ErrorKind> for i32 {

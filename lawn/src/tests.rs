@@ -1405,7 +1405,7 @@ fn test_out_of_order_packets(ti: Arc<TestInstance>) {
 
         let logger = c.config().logger();
 
-        let id = c.create_command_channel(args).await.unwrap();
+        let id = c.create_command_channel(args, None).await.unwrap();
         let mut finalrx = spawn_recv_process(c.clone()).await;
 
         let perm = [1usize, 2, 0, 3];
