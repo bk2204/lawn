@@ -1,6 +1,6 @@
 use crate::channel::{
-    Channel, ChannelManager, Server9PChannel, ServerClipboardChannel, ServerCommandChannel,
-    ServerSFTPChannel,
+    Channel, ChannelManager, ChannelNotification, Server9PChannel, ServerClipboardChannel,
+    ServerCommandChannel, ServerSFTPChannel,
 };
 use crate::config;
 use crate::config::{Config, Logger};
@@ -922,8 +922,8 @@ impl Server {
                         let r = protocol::CreateChannelResponse { id };
                         Ok((ResponseType::Success, serializer.serialize_body(&r)))
                     }
-                    Err(_) => {
-                        trace!(logger, "server: {}: create channel: failed", id);
+                    Err(e) => {
+                        trace!(logger, "server: {}: create channel: failed: {:?}", id, e);
                         Err(ResponseCode::InvalidParameters.into())
                     }
                 }
@@ -999,6 +999,31 @@ impl Server {
                     None => return Err(ResponseCode::NotFound.into()),
                 };
                 match ch.detach_selector(m.selector) {
+                    Ok(()) => Ok((ResponseType::Success, None)),
+                    Err(e) => Err(e.into()),
+                }
+            }
+            Some(MessageKind::ChannelMetadataNotification) => {
+                trace!(logger, "server: {}: channel metadata notification", id);
+                assert_authenticated!(handler, message);
+                let m = valid_message!(handler, protocol::ChannelMetadataNotification, message);
+                let ch = match channels.get(m.id) {
+                    Some(ch) => ch,
+                    None => return Err(ResponseCode::NotFound.into()),
+                };
+                if m.kind != protocol::ChannelMetadataNotificationKind::TerminalWindowChange as u32
+                {
+                    return Err(ResponseCode::ParametersNotSupported.into());
+                }
+                let m = valid_message!(
+                    handler,
+                    protocol::ChannelMetadataNotificationTyped<
+                        protocol::ChannelCommandTTYSizeMetadata,
+                    >,
+                    message
+                );
+                let body = Box::new(m.meta.ok_or(ResponseCode::ParametersNotSupported)?);
+                match ch.notify(ChannelNotification::SIGWINCH, body) {
                     Ok(()) => Ok((ResponseType::Success, None)),
                     Err(e) => Err(e.into()),
                 }
@@ -1779,8 +1804,36 @@ impl Server {
             None => return Err(ResponseCode::NotFound.into()),
         };
         let env = m.env.as_ref().map(|e| Arc::new(e.clone()));
-        let ctx = config.template_context(env, Some(args.clone()));
         let logger = state.logger();
+        let ttymeta: Option<protocol::ChannelCommandTTYMetadata> = match &m.meta {
+            Some(meta) => {
+                let handler = state.handler.clone();
+                if meta.get(b"tty" as &[u8]) == Some(&Value::Bool(true)) {
+                    assert_capability!(handler, protocol::Capability::ChannelCommandTTY);
+                    trace!(
+                        logger,
+                        "server: {}: enabling TTY support for command channel",
+                        id
+                    );
+
+                    let cbor =
+                        serde_cbor::to_vec(meta).map_err(|_| ResponseCode::InvalidParameters)?;
+                    let ttymeta: protocol::ChannelCommandTTYMetadata =
+                        serde_cbor::from_slice(&cbor)
+                            .map_err(|_| ResponseCode::InvalidParameters)?;
+                    let sel: HashSet<u32> = ttymeta.tty_selectors.iter().cloned().collect();
+
+                    if sel.is_empty() || !sel.is_subset(&allowed) {
+                        return Err(ResponseCode::InvalidParameters.into());
+                    }
+                    Some(ttymeta)
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
+        let ctx = config.template_context(env, Some(args.clone()));
         let channels = state.channels();
         let cmd = match config::Command::new(&cfgcmd, &ctx) {
             Ok(cmd) => cmd,
@@ -1848,7 +1901,7 @@ impl Server {
         }
         let proc = cmd.run_std_command();
         let cid = channels.next_id();
-        let ch = Arc::new(ServerCommandChannel::new(logger, cid, proc)?);
+        let ch = Arc::new(ServerCommandChannel::new(logger, cid, proc, ttymeta)?);
         channels.insert(cid, ch);
         Ok(cid)
     }

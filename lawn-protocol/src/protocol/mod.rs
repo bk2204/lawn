@@ -319,6 +319,7 @@ pub enum Capability {
     AuthKeyboardInteractive,
     AuthPlain,
     ChannelCommand,
+    ChannelCommandTTY,
     Channel9P,
     ChannelSFTP,
     ChannelClipboard,
@@ -341,6 +342,7 @@ impl Capability {
             Self::Channel9P,
             Self::ChannelSFTP,
             Self::ChannelBlockingIO,
+            Self::ChannelCommandTTY,
             Self::ExtensionAllocate,
             Self::StoreCredential,
             Self::ContextTemplate,
@@ -361,6 +363,7 @@ impl Capability {
                 | Self::Channel9P
                 | Self::ChannelSFTP
                 | Self::ChannelBlockingIO
+                | Self::ChannelCommandTTY
                 | Self::ExtensionAllocate
                 | Self::StoreCredential
                 | Self::ContextTemplate
@@ -383,6 +386,10 @@ impl From<Capability> for (Bytes, Option<Bytes>) {
             Capability::ChannelCommand => (
                 (b"channel" as &[u8]).into(),
                 Some((b"command" as &[u8]).into()),
+            ),
+            Capability::ChannelCommandTTY => (
+                (b"channel" as &[u8]).into(),
+                Some((b"command/tty" as &[u8]).into()),
             ),
             Capability::Channel9P => ((b"channel" as &[u8]).into(), Some((b"9p" as &[u8]).into())),
             Capability::ChannelSFTP => (
@@ -421,6 +428,7 @@ impl From<(&[u8], Option<&[u8]>)> for Capability {
             (b"auth", Some(b"PLAIN")) => Capability::AuthPlain,
             (b"auth", Some(b"keyboard-interactive")) => Capability::AuthKeyboardInteractive,
             (b"channel", Some(b"command")) => Capability::ChannelCommand,
+            (b"channel", Some(b"command/tty")) => Capability::ChannelCommandTTY,
             (b"channel", Some(b"9p")) => Capability::Channel9P,
             (b"channel", Some(b"sftp")) => Capability::ChannelSFTP,
             (b"channel", Some(b"clipboard")) => Capability::ChannelClipboard,
@@ -542,6 +550,26 @@ pub struct CreateChannelRequest {
 #[serde(rename_all = "kebab-case")]
 pub struct CreateChannelResponse {
     pub id: ChannelID,
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct ChannelCommandTTYMetadata {
+    pub tty: bool,
+    pub tty_selectors: Vec<u32>,
+    pub term: Bytes,
+    pub modes: BTreeMap<u32, Value>,
+    #[serde(flatten)]
+    pub size: ChannelCommandTTYSizeMetadata,
+}
+
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct ChannelCommandTTYSizeMetadata {
+    pub height_cells: u32,
+    pub width_cells: u32,
+    pub height_pixels: u32,
+    pub width_pixels: u32,
 }
 
 #[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
@@ -675,6 +703,7 @@ pub struct ExtensionRange {
 #[derive(FromPrimitive, Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 pub enum ChannelMetadataNotificationKind {
     WaitStatus = 0,
+    TerminalWindowChange = 1,
 }
 
 #[derive(FromPrimitive, Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
@@ -716,6 +745,16 @@ pub struct ChannelMetadataNotification {
     pub status: Option<u32>,
     pub status_kind: Option<u32>,
     pub meta: Option<BTreeMap<Bytes, Value>>,
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct ChannelMetadataNotificationTyped<T> {
+    pub id: ChannelID,
+    pub kind: u32,
+    pub status: Option<u32>,
+    pub status_kind: Option<u32>,
+    pub meta: Option<T>,
 }
 
 #[derive(Eq, PartialEq, Ord, PartialOrd, Copy, Clone)]
@@ -1132,6 +1171,69 @@ pub struct TemplateServerContextBodyWithBody<T> {
     pub ctxsenv: Option<BTreeMap<Bytes, Bytes>>,
     pub args: Option<Vec<Bytes>>,
     pub body: Option<T>,
+}
+
+#[derive(Hash, Debug, FromPrimitive, Eq, PartialEq, Ord, PartialOrd, Copy, Clone)]
+#[allow(non_camel_case_types)]
+pub enum TerminalMode {
+    VINTR = 1,
+    VQUIT = 2,
+    VERASE = 3,
+    VKILL = 4,
+    VEOF = 5,
+    VEOL = 6,
+    VEOL2 = 7,
+    VSTART = 8,
+    VSTOP = 9,
+    VSUSP = 10,
+    VDSUSP = 11,
+    VREPRINT = 12,
+    VWERASE = 13,
+    VLNEXT = 14,
+    VFLUSH = 15,
+    VSWTCH = 16,
+    VSTATUS = 17,
+    VDISCARD = 18,
+    IGNPAR = 30,
+    PARMRK = 31,
+    INPCK = 32,
+    ISTRIP = 33,
+    INLCR = 34,
+    IGNCR = 35,
+    ICRNL = 36,
+    IUCLC = 37,
+    IXON = 38,
+    IXANY = 39,
+    IXOFF = 40,
+    IMAXBEL = 41,
+    IUTF8 = 42,
+    ISIG = 50,
+    ICANON = 51,
+    XCASE = 52,
+    ECHO = 53,
+    ECHOE = 54,
+    ECHOK = 55,
+    ECHONL = 56,
+    NOFLSH = 57,
+    TOSTOP = 58,
+    IEXTEN = 59,
+    ECHOCTL = 60,
+    ECHOKE = 61,
+    PENDIN = 62,
+    OPOST = 70,
+    OLCUC = 71,
+    ONLCR = 72,
+    OCRNL = 73,
+    ONOCR = 74,
+    ONLRET = 75,
+    CS7 = 90,
+    CS8 = 91,
+    PARENB = 92,
+    PARODD = 93,
+    TTY_OP_ISPEED = 128,
+    TTY_OP_OSPEED = 129,
+    VMIN = 0x00010000,
+    VTIME = 0x00010001,
 }
 
 /// A message for the protocol.

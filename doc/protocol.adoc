@@ -297,6 +297,7 @@ The following capabilities are known:
 | `channel`   | `command`            | command channels
 | `channel`   | `sftp`               | SFTP channels (including all versions of the protocol)
 | `channel`   | `blocking-io`        | blocking I/O support for channels
+| `channel`   | `command/tty`        | TTY support for command channels
 | `channel`   | any extension string | Reserved for custom extensions
 
 | `store`     | `credential`         | credential stores
@@ -551,10 +552,43 @@ A command channel is used for executing commands on the server.
 In order to crate a channel of this type, the `channel=command` protocol must be implemented by both sides.
 
 The `kind` field should be `command`.
-The `kind-args` and `meta` fields should be null or absent.
+The `kind-args` field should be null or absent.
 
 The `args` field should contain the name of the command to execute as element 0 and any arguments to the command following that in order.
 The `env` field, if present, should contain the environment variables of the client.
+
+If both sides support the `channel=command/tty` capability, then the `meta` field may contain the following data:
+
+----
+{
+  tty: bool,
+}
+----
+
+If the `tty` field is set to true, the `meta` field should also contain the following data:
+
+----
+{
+  tty-selectors: Vec<u32>,
+  term: Bytes,
+  modes: BTreeMap<u32, Value>,
+  height-cells: u32,
+  width-cells: u32,
+  height-pixels: u32,
+  width-pixels: u32,
+}
+----
+
+`tty-selectors` is the list of selectors that should be connected to a TTY.
+`term` is the terminal type.
+`height-cells` and `width-cells` refer to the number of rows and columns, respectively, in the terminal type.
+`height-pixels` and `width-pixels` refer to the number of pixels in each dimension in the terminal type.
+
+`modes` maps terminal codes to values.
+The keys are codes defined by the SSH protocol specification (including extensions) for terminal values; those greater than or equal to `0xff000000` are available to allocate with `extension=allocate`.
+For flags, the value is a boolean; for characters, it is either an integer or null (if not set); and for terminal speeds, it is an integer.
+
+If the `channel=command/tty` capability is not supported by both sides or negotiating a TTY is not desired, then `meta` should be absent or empty.
 
 The `selectors` field must contain 0, 1, and 2.
 These selectors are unidirectional (client to server, server to client, and server to client, respectively) and represent the standard POSIX file descriptors for standard input, standard output, and standard error, respectively.
@@ -769,7 +803,16 @@ A request looks like this:
 ----
 
 The `id` field contains the channel ID.
-The `kind` field indicates a status kind as follows:
+The `kind` field contains the notification kind as follows:
+
+|===
+| Name | Value | Meaning
+
+| WaitStatus           | 0 | a process has exited
+| TerminalWindowChange | 1 | the terminal window size for a process has changed
+|===
+
+If `kind` is `WaitStatus`, the `status-kind` field indicates a status kind as follows:
 
 |===
 | Name | Value | Meaning
@@ -783,9 +826,20 @@ The `kind` field indicates a status kind as follows:
 
 Values starting with the top byte of `0xff` are reserved for extension and are dynamically allocated with `extension=allocate`.
 
-If the `status` code is present and non-null, it is the exit code (if the `kind` field is `Exited`) and the signal (if the `kind` field is `Signalled` or `SignalledWithCore`).
+If the `status` code is present and non-null, it is the exit code (if the `status-kind` field is `Exited`) and the signal (if the `kind` field is `Signalled` or `SignalledWithCore`).
 
-The `meta` field should be absent or null and is reserved for future use.
+The `meta` field should be absent or null and is reserved for future use in this case.
+
+If `kind` is `TerminalWindowChange`, the `status` and `status-kind` fields should be absent or null and the `meta` output should look as follows:
+
+----
+{
+  height-cells: u32,
+  width-cells: u32,
+  height-pixels: u32,
+  width-pixels: u32,
+}
+----
 
 ==== CreateExtensionRange
 

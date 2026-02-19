@@ -1,8 +1,10 @@
 #![allow(dead_code)]
 
 use crate::config::Config;
+use crate::config::Logger as LoggerImpl;
 use crate::encoding::{escape, path};
 use crate::error::{Error, ErrorKind};
+use crate::tty::TTYSettings;
 use bytes::{Bytes, BytesMut};
 use lawn_protocol::config::Logger;
 use lawn_protocol::handler;
@@ -17,6 +19,7 @@ use lawn_protocol::protocol::{
     ReadChannelResponse, ResponseValue, VersionRequest, WriteChannelRequest, WriteChannelResponse,
 };
 use num_traits::FromPrimitive;
+use rustix::fd::{AsFd, AsRawFd, OwnedFd};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_cbor::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -27,8 +30,90 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::UnixStream;
+use tokio::signal::unix::SignalKind;
 use tokio::sync::mpsc::channel;
-use tokio::task::JoinHandle;
+use tokio::sync::Mutex;
+use tokio::task::{JoinHandle, JoinSet};
+
+pub(crate) struct SignalHandler {
+    logger: Arc<LoggerImpl>,
+    handler: Arc<ProtocolHandler<OwnedReadHalf, OwnedWriteHalf>>,
+    ttycfg: Arc<Mutex<TTYConfig>>,
+}
+
+impl SignalHandler {
+    fn new(
+        logger: Arc<LoggerImpl>,
+        handler: Arc<ProtocolHandler<OwnedReadHalf, OwnedWriteHalf>>,
+        ttycfg: Arc<Mutex<TTYConfig>>,
+    ) -> Self {
+        Self {
+            logger,
+            handler,
+            ttycfg,
+        }
+    }
+
+    async fn run_terminal_signals(&self) {
+        let sigs = [
+            SignalKind::terminate(),
+            SignalKind::quit(),
+            SignalKind::hangup(),
+            SignalKind::interrupt(),
+        ];
+        let mut set = JoinSet::new();
+        for sig in sigs {
+            let exit_status = sig.as_raw_value() + 128;
+            let ttycfg = self.ttycfg.clone();
+            set.spawn(async move {
+                if let Ok(mut s) = tokio::signal::unix::signal(sig) {
+                    if s.recv().await.is_some() {
+                        let s = ttycfg.lock().await;
+                        let _ = s.tty.set_tty(s.fd.as_raw_fd(), true);
+                        std::process::exit(exit_status);
+                    }
+                }
+            });
+        }
+        loop {
+            if set.join_next().await.is_none() {
+                break;
+            }
+        }
+    }
+
+    async fn run_winch_signals(&self, id: ChannelID) {
+        if let Ok(mut sig) = tokio::signal::unix::signal(SignalKind::window_change()) {
+            while sig.recv().await.is_some() {
+                let s = self.ttycfg.lock().await;
+                if let Ok(tty) = TTYSettings::from_tty(self.logger.clone(), s.fd.as_raw_fd()) {
+                    let size = tty.as_size();
+                    let notification = protocol::ChannelMetadataNotificationTyped {
+                        id,
+                        kind: ChannelMetadataNotificationKind::TerminalWindowChange as u32,
+                        status: None,
+                        status_kind: None,
+                        meta: Some(size),
+                    };
+                    let _ = self
+                        .handler
+                        .send_message::<_, Empty, Empty>(
+                            MessageKind::ChannelMetadataNotification,
+                            &notification,
+                            None,
+                        )
+                        .await;
+                }
+            }
+        }
+    }
+}
+
+pub(crate) struct TTYConfig {
+    fd: OwnedFd,
+    tty: TTYSettings,
+    selectors: Vec<u32>,
+}
 
 pub struct Connection {
     config: Arc<Config>,
@@ -368,11 +453,11 @@ impl Connection {
         let id = self.create_clipboard_channel(op, target).await?;
         match op {
             ClipboardChannelOperation::Copy => {
-                self.run_channel(stdin, devnull, stderr, !stdout_isatty, id)
+                self.run_channel(stdin, devnull, stderr, !stdout_isatty, id, None)
                     .await
             }
             ClipboardChannelOperation::Paste => {
-                self.run_channel(devnull, stdout, stderr, !stdout_isatty, id)
+                self.run_channel(devnull, stdout, stderr, !stdout_isatty, id, None)
                     .await
             }
         }
@@ -394,7 +479,8 @@ impl Connection {
             .await
             .unwrap();
         let id = self.create_9p_channel(target).await?;
-        self.run_channel(stdin, stdout, devnull, false, id).await
+        self.run_channel(stdin, stdout, devnull, false, id, None)
+            .await
     }
 
     pub async fn run_sftp<
@@ -413,7 +499,8 @@ impl Connection {
             .await
             .unwrap();
         let id = self.create_sftp_channel(target).await?;
-        self.run_channel(stdin, stdout, devnull, false, id).await
+        self.run_channel(stdin, stdout, devnull, false, id, None)
+            .await
     }
 
     pub async fn run_command<
@@ -428,9 +515,105 @@ impl Connection {
         stderr: E,
         stdout_isatty: bool,
     ) -> Result<i32, Error> {
-        let id = self.create_command_channel(args).await?;
-        self.run_channel(stdin, stdout, stderr, !stdout_isatty, id)
+        let id = self.create_command_channel(args, None).await?;
+        self.run_channel(stdin, stdout, stderr, !stdout_isatty, id, None)
             .await
+    }
+
+    pub async fn run_command_fd<
+        I: AsyncReadExt + AsFd + Unpin + Send + 'static,
+        O: AsyncWriteExt + AsFd + Unpin + Send + 'static,
+        E: AsyncWriteExt + AsFd + Unpin + Send + 'static,
+    >(
+        self: Arc<Self>,
+        args: &[Bytes],
+        stdin: I,
+        stdout: O,
+        stderr: E,
+    ) -> Result<i32, Error> {
+        let logger = self.config.logger();
+        let fds = &[stdin.as_fd(), stdout.as_fd(), stderr.as_fd()];
+        let mut tty = None;
+        let mut selectors = vec![];
+        for (i, fd) in fds.iter().enumerate() {
+            if rustix::termios::isatty(fd) {
+                trace!(
+                    logger,
+                    "found selector {} (fd {}) is a TTY",
+                    i,
+                    fd.as_raw_fd()
+                );
+                if tty.is_none() {
+                    let ttyfd = rustix::io::dup(fd)
+                        .map_err(|e| Error::new_with_cause(ErrorKind::TTYError, e))?;
+                    trace!(
+                        logger,
+                        "chose selector {} (fd {:?}) as our TTY (verified {})",
+                        i,
+                        &ttyfd,
+                        rustix::termios::isatty(&ttyfd)
+                    );
+                    tty = Some(ttyfd);
+                }
+            }
+            selectors.push(i as u32);
+        }
+        let has_tty = self
+            .capabilities
+            .read()
+            .await
+            .contains(&protocol::Capability::ChannelCommandTTY);
+        let (settings, sh) = if !has_tty {
+            trace!(
+                logger,
+                "skipping TTY because the remote side does not support it"
+            );
+            (None, None)
+        } else if let Some(tty) = tty {
+            trace!(logger, "configuring TTY settings on {}", tty.as_raw_fd());
+            let ttysettings = TTYSettings::from_tty(logger.clone(), tty.as_raw_fd())
+                .map_err(|e| Error::new_with_cause(ErrorKind::TTYError, e))?;
+            let mut raw = ttysettings.clone();
+            raw.set_raw();
+            raw.set_tty(tty.as_raw_fd(), false)
+                .map_err(|e| Error::new_with_cause(ErrorKind::TTYError, e))?;
+            let ttycfg = Arc::new(Mutex::new(TTYConfig {
+                fd: tty,
+                tty: ttysettings,
+                selectors,
+            }));
+            let ttycfg2 = ttycfg.clone();
+            (
+                Some(ttycfg),
+                Some(SignalHandler::new(
+                    logger.clone(),
+                    self.handler.clone(),
+                    ttycfg2,
+                )),
+            )
+        } else {
+            (None, None)
+        };
+        let func = async {
+            let id = self.create_command_channel(args, settings.clone()).await?;
+            let stdout_isatty = rustix::termios::isatty(&stdout);
+            self.run_channel(
+                stdin,
+                stdout,
+                stderr,
+                !(stdout_isatty || settings.is_some()),
+                id,
+                sh,
+            )
+            .await
+        };
+        let res = func.await;
+        if let Some(settings) = settings {
+            let s = settings.lock().await;
+            let res = s.tty.set_tty(s.fd.as_raw_fd(), true);
+            trace!(logger, "reset TTY settings: {:?}", res);
+        }
+        res
     }
 
     async fn run_channel<
@@ -444,6 +627,7 @@ impl Connection {
         stderr: E,
         complete: bool,
         id: ChannelID,
+        sh: Option<SignalHandler>,
     ) -> Result<i32, Error> {
         let rhandler = self.handler.clone();
         let (finaltx, mut finalrx) = tokio::sync::mpsc::channel(1);
@@ -464,11 +648,32 @@ impl Connection {
         self.clone().io_channel_write_task(id, 0, stdin);
         let stdout_task = self.clone().io_channel_read_task(id, 1, complete, stdout);
         let stderr_task = self.clone().io_channel_read_task(id, 2, false, stderr);
+        let signal_task = self.clone().channel_signal_task(id, sh);
         let res = finalrx.recv().await;
         let _ = tokio::join!(stdout_task, stderr_task);
+        signal_task.abort_handle().abort();
         let _ = self.delete_channel(id).await;
         trace!(self.config.logger(), "returning value");
         res.unwrap()
+    }
+
+    pub(crate) fn channel_signal_task(
+        self: Arc<Self>,
+        id: ChannelID,
+        sh: Option<SignalHandler>,
+    ) -> JoinHandle<()> {
+        tokio::task::spawn(async move {
+            if let Some(sh) = sh {
+                loop {
+                    tokio::select! {
+                        _ = sh.run_terminal_signals() => {
+                            return;
+                        }
+                        _ = sh.run_winch_signals(id) => continue,
+                    }
+                }
+            }
+        })
     }
 
     pub(crate) fn io_channel_write_task<R: AsyncReadExt + Unpin + Send + 'static>(
@@ -713,6 +918,10 @@ impl Connection {
                 }
                 Err(e) => return Err(handler::Error::from(protocol::Error::from(e)).into()),
             };
+            match w.flush().await {
+                Ok(()) => (),
+                Err(e) => return Err(handler::Error::from(protocol::Error::from(e)).into()),
+            }
         }
     }
 
@@ -865,14 +1074,58 @@ impl Connection {
         );
     }
 
-    pub(crate) async fn create_command_channel(&self, args: &[Bytes]) -> Result<ChannelID, Error> {
+    pub(crate) async fn create_command_channel(
+        &self,
+        args: &[Bytes],
+        tty: Option<Arc<Mutex<TTYConfig>>>,
+    ) -> Result<ChannelID, Error> {
+        let logger = self.config.logger();
         let config = self.config.clone();
+        let env = config.env_vars().clone();
+        let term = match env.get(b"TERM" as &[u8]) {
+            Some(b) => b.clone(),
+            None => Bytes::from(b"dumb" as &[u8]),
+        };
+        let meta = match tty {
+            Some(tty) => {
+                let cfg = tty.lock().await;
+                let mut meta: BTreeMap<Bytes, Value> = BTreeMap::new();
+                meta.insert(Bytes::from(b"tty" as &[u8]), Value::Bool(true));
+                meta.insert(
+                    Bytes::from(b"tty-selectors" as &[u8]),
+                    Value::Array(
+                        cfg.selectors
+                            .iter()
+                            .map(|s| Value::Integer(*s as i128))
+                            .collect(),
+                    ),
+                );
+                meta.insert(
+                    Bytes::from(b"modes" as &[u8]),
+                    Value::Map(cfg.tty.to_cbor_map()),
+                );
+                meta.insert(Bytes::from(b"term" as &[u8]), Value::Bytes(term.to_vec()));
+                let size = cfg.tty.as_size();
+                let entries: &[(&[u8], u32)] = &[
+                    (b"height-cells", size.height_cells),
+                    (b"width-cells", size.width_cells),
+                    (b"height-pixels", size.height_pixels),
+                    (b"width-pixels", size.width_pixels),
+                ];
+                for (name, value) in entries {
+                    meta.insert(Bytes::from(*name), Value::Integer(*value as i128));
+                }
+                trace!(logger, "setting TTY configuration for channel: {:?}", meta);
+                Some(meta)
+            }
+            None => None,
+        };
         let req = CreateChannelRequest {
             kind: (b"command" as &'static [u8]).into(),
             kind_args: None,
             args: Some(args.into()),
-            env: Some(config.env_vars().clone()),
-            meta: None,
+            env: Some(env),
+            meta,
             selectors: vec![0, 1, 2],
         };
         let resp: CreateChannelResponse = match self

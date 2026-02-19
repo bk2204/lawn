@@ -46,6 +46,7 @@ mod template;
 #[cfg(not(miri))]
 #[cfg(test)]
 mod tests;
+mod tty;
 mod unix;
 
 use error::{Error, ErrorKind};
@@ -903,12 +904,11 @@ fn dispatch_run(
             .await?;
         let _ = conn.negotiate_default_version().await;
         let _ = conn.auth_external().await;
-        conn.run_command(
+        conn.run_command_fd(
             &args,
             tokio::io::stdin(),
             tokio::io::stdout(),
             tokio::io::stderr(),
-            rustix::termios::isatty(io::stdout()),
         )
         .await
     })?;
