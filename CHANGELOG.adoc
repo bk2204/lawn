@@ -1,5 +1,25 @@
 = Changelog
 
+== v0.5.0
+
+=== Project
+
+* Stop testing on BSD since Vagrant is no longer available.
+
+=== Binary
+
+* Update various dependencies for security.
+* Restore builtin help handling.
+* Remove the need for `--` after `lawn run`.
+* Use blocking IO by default, which improves performance substantially.
+* Avoid crashes due to double close.
+* Avoid crashes in `lawn proxy` due to insufficiently sized buffer.
+
+=== Protocol and Internals
+
+* Add support for `channel=command/tty`.
+* Add support for `channel=blocking-io`.
+
 == v0.4.0
 
 === Project
