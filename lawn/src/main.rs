@@ -642,7 +642,7 @@ fn dispatch_mount(
                 "sftp",
                 "SFTP",
                 fs_proxy::ProxyProtocol::SFTP,
-                Some(&["sshfs", "-o", "passive", ":/"]),
+                Some(&["sshfs", "-o", "slave", ":/"]),
             ),
             Some(p) => {
                 return Err(Error::new_with_message(
