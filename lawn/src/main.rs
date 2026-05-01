@@ -651,11 +651,7 @@ fn dispatch_mount(
                 ))
             }
         };
-    let args: Vec<OsString> = match (
-        m.contains_id("auto"),
-        autoargs,
-        m.get_many::<OsString>("arg"),
-    ) {
+    let args: Vec<OsString> = match (m.get_flag("auto"), autoargs, m.get_many::<OsString>("arg")) {
         (true, Some(autoargs), Some(args)) if args.len() == 1 => autoargs
             .iter()
             .cloned()
@@ -709,9 +705,9 @@ fn dispatch_mount(
             escape(path(&*fs_sock)),
             desc
         );
-        let want_socket = if m.value_source("socket").is_some() {
+        let want_socket = if m.get_flag("socket") {
             true
-        } else if m.value_source("fd").is_some() || autoargs.is_some() {
+        } else if m.get_flag("fd") || autoargs.is_some() {
             false
         } else {
             error!(logger, "one of --socket or --fd is required");
@@ -991,8 +987,8 @@ fn dispatch(verbosity: &mut i32, handled: &mut bool) -> Result<(), Error> {
         .subcommand(
             Command::new("mount")
                 .about("Provide access to a file system mount")
-                .arg(Arg::new("socket").long("socket").help("Use a socket to expose the mount"))
-                .arg(Arg::new("fd").long("fd").help("Expose the mount to the command using standard input and output"))
+                .arg(Arg::new("socket").long("socket").help("Use a socket to expose the mount").action(ArgAction::SetTrue))
+                .arg(Arg::new("fd").long("fd").help("Expose the mount to the command using standard input and output").action(ArgAction::SetTrue))
                 .arg(
                     Arg::new("type")
                         .long("type")
@@ -1000,7 +996,7 @@ fn dispatch(verbosity: &mut i32, handled: &mut bool) -> Result<(), Error> {
                         .value_name("PROTOCOL")
                         .help("Protocol to use to access the mount: \"9p\" (default) or \"sftp\""),
                 )
-                .arg(Arg::new("auto").long("auto").help("Automatically guess a suitable program to mount"))
+                .arg(Arg::new("auto").long("auto").help("Automatically guess a suitable program to mount").action(ArgAction::SetTrue))
                 .arg(Arg::new("target").required(true).help("Name of the mount point to mount").value_parser(value_parser!(OsString)))
                 .arg(Arg::new("arg").num_args(1..).required(true).help("With --auto, the path to mount on; otherwise, the command to run").value_parser(value_parser!(OsString)).trailing_var_arg(true)),
         )
